@@ -337,7 +337,7 @@ function renderPorts() {
   const f = ($('portFilter') ? $('portFilter').value.trim() : '').toLowerCase();
   const rows = PORTS.filter(r => !f || (r.port + ' ' + (r.process || '') + ' ' + r.address + ' ' + (r.agent || '')).toLowerCase().includes(f));
   $('portsBody').innerHTML = rows.map(r =>
-    '<tr><td>' + r.proto + '</td><td><b>' + r.port + '</b></td><td style="font-family:monospace;font-size:12px">' + escapeHtml(r.address) + '</td>' +
+    '<tr><td>' + r.proto + '</td><td><b>' + r.port + '</b></td><td style="font-family:monospace;font-size:11px">' + escapeHtml(r.address) + '</td>' +
     '<td>' + (r.pid || '-') + '</td><td>' + escapeHtml(r.process || '-') + '</td>' +
     '<td>' + (r.agent ? '<span class="tag agent">' + escapeHtml(r.agent) + '</span>' : '') + '</td></tr>').join('');
 }
@@ -368,7 +368,7 @@ async function loadTelemetry() {
       : '<div class="hint">暂无画像数据（对话/指挥官/DAG/定时执行后自动生成）</div>';
     const e = await api('/telemetry/events?limit=20');
     $('eventTable').innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>会话</th><th>事件</th></tr></thead><tbody>' +
-      (e.events || []).map(x => '<tr><td>' + (x.created_at || '').slice(5, 16).replace('T', ' ') + '</td><td>' + x.source + '</td><td style="font-family:monospace;font-size:12px">' + escapeHtml((x.session_id || '').slice(0, 14)) + '</td><td>' + x.event + '</td></tr>').join('') +
+      (e.events || []).map(x => '<tr><td>' + (x.created_at || '').slice(5, 16).replace('T', ' ') + '</td><td>' + x.source + '</td><td style="font-family:monospace;font-size:11px">' + escapeHtml((x.session_id || '').slice(0, 14)) + '</td><td>' + x.event + '</td></tr>').join('') +
       '</tbody></table>';
   } catch (err) { toast(err.message, 'err'); }
 }
@@ -434,7 +434,7 @@ function renderTaskTable(tasks) {
     '<tr><td><b>' + t.task_id + '</b></td><td>' + (t.agent_id || '-') + '</td>' +
     '<td>' + (t.deps || []).join(',') + '</td><td>' + t.status + '</td>' +
     '<td>' + (t.duration_ms != null ? t.duration_ms + 'ms' : '-') + '</td>' +
-    '<td><details><summary class="hint">' + escapeHtml((t.output || t.error || '').slice(0, 50)) + '</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:220px;overflow:auto">' + escapeHtml(t.output || t.error || '') + '</pre></details></td></tr>').join('');
+    '<td><details><summary class="hint">' + escapeHtml((t.output || t.error || '').slice(0, 50)) + '</summary><pre style="white-space:pre-wrap;font-size:11.5px;max-height:220px;overflow:auto">' + escapeHtml(t.output || t.error || '') + '</pre></details></td></tr>').join('');
 }
 
 function renderDag(tasks) {
@@ -468,9 +468,9 @@ function renderDag(tasks) {
   tasks.forEach(t => {
     const p = pos[t.task_id];
     svg += '<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + (TASK_COLORS[t.status] || '#334155') + '22" stroke="' + (TASK_COLORS[t.status] || '#334155') + '" stroke-width="1.5"/>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" fill="#e2e8f0" font-size="12" font-weight="bold">' + t.task_id + ' · ' + (t.agent_id || '') + '</text>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 34) + '" fill="#94a3b8" font-size="12">' + escapeHtml((t.prompt || '').slice(0, 18)) + '</text>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 48) + '" fill="#cbd5e1" font-size="12">' + t.status + (t.duration_ms != null ? ' · ' + Math.round(t.duration_ms / 100) / 10 + 's' : '') + '</text></g>';
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" fill="#e2e8f0" font-size="11" font-weight="bold">' + t.task_id + ' · ' + (t.agent_id || '') + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 34) + '" fill="#94a3b8" font-size="10">' + escapeHtml((t.prompt || '').slice(0, 18)) + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 48) + '" fill="#cbd5e1" font-size="10">' + t.status + (t.duration_ms != null ? ' · ' + Math.round(t.duration_ms / 100) / 10 + 's' : '') + '</text></g>';
   });
   svg += '</svg>';
   $('dagSvg').innerHTML = svg;
@@ -507,7 +507,7 @@ async function loadJobs() {
       '<td><button class="btn sm ' + (j.enabled ? '' : 'ghost') + '" onclick="toggleJob(\'' + j.id + '\',' + (j.enabled ? 0 : 1) + ')">' + (j.enabled ? '✔ 启用' : '⏸ 停用') + '</button></td>' +
       '<td class="hint">' + (j.last_run || '').slice(5, 16).replace('T', ' ') + '</td>' +
       '<td>' + (j.last_status === 'success' ? '🟢' : j.last_status === 'fail' ? '🔴' : '-') + '</td>' +
-      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:12px;white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
+      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:11px;white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
       '<td style="white-space:nowrap"><button class="btn sm ghost" onclick="runJobNow(\'' + j.id + '\')">▶ 立即</button> ' +
       '<button class="btn sm danger" onclick="delJob(\'' + j.id + '\')">×</button></td></tr>').join('') ||
       '<tr><td colspan="8" class="hint">暂无任务</td></tr>';
@@ -550,7 +550,7 @@ async function loadMcp() {
     const s = await api('/mcp/servers');
     $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
       (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
-        '<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        '<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
         '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">×</button></td></tr>').join('') +
       '</tbody></table>';
     $('mcTools').innerHTML = '⏳ 聚合工具中（stdio 会临时拉起进程）…';
