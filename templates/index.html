@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent Hub - 智管</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏫</text></svg>">
+    <link rel="stylesheet" href="/static/vendor/xterm.css">
     <style>
         /* ── US-003 明快高对比配色：单一色板源 :root，全文引用 var() ── */
         :root {
@@ -150,6 +152,31 @@
 
         .footer { text-align: center; padding: 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--surface); }
 
+        /* ── 基础设施区（服务/网关/工具：仅快捷方式）── */
+        .infra-box { max-width: 980px; margin: 26px auto 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 10px 14px; }
+        .infra-box summary { cursor: pointer; font-size: 13px; color: var(--text-2); padding: 6px 2px; user-select: none; }
+        .infra-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+        .chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--bg); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+        .chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+        .chip .dot.on { background: var(--success); box-shadow: 0 0 6px var(--success); }
+        .chip .dot.off { background: var(--muted); }
+        .chip b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+        .chip .kindtag { font-size: 10px; color: var(--text-2); background: var(--surface); border-radius: 6px; padding: 1px 6px; flex: none; }
+        .chip .btn { flex: none; }
+        .s-kind { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--bg); color: var(--text-2); margin-left: 4px; }
+        .seat.s-installed { border-color: #eab308aa; background: #eab3080d; }
+        .s-badge.installed { background: #eab308; box-shadow: 0 0 8px #eab308; }
+        .s-status.installed { color: #eab308; }
+        .avatar.installed { opacity: .85; }
+
+        /* ── 会话嵌入 / 终端 ── */
+        .pane { flex: 1; display: none; flex-direction: column; min-height: 0; }
+        .pane.on { display: flex; }
+        .pane .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+        .pane iframe { flex: 1; width: 100%; border: 0; background: #fff; min-height: 0; }
+        #termEl { flex: 1; min-height: 0; padding: 6px; background: #0b1220; overflow: hidden; }
+        .sess-item { font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 3px 8px; display: inline-flex; gap: 6px; align-items: center; }
+
         /* ── 移动端自适应（US-001：消除左偏留白/页签换行/两栏错位） ── */
         @media (max-width: 767px) {
             .header { padding: 10px 12px; gap: 8px; }
@@ -219,8 +246,12 @@
                     <span>用自然语言指挥所有 Agent →</span>
                 </div>
             </div>
-            <div class="divider"><span>学生座位</span></div>
+            <div class="divider"><span>学生座位 · 仅 Agent</span></div>
             <div class="seats" id="seats"><div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">加载中…</div></div>
+            <details class="infra-box" id="infraBox">
+                <summary>⚙️ 基础设施（网关 / 服务 / 记忆 / 工具 —— 非 Agent，仅快捷方式）<span class="hint" id="infraCount"></span></summary>
+                <div class="infra-grid" id="infraGrid"></div>
+            </details>
             <div style="text-align:center;margin-top:22px">
                 <button class="btn ghost" onclick="openRegister()">＋ 注册自定义 Agent</button>
                 <button class="btn ghost" onclick="runScan()">🔍 自动扫描（docker/systemd 只读发现）</button>
@@ -247,7 +278,7 @@
             </div>
         </section>
 
-        <!-- 统一对话 -->
+        <!-- 统一对话（Agent 原生会话嵌入 / 终端 / 智管对话） -->
         <section class="page" id="page-chat">
             <div class="chat-grid">
                 <details class="chat-side chips" open>
@@ -255,10 +286,30 @@
                     <div id="chatAgents"></div>
                 </details>
                 <div class="chat-main">
-                    <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent</div></div>
-                    <div class="composer">
-                        <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
-                        <button class="btn" onclick="chatSend()">发送</button>
+                    <!-- 模式1：原生 Web UI 嵌入 -->
+                    <div class="pane" id="embedPane">
+                        <div class="bar"><b id="embedTitle" style="font-size:13px"></b>
+                            <button class="btn ghost sm" onclick="embedRefresh()">刷新</button>
+                            <button class="btn ghost sm" onclick="embedNewTab()">新窗口打开</button>
+                            <span class="hint" id="embedUrlHint"></span></div>
+                        <iframe id="embedFrame" src="about:blank"></iframe>
+                    </div>
+                    <!-- 模式2：pty 终端 -->
+                    <div class="pane" id="termPane">
+                        <div class="bar"><b id="termTitle" style="font-size:13px"></b>
+                            <button class="btn sm" onclick="termNew()">＋ 新会话</button>
+                            <button class="btn ghost sm" onclick="termRefreshList()">会话</button>
+                            <button class="btn ghost sm" onclick="termKill()">销毁当前</button>
+                            <span id="termSessList" style="display:flex;gap:6px;flex-wrap:wrap"></span></div>
+                        <div id="termEl"></div>
+                    </div>
+                    <!-- 模式3：对话框（智管自身/有 chat 适配器者） -->
+                    <div class="pane on" id="chatPane">
+                        <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent 或「智管对话」</div></div>
+                        <div class="composer">
+                            <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
+                            <button class="btn" onclick="chatSend()">发送</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -422,6 +473,8 @@
 
     <div class="footer">Agent Hub v0.2.0 · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     <div id="toast"></div>
+    <script src="/static/vendor/xterm.js"></script>
+    <script src="/static/vendor/fit.js"></script>
     <script src="/static/hub.js"></script>
 </body>
 </html>

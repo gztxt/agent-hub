@@ -24,6 +24,12 @@ def build_adapters(config) -> Dict[str, object]:
         display_name="JCode (CCR)")
     _adapters["pi"] = PiAdapter(config)
     _adapters["tdai"] = TDAIAdapter(config)
+    # 智管自身对话（Agent Manager 本体，走 CCR 默认模型）
+    _adapters["hub-self"] = OpenAICompatAdapter(
+        config, "hub-self", base_url=config.ccr_url,
+        auth_token=config.ccr_openai_key, auth_style="bearer",
+        default_model=getattr(config, "claude_model", "") or "qwen3.8-flash",
+        display_name="智管对话")
     return dict(_adapters)
 
 

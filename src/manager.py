@@ -97,23 +97,20 @@ class ManagerChatIn(BaseModel):
 
 
 def _ui_url_for(agent_id: str) -> Optional[str]:
-    cfg = _ctx.get("config")
+    # 画像驱动：agent 的 ui / 其他实体的 panel / 自定义项 endpoint
+    try:
+        import profiles
+        p = profiles.get_profile(agent_id)
+        if p:
+            return p.get("ui") or p.get("panel")
+    except Exception:  # noqa: BLE001
+        pass
     discovery = _ctx.get("discovery")
-    url_map = {
-        "claude": None,  # CLI 无 Web UI
-        "pi": getattr(cfg, "pi_url", None),
-        "jcode": None,
-        "tdai": getattr(cfg, "tdaI_url", None),
-    }
-    url = url_map.get(agent_id)
-    if not url and discovery:
+    if discovery:
         agent = discovery.get_agent(agent_id)
         if agent and agent.endpoint:
-            url = agent.endpoint
-    if not url:
-        return None
-    # 局域网可访问提示：把 loopback 换成 NAS 局域网 IP 由前端处理，这里回原值
-    return url
+            return agent.endpoint
+    return None
 
 
 async def _dispatch_tool(name: str, args: Dict[str, Any]):

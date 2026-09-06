@@ -45,6 +45,7 @@ import manager as manager_mod
 import tasks as tasks_mod
 import mcpgw as mcpgw_mod
 import cronjobs as cronjobs_mod
+import term as term_mod
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
@@ -65,6 +66,7 @@ app.include_router(manager_mod.router)
 app.include_router(tasks_mod.router)
 app.include_router(mcpgw_mod.router)
 app.include_router(cronjobs_mod.router)
+app.include_router(term_mod.router)
 
 discovery: Optional[AgentDiscovery] = None
 
@@ -349,6 +351,11 @@ async def startup():
     print(f"[Agent Hub] CCR: {config.ccr_url} | pi: {config.pi_url} | "
           f"jcode: {config.jcode_url} | TDAI: {config.tdaI_url}")
     print(f"[Agent Hub] Manager LLM: {config.manager_llm_base} model={config.manager_llm_model}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    term_mod.kill_all()
 
 
 if __name__ == "__main__":

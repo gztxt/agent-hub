@@ -82,7 +82,8 @@ async function loadAgents() {
     const d = await api('/api/agents');
     AGENTS = d.agents || [];
     renderSeats();
-    $('hAgents').textContent = 'Agents: ' + AGENTS.length + '（运行 ' + AGENTS.filter(a => a.status === 'running').length + '）';
+    const ag = AGENTS.filter(a => a.kind === 'agent');
+    $('hAgents').textContent = 'Agents: ' + ag.length + '（在线 ' + ag.filter(a => a.status === 'running').length + '）';
     const errs = AGENTS.filter(a => a.status === 'error').length;
     $('hErrors').innerHTML = errs ? '<span class="hdot r"></span>异常 ' + errs : '';
   } catch (e) { /* 服务重启窗口容忍瞬时失败 */ }
@@ -90,7 +91,22 @@ async function loadAgents() {
 
 function renderSeats() {
   const grid = $('seats');
-  if (!AGENTS.length) { grid.innerHTML = '<div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
+  const agents = AGENTS.filter(a => a.kind === 'agent');
+  const infra = AGENTS.filter(a => a.kind !== 'agent');
+  // 基础设施区（②服务/工具只留快捷方式）
+  $('infraCount').textContent = '（' + infra.length + ' 项）';
+  $('infraGrid').innerHTML = infra.map(a => {
+    const btns = (a.entries || []).map(e => {
+      if (e.type === 'open') return '<button class="btn sm ghost" title="快捷方式：' + escapeHtml(e.url) + '" onclick="window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗</button>';
+      if (e.type === 'term') return '<button class="btn sm ghost" title="终端" onclick="gotoChat(\'' + a.id + '\',\'term\')">⌨</button>';
+      return '<button class="btn sm ghost" title="详情" onclick="showDetail(\'' + a.id + '\')">i</button>';
+    }).join('');
+    const kt = { gateway: '🔀网关', service: '⚙️服务', memory: '🧠记忆', tool: '🧰工具' }[a.kind] || a.kind;
+    return '<div class="chip" title="' + escapeHtml(a.description) + (a.port ? ' :' + a.port : '') + '">' +
+      '<span class="dot ' + (a.status === 'running' ? 'on' : 'off') + '"></span>' +
+      '<b>' + escapeHtml(a.name) + '</b><span class="kindtag">' + kt + '</span>' + btns + '</div>';
+  }).join('');
+  if (!agents.length) { grid.innerHTML = '<div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
   if (!grid.dataset.tapBound) {  // US-002：触屏无 hover，点击卡片展开/收起操作行（容器常驻，绑一次即可）
     grid.dataset.tapBound = '1';
     grid.addEventListener('click', e => {
@@ -102,9 +118,18 @@ function renderSeats() {
       if (!wasOpen) card.classList.add('open');
     });
   }
-  grid.innerHTML = AGENTS.map(a => {
-    const st = a.status === 'running' ? 'running' : (a.status === 'error' ? 'error' : 'stopped');
-    const label = { running: '⚡授课中', stopped: '💤休息中', error: '⚠️异常' }[st];
+  grid.innerHTML = agents.map(a => {
+    const st = a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : (a.status === 'error' ? 'error' : 'stopped'));
+    const label = { running: '⚡在线', installed: '🟡可启动', stopped: '💤离线', error: '⚠️异常' }[st];
+    const btns = (a.entries || []).map(e => {
+      if (e.type === 'embed') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')">原生会话</button>';
+      if (e.type === 'open') return '<button class="btn sm ghost" onclick="event.stopPropagation();window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗UI</button>';
+      if (e.type === 'term') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')">终端</button>';
+      if (e.type === 'chat') return '<button class="btn sm ghost" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')">对话</button>';
+      if (e.type === 'detail') return '<button class="btn sm ghost" onclick="event.stopPropagation();showDetail(\'' + a.id + '\')">详情</button>';
+      return '';
+    }).join('') +
+      (a.builtin ? '' : '<button class="btn sm danger" onclick="event.stopPropagation();delAgent(\'' + a.id + '\')">删除</button>');
     return '<div class="seat s-' + st + '" data-id="' + escapeHtml(a.id) + '" title="' + escapeHtml(a.description) + '">' +
       '<span class="s-badge ' + st + '"></span>' +
       '<div class="avatar ' + st + '" style="background:' + hashColor(a.id) + '">' + escapeHtml(initials(a.name)) +
@@ -112,14 +137,9 @@ function renderSeats() {
       '<div class="s-info">' +
       '<div class="s-name">' + escapeHtml(a.name) + (a.builtin ? '' : ' 📌') + '</div>' +
       '<div class="s-meta">' +
-      (a.port ? '<span class="s-port">:' + a.port + (a.auth_required ? ' 🔒' : '') + '</span>' : '') +
+      (a.port ? '<span class="s-port">:' + a.port + '</span>' : '') +
       '<span class="s-status ' + st + '">' + label + '</span></div></div>' +
-      '<div class="s-tools">' +
-      (a.port && st === 'running' ? '<button class="btn sm" onclick="event.stopPropagation();window.open(\'' + seatOpenUrl(a) + '\',\'_blank\')">打开UI</button>' : '') +
-      '<button class="btn sm ghost" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\')">对话</button>' +
-      '<button class="btn sm ghost" onclick="event.stopPropagation();showDetail(\'' + a.id + '\')">详情</button>' +
-      (a.builtin ? '' : '<button class="btn sm danger" onclick="event.stopPropagation();delAgent(\'' + a.id + '\')">删除</button>') +
-      '</div></div>';
+      '<div class="s-tools">' + btns + '</div></div>';
   }).join('');
 }
 
@@ -219,18 +239,131 @@ async function mgrSend() {
   box.scrollTop = box.scrollHeight;
 }
 
-/* ── 统一对话 ─────────────────────────────────────── */
+/* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
-let chatPick = 'jcode';
+let chatPick = 'hub-self', chatMode = 'chat';
 function sessKey(id) { return 'hub.sess.' + id; }
+
+function entityById(id) { return AGENTS.find(a => a.id === id); }
+function defaultModeOf(a) {
+  const es = (a && a.entries) || [];
+  if (es.some(e => e.type === 'embed')) return 'embed';
+  if (es.some(e => e.type === 'term')) return 'term';
+  return 'chat';
+}
+function gotoChat(id, mode) {
+  chatPick = id;
+  const a = entityById(id);
+  chatMode = mode || defaultModeOf(a) || 'chat';
+  go('chat');
+  renderChatSide();
+}
 
 function renderChatSide() {
   const side = $('chatAgents');
   if (!AGENTS.length) { side.innerHTML = '<div class="hint" style="padding:10px">加载…</div>'; loadAgents().then(renderChatSide); return; }
-  side.innerHTML = AGENTS.map(a =>
-    '<div class="item' + (a.id === chatPick ? ' on' : '') + '" onclick="chatPick=\'' + a.id + '\';renderChatSide();openChatSession()">' +
-    '<span>' + escapeHtml(a.name) + '</span><span class="s-badge ' + (a.status === 'running' ? 'running' : 'stopped') + '" style="position:static"></span></div>').join('');
-  openChatSession();
+  const list = AGENTS.filter(a => a.kind === 'agent');
+  side.innerHTML = list.map(a =>
+    '<div class="item' + (a.id === chatPick ? ' on' : '') + '" onclick="pickChatEntity(\'' + a.id + '\')">' +
+    '<span>' + escapeHtml(a.name) + '</span><span class="s-badge ' + (a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : 'stopped')) + '" style="position:static"></span></div>').join('');
+  applyChatMode();
+}
+
+function pickChatEntity(id) {
+  chatPick = id;
+  chatMode = defaultModeOf(entityById(id));
+  renderChatSide();
+}
+
+function applyChatMode() {
+  const a = entityById(chatPick);
+  $('embedPane').classList.toggle('on', chatMode === 'embed');
+  $('termPane').classList.toggle('on', chatMode === 'term');
+  $('chatPane').classList.toggle('on', chatMode === 'chat');
+  if (chatMode === 'embed') {
+    const e = (a.entries || []).find(x => x.type === 'embed');
+    const url = e ? lanUrl(e.url) : '';
+    $('embedTitle').textContent = a.name + ' · 原生界面';
+    $('embedUrlHint').textContent = url;
+    const f = $('embedFrame');
+    if (f.dataset.src !== url) { f.src = url; f.dataset.src = url; }
+  } else if (chatMode === 'term') {
+    $('termTitle').textContent = (a.name || chatPick) + ' · 终端会话';
+    ensureTerm();
+    termRefreshList().then(() => { if (!termSid) termAutoAttach(); });
+  } else {
+    if (a && a.id !== chatPaneInit) { chatPaneInit = a.id; openChatSession(); }
+  }
+}
+let chatPaneInit = null;
+
+async function embedRefresh() { const f = $('embedFrame'); f.src = f.src; }
+function embedNewTab() { const a = entityById(chatPick); const e = (a.entries || []).find(x => x.type === 'embed'); if (e) window.open(lanUrl(e.url), '_blank'); }
+
+/* ── pty 终端（xterm.js + WebSocket） ── */
+
+let term = null, termFit = null, termWs = null, termSid = null;
+
+function ensureTerm() {
+  if (term) return;
+  term = new window.Terminal({ fontSize: 13, fontFamily: 'Menlo,Consolas,monospace', theme: { background: '#0b1220' }, cursorBlink: true });
+  termFit = new window.FitAddon.FitAddon();
+  term.loadAddon(termFit);
+  term.open($('termEl'));
+  term.onData(d => { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ data: d })); });
+  const fit = () => { try { termFit.fit(); if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch (e) {} };
+  window.addEventListener('resize', fit);
+  new ResizeObserver(fit).observe($('termEl'));
+  setTimeout(fit, 80);
+}
+
+function wsUrl(path) { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path; }
+
+function termConnect(sid) {
+  if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
+  termSid = sid;
+  term.clear();
+  const ws = new WebSocket(wsUrl('/ws/term/' + sid));
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = ev => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
+  ws.onopen = () => { term.focus(); if (termFit) termFit.fit(); if (termWs === ws) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
+  ws.onclose = () => { term.write('\r\n\x1b[90m[连接断开——点右上「会话」重连或新建]\x1b[0m'); };
+  termWs = ws;
+}
+
+async function termNew() {
+  try {
+    const d = await api('/api/term/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: chatPick }) });
+    toast('已拉起 ' + chatPick + ' 终端会话', 'ok');
+    termConnect(d.session.id);
+    termRefreshList();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function termRefreshList() {
+  try {
+    const d = await api('/api/term/sessions');
+    $('termSessList').innerHTML = (d.sessions || []).map(s =>
+      '<span class="sess-item' + (s.id === termSid ? '" style="border-color:var(--accent-2)' : '') + '">' +
+      '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\')" style="color:#93c5fd">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
+      (s.alive ? '' : ' ·已退出') +
+      '<button class="btn sm danger" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('');
+    return d.sessions || [];
+  } catch (e) { return []; }
+}
+
+function termAutoAttach() {
+  // 已有本 agent 的活会话则接上，否则提示新建
+  api('/api/term/sessions').then(d => {
+    const mine = (d.sessions || []).filter(s => s.agent_id === chatPick && s.alive);
+    if (mine.length) termConnect(mine[mine.length - 1].id);
+    else term.write('\x1b[90m提示：点「＋ 新会话」拉起 ' + chatPick + ' 的原生终端\x1b[0m\r\n');
+  });
+}
+
+async function termKill() { if (termSid) await termKillOne(termSid); }
+async function termKillOne(sid) {
+  try { await api('/api/term/sessions/' + sid, { method: 'DELETE' }); if (sid === termSid) { termSid = null; } termRefreshList(); } catch (e) { toast(e.message, 'err'); }
 }
 
 async function openChatSession() {
