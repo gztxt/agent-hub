@@ -88,7 +88,7 @@
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
         /* ── 聊天 ── */
-        .chat-grid { display: grid; grid-template-columns: 110px 1fr; gap: 16px; height: calc(100vh - 210px); min-height: 420px; }
+        .chat-grid { display: grid; grid-template-columns: 220px 1fr; gap: 16px; height: calc(100vh - 210px); min-height: 420px; }
         .chat-side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px; overflow-y: auto; }
         .chat-side .item { padding: 10px; border-radius: 8px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
         .chat-side .item:hover, .chat-side .item.on { background: var(--surface-2); }
@@ -308,13 +308,6 @@
                     <div class="pane on" id="chatPane">
                         <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent 或「智管对话」</div></div>
                         <div class="composer">
-                            <select id="chatModel" style="max-width:180px;font-size:12px;">
-                                <option value="">默认模型</option>
-                                <option value="tokenrouter/qwen3.8-flash">Qwen 3.8 Flash (默认)</option>
-                                <option value="open_router/nvidia/nemotron-3-ultra-550b-a55b:free">Nemotron 3 Ultra</option>
-                                <option value="open_router/minimax/minimax-m3:free">MiniMax M3</option>
-                                <option value="agnes/agnes-2.5-flash">Agnes 2.5 Flash</option>
-                            </select>
                             <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
                             <button class="btn" onclick="chatSend()">发送</button>
                         </div>

@@ -466,7 +466,6 @@ async function openChatSession() {
 
 async function chatSend() {
   const input = $('chatInput');
-  const model = $('chatModel')?.value || '';
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
@@ -481,10 +480,9 @@ async function chatSend() {
   box.appendChild(busy);
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: sid, model: model }) });
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: sid }) });
     busy.className = 'msg ' + (d.success ? 'assistant' : 'err');
-    const modelLabel = model ? ' [' + model.split('/').pop() + ']' : '';
-    busy.textContent = (d.response || d.error || JSON.stringify(d.hint || d)) + modelLabel +
+    busy.textContent = (d.response || d.error || JSON.stringify(d.hint || d)) +
       (d.usage ? ('\n· tokens: in ' + (d.usage.prompt_tokens || d.usage.input_tokens || '-') + ' / out ' + (d.usage.completion_tokens || d.usage.output_tokens || '-')) : '');
   } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
   box.scrollTop = box.scrollHeight;

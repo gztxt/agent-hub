@@ -78,13 +78,12 @@ PROFILES: List[dict] = [
     # ── Agents ────────────────────────────────────────────────
     {"id": "claude", "name": "Claude Code", "kind": "agent",
      "detect": {"proc": [r"(^|/)claude( |$)", r"claude\.js", "@anthropic-ai/claude-code"]},
-     "cli": "claude", "port": None,
-     "ui": {"url": "http://127.0.0.1:3010", "port": 3010, "unit": "cloudcli", "label": "CloudCLI"},
+     "cli": "claude", "port": None, "ui": None,
      "terminal": {"cmd": "claude", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": {"adapter": "claude"},
-     "desc": "Anthropic 编码 Agent（CLI/TUI）；Web UI 宿主=cloudcli 单元 :3010；对话经 CCR"},
+     "desc": "Anthropic 编码 Agent（CLI/TUI），经 CCR 网关对话"},
     {"id": "pi", "name": "Pi Agent", "kind": "agent",
-     "detect": {"proc": [r"next-server", r"(^|/)pi( |$)"], "systemd": ["pi-web"]},
+     "detect": {"proc": [r"next-server", r"(^|/)pi( |$)"]},
      "cli": None, "port": 30141, "ui": "http://127.0.0.1:30141",
      "terminal": None, "chat": None,
      "desc": "Pi Coding Agent，原生 Web 会话界面 :30141"},
@@ -105,6 +104,11 @@ PROFILES: List[dict] = [
      "cli": None, "port": 8088, "ui": "http://127.0.0.1:8088",
      "terminal": None, "chat": None,
      "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088"},
+    {"id": "cloudcli", "name": "CloudCLI (Claude Code UI)", "kind": "agent",
+     "detect": {"systemd": ["cloudcli"]},
+     "cli": None, "port": 3010, "ui": "http://127.0.0.1:3010",
+     "terminal": None, "chat": None,
+     "desc": "Claude Code 的 Web UI（systemd: cloudcli，当前未运行）"},
     {"id": "hub-self", "name": "智管对话", "kind": "agent",
      "detect": {"always_running": True},
      "cli": None, "port": 3102, "ui": None,
@@ -115,8 +119,8 @@ PROFILES: List[dict] = [
     {"id": "ccr", "name": "CCR Gateway", "kind": "gateway",
      "detect": {"proc": [r"claude-code-router", r"ccr( |$)", "MainThread"]},
      "proc_cwd_hint": "/home/gztxt/.ccr",
-     "cli": None, "port": 3456, "ui": None, "panel": "http://127.0.0.1:3458",
-     "desc": "Claude↔多模型路由网关 :3456/3457/3458（生命线，只观测）"},
+     "cli": None, "port": 3456, "ui": None, "panel": None,
+     "desc": "Claude↔多模型路由网关 :3456/3457（生命线，只观测）"},
     {"id": "fcc", "name": "FCC Gateway", "kind": "gateway",
      "detect": {"proc": [r"fcc-server"], "systemd": ["fcc"]},
      "cli": None, "port": 8082, "ui": None, "panel": "http://127.0.0.1:18083/admin",
@@ -127,8 +131,8 @@ PROFILES: List[dict] = [
      "desc": "OpenSquilla 消息网关 :18791"},
     {"id": "ccpocket", "name": "CCPocket Bridge", "kind": "gateway",
      "detect": {"systemd": ["ccpocket-bridge"]},
-     "cli": None, "port": 8765, "ui": None, "panel": None,
-     "desc": "手机桥接 WebSocket :8765（无独立Web面板）"},
+     "cli": None, "port": 8765, "ui": None, "panel": "http://127.0.0.1:8765",
+     "desc": "手机桥接 WebSocket :8765"},
 
     # ── Services / Memory / Tools（仅快捷方式）────────────────
     {"id": "xray", "name": "Xray Proxy", "kind": "service",
@@ -231,38 +235,21 @@ def detect_status(p: dict, procs: List[dict], units: set, dockers: Dict[str, str
     return "stopped"
 
 
-def panel_port(p: dict) -> Optional[int]:
-    """面板 URL 里的端口（discovery 活性验证用）"""
-    src = p.get("panel")
-    if isinstance(src, str):
-        m = re.search(r":(\d{2,5})", src)
-        if m:
-            return int(m.group(1))
-    return None
-
-
 def entries_for(p: dict, status: str) -> List[dict]:
-    """卡片按钮 = 画像驱动（②服务/工具仅快捷方式；Agent 才有 term/chat）
-    dict 形态的 ui（独立宿主如 cloudcli）由 discovery 探测端口活性后注入 embed。
-    面板类入口带 probe_port，由 discovery 按端口活性过滤（死面板不出按钮）。"""
+    """卡片按钮 = 画像驱动（②服务/工具仅快捷方式；Agent 才有 embed/term/chat）"""
     es = []
     kind = p["kind"]
     if kind == "agent":
-        ui = p.get("ui")
-        if isinstance(ui, str):
-            es.append({"type": "embed", "label": "嵌入会话", "url": ui})
-            es.append({"type": "open", "label": "新窗口", "url": ui})
+        if p.get("ui"):
+            es.append({"type": "embed", "label": "嵌入会话", "url": p["ui"]})
+            es.append({"type": "open", "label": "新窗口", "url": p["ui"]})
         if p.get("terminal") and status in ("running", "installed", "stopped"):
             es.append({"type": "term", "label": "终端", "agent": p["id"]})
         if p.get("chat"):
             es.append({"type": "chat", "label": "对话", "agent": p["id"]})
     else:
         if p.get("panel"):
-            es.append({"type": "open", "label": "打开面板", "url": p["panel"],
-                       "probe_port": panel_port(p)})
-            # 有面板的服务也生成 embed entry，允许嵌入对话界面（外部改动合并保留）
-            es.append({"type": "embed", "label": "嵌入会话", "url": p["panel"],
-                       "probe_port": panel_port(p)})
+            es.append({"type": "open", "label": "打开面板", "url": p["panel"]})
         if p.get("terminal"):
             es.append({"type": "term", "label": "终端", "agent": p["id"]})
     es.append({"type": "detail", "label": "详情"})

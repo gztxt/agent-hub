@@ -53,12 +53,24 @@ class AgentDiscovery:
         agents: List[AgentInfo] = []
         for p in prof_list:
             status = status_map[p["id"]]
-            endpoint = p.get("ui") or p.get("panel") or (f"http://127.0.0.1:{p['port']}" if p.get("port") else "")
+            ui = p.get("ui")
             entries = profiles.entries_for(p, status)
-            # claude 的 Web 界面 = 社区方案 Claude Code UI（本机 cloudcli 服务承载）
-            if p["id"] == "claude" and status_map.get("cloudcli") == "running":
-                entries = [{"type": "embed", "label": "原生会话",
-                            "url": "http://127.0.0.1:3010"}] + entries
+            # 通用宿主探测：dict ui = 独立 Web 界面宿主（如 claude←cloudcli :3010），
+            # 端口活才出「原生会话」入口，且计入实体 running 证据
+            if isinstance(ui, dict):
+                ui_alive = self._sync_check_port(ui.get("port"))
+                if ui_alive:
+                    entries = ([{"type": "embed", "label": "原生会话", "url": ui["url"]},
+                                {"type": "open", "label": "↗UI", "url": ui["url"]}]
+                               + entries)
+                    if status in ("installed", "stopped"):
+                        status = "running"
+                endpoint = ui["url"] if ui_alive else (p.get("panel") or "")
+            else:
+                endpoint = ui or p.get("panel") or (f"http://127.0.0.1:{p['port']}" if p.get("port") else "")
+            # 死面板不出按钮（probe_port 过滤）
+            entries = [e for e in entries
+                       if not (e.get("probe_port") and not self._sync_check_port(e["probe_port"]))]
             agents.append(AgentInfo(
                 id=p["id"], name=p["name"], kind=p["kind"], status=status,
                 endpoint=endpoint, port=p.get("port"),

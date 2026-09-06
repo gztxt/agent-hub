@@ -15,8 +15,26 @@ import shutil
 import subprocess
 from typing import Dict, List
 
-# 内置 Agent 占用的端口（discovery._default_agents 同步维护）
-BUILTIN_PORTS = {3456, 3457, 8082, 8088, 30141, 8420, 3102, 18083}
+# 画像已覆盖的端口/单元由 profiles 动态派生（不再手工维护常量）
+def _known_ports_units():
+    import profiles
+    ports, units = {3102}, set()
+    for p in profiles.all_profiles():
+        if p.get("port"):
+            ports.add(p["port"])
+        ui = p.get("ui")
+        if isinstance(ui, dict) and ui.get("port"):
+            ports.add(ui["port"])
+        for src in (ui if isinstance(ui, str) else None, p.get("panel")):
+            if src:
+                m = re.search(r":(\d{2,5})", src)
+                if m:
+                    ports.add(int(m.group(1)))
+        units.update(p.get("detect", {}).get("systemd") or [])
+    return ports, units
+
+
+BUILTIN_PORTS, KNOWN_UNITS = _known_ports_units()
 # 网关/基础设施家族：由内置项或外部守护管理，不重复登记
 EXCLUDE_PATTERNS = re.compile(
     r"^(ccr|fcc|opensquilla|agent-hub|xray|tailscale|unattended|user@)", re.I)
@@ -78,7 +96,8 @@ def scan_systemd() -> List[Dict]:
     units_dir = __import__("pathlib").Path.home() / ".config" / "systemd" / "user"
     for unit in sorted(units_dir.glob("*.service")):
         uname = unit.name.removesuffix(".service")
-        if uname not in running or EXCLUDE_PATTERNS.match(uname):
+        # 画像已收录的单元（cloudcli/fcc/ccr 家族等）不再重复登记
+        if uname not in running or EXCLUDE_PATTERNS.match(uname) or uname in KNOWN_UNITS:
             continue
         try:
             text = unit.read_text(errors="ignore")

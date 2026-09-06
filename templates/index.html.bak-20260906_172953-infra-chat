@@ -308,13 +308,6 @@
                     <div class="pane on" id="chatPane">
                         <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent 或「智管对话」</div></div>
                         <div class="composer">
-                            <select id="chatModel" style="max-width:180px;font-size:12px;">
-                                <option value="">默认模型</option>
-                                <option value="tokenrouter/qwen3.8-flash">Qwen 3.8 Flash (默认)</option>
-                                <option value="open_router/nvidia/nemotron-3-ultra-550b-a55b:free">Nemotron 3 Ultra</option>
-                                <option value="open_router/minimax/minimax-m3:free">MiniMax M3</option>
-                                <option value="agnes/agnes-2.5-flash">Agnes 2.5 Flash</option>
-                            </select>
                             <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
                             <button class="btn" onclick="chatSend()">发送</button>
                         </div>

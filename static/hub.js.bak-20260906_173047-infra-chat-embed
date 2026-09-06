@@ -97,7 +97,6 @@ function renderSeats() {
   $('infraCount').textContent = '（' + infra.length + ' 项）';
   $('infraGrid').innerHTML = infra.map(a => {
     const btns = (a.entries || []).map(e => {
-      if (e.type === 'embed') return '<button class="btn sm" title="嵌入对话界面" onclick="gotoChat(\'' + a.id + '\',\'embed\')">◉嵌入</button>';
       if (e.type === 'open') return '<button class="btn sm ghost" title="快捷方式：' + escapeHtml(e.url) + '" onclick="window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗</button>';
       if (e.type === 'term') return '<button class="btn sm ghost" title="终端" onclick="gotoChat(\'' + a.id + '\',\'term\')">⌨</button>';
       return '<button class="btn sm ghost" title="详情" onclick="showDetail(\'' + a.id + '\')">i</button>';
@@ -263,15 +262,10 @@ function gotoChat(id, mode) {
 function renderChatSide() {
   const side = $('chatAgents');
   if (!AGENTS.length) { side.innerHTML = '<div class="hint" style="padding:10px">加载…</div>'; loadAgents().then(renderChatSide); return; }
-  // 显示有Web UI可嵌入的实体（agent + 有embed entry的实体）
-  const list = AGENTS.filter(a => a.kind === 'agent' || (a.entries || []).some(e => e.type === 'embed'));
-  side.innerHTML = list.map(a => {
-    const hasEmbed = (a.entries || []).some(e => e.type === 'embed');
-    const badge = a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : 'stopped');
-    const icon = hasEmbed ? '◉' : '';
-    return '<div class="item' + (a.id === chatPick ? ' on' : '') + '" onclick="pickChatEntity(\'' + a.id + '\')">' +
-      '<span>' + escapeHtml(a.name) + '</span>' + (icon ? '<span class="kindtag" style="font-size:10px">' + icon + '</span>' : '') + '<span class="s-badge ' + badge + '" style="position:static"></span></div>';
-  }).join('');
+  const list = AGENTS.filter(a => a.kind === 'agent');
+  side.innerHTML = list.map(a =>
+    '<div class="item' + (a.id === chatPick ? ' on' : '') + '" onclick="pickChatEntity(\'' + a.id + '\')">' +
+    '<span>' + escapeHtml(a.name) + '</span><span class="s-badge ' + (a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : 'stopped')) + '" style="position:static"></span></div>').join('');
   applyChatMode();
 }
 
@@ -378,14 +372,9 @@ function termConnect(sid, agent) {
   term.clear();
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
   ws.binaryType = 'arraybuffer';
-  ws.onmessage = ev => { if (termWs === ws) term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data)); };
+  ws.onmessage = ev => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
   ws.onopen = () => { term.focus(); if (termFit) termFit.fit(); if (termWs === ws) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
-  ws.onclose = ev => {
-    if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
-    const gone = ev.code === 4404 || ev.code === 4410;  // 已退出/不存在 → 明确提示并刷新列表
-    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在，列表已刷新——可点「＋ 新会话」]' : '[连接断开——点「会话」重连或新建]') + '\x1b[0m');
-    if (gone) { termDetach(); termRefreshList(); }
-  };
+  ws.onclose = () => { term.write('\r\n\x1b[90m[连接断开——点「会话」重连或新建]\x1b[0m'); };
   termWs = ws;
 }
 
@@ -401,21 +390,12 @@ async function termNew() {
 async function termRefreshList() {
   try {
     const d = await api('/api/term/sessions');
-    const live = (d.sessions || []).filter(s => s.alive);  // 只展示活会话，死记录不再滞留
-    const el = $('termSessList');
-    if (!el) return live;
-    el.innerHTML = live.length
-      ? live.map(s =>
-          '<span class="sess-item" data-sid="' + s.id + '"' + (s.id === termSid ? ' style="border-color:var(--accent-2)"' : '') + '>' +
-          '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:#93c5fd">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
-          '<button class="btn sm danger" title="销毁此会话" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('')
-      : '<span class="hint" style="font-size:12px;line-height:26px">暂无活会话</span>';
-    // 当前正看的会话已被服务端回收（进程退出/超时）→ 清绑并提示，避免对着幽灵 sid 重连
-    if (termSid && !live.some(s => s.id === termSid)) {
-      termDetach();
-      if (term) term.write('\r\n\x1b[90m[当前会话已结束——点「＋ 新会话」重新开始]\x1b[0m');
-    }
-    return live;
+    $('termSessList').innerHTML = (d.sessions || []).map(s =>
+      '<span class="sess-item' + (s.id === termSid ? '" style="border-color:var(--accent-2)' : '') + '">' +
+      '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:#93c5fd">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
+      (s.alive ? '' : ' ·已退出') +
+      '<button class="btn sm danger" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('');
+    return d.sessions || [];
   } catch (e) { return []; }
 }
 
@@ -432,20 +412,12 @@ function termAutoAttach() {
 
 async function termKill() { if (termSid) await termKillOne(termSid); }
 async function termKillOne(sid) {
-  // 乐观移除：先摘 DOM 芯片，用户即时看到"删掉了"，再与后端对账
-  const el = $('termSessList');
-  const chip = el && el.querySelector('.sess-item[data-sid="' + sid + '"]');
-  if (chip) chip.remove();
   try {
     await api('/api/term/sessions/' + sid, { method: 'DELETE' });
-    toast('会话已销毁', 'ok');
     if (sid === termSid) termDetach();
     termRefreshList();
     termAutoAttach();
-  } catch (e) {
-    toast(e.message, 'err');
-    termRefreshList();  // 404 等异常：以服务端真实状态重绘，DOM 不骗人
-  }
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function openChatSession() {
@@ -466,7 +438,6 @@ async function openChatSession() {
 
 async function chatSend() {
   const input = $('chatInput');
-  const model = $('chatModel')?.value || '';
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
@@ -481,10 +452,9 @@ async function chatSend() {
   box.appendChild(busy);
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: sid, model: model }) });
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: sid }) });
     busy.className = 'msg ' + (d.success ? 'assistant' : 'err');
-    const modelLabel = model ? ' [' + model.split('/').pop() + ']' : '';
-    busy.textContent = (d.response || d.error || JSON.stringify(d.hint || d)) + modelLabel +
+    busy.textContent = (d.response || d.error || JSON.stringify(d.hint || d)) +
       (d.usage ? ('\n· tokens: in ' + (d.usage.prompt_tokens || d.usage.input_tokens || '-') + ' / out ' + (d.usage.completion_tokens || d.usage.output_tokens || '-')) : '');
   } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
   box.scrollTop = box.scrollHeight;
@@ -812,7 +782,5 @@ setInterval(loadAgents, 8000);
 setInterval(() => {
   if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
   if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();
-  // 终端面板可见时轮询会话记录：进程退出/超时/TTL 回收都会让死条目自动消失，无需手动点「会话」
-  if (document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
