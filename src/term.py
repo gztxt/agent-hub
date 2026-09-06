@@ -61,10 +61,31 @@ class Session:
                 "cwd": self.cwd, "alive": self.alive,
                 "created": self.created, "idle_s": round(time.time() - self.last_io)}
 
-    def kill(self):
+    def _signal_group(self, sig):
+        """pty.fork 子进程是会话首进程（pgid=pid）→ 组灭可带走它派生的子进程"""
         try:
-            os.kill(self.pid, signal.SIGHUP)
-        except (ProcessLookupError, PermissionError):
+            os.killpg(self.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(self.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def kill(self):
+        """TUI 常忽略 SIGHUP：SIGTERM → 2s 后仍活则 SIGKILL 升级（组级）"""
+        self._signal_group(signal.SIGTERM)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_later(2.0, self._force_kill)
+        except RuntimeError:
+            pass
+
+    def _force_kill(self):
+        try:
+            pid, status = os.waitpid(self.pid, os.WNOHANG)
+            if pid == 0:  # 还活着 → 强杀整组
+                self._signal_group(signal.SIGKILL)
+        except (ChildProcessError, ProcessLookupError, PermissionError):
             pass
 
 
@@ -210,5 +231,7 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
 
 
 def kill_all():
+    """服务退出：立即 TERM+KILL 双发（组级），不等 call_later（loop 即将关闭）"""
     for s in _sessions.values():
-        s.kill()
+        s._signal_group(signal.SIGTERM)
+        s._signal_group(signal.SIGKILL)
