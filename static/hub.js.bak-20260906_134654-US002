@@ -91,29 +91,18 @@ async function loadAgents() {
 function renderSeats() {
   const grid = $('seats');
   if (!AGENTS.length) { grid.innerHTML = '<div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
-  if (!grid.dataset.tapBound) {  // US-002：触屏无 hover，点击卡片展开/收起操作行（容器常驻，绑一次即可）
-    grid.dataset.tapBound = '1';
-    grid.addEventListener('click', e => {
-      if (e.target.closest('.s-tools')) return;
-      const card = e.target.closest('.seat');
-      if (!card) return;
-      const wasOpen = card.classList.contains('open');
-      grid.querySelectorAll('.seat.open').forEach(s => s.classList.remove('open'));
-      if (!wasOpen) card.classList.add('open');
-    });
-  }
   grid.innerHTML = AGENTS.map(a => {
     const st = a.status === 'running' ? 'running' : (a.status === 'error' ? 'error' : 'stopped');
-    const label = { running: '⚡授课中', stopped: '💤休息中', error: '⚠️异常' }[st];
-    return '<div class="seat s-' + st + '" data-id="' + escapeHtml(a.id) + '" title="' + escapeHtml(a.description) + '">' +
-      '<span class="s-badge ' + st + '"></span>' +
+    const label = { running: '⚡ 授课中', stopped: '💤 休息中', error: '⚠️ 异常' }[st];
+    return '<div class="seat s-' + st + '" title="' + escapeHtml(a.description) + '">' +
+      '<div class="s-badge ' + st + '"></div>' +
+      '<div style="display:flex;flex-direction:column;align-items:center">' +
       '<div class="avatar ' + st + '" style="background:' + hashColor(a.id) + '">' + escapeHtml(initials(a.name)) +
       (st === 'stopped' ? '<span class="zsleep">💤</span>' : '') + '</div>' +
-      '<div class="s-info">' +
-      '<div class="s-name">' + escapeHtml(a.name) + (a.builtin ? '' : ' 📌') + '</div>' +
-      '<div class="s-meta">' +
-      (a.port ? '<span class="s-port">:' + a.port + (a.auth_required ? ' 🔒' : '') + '</span>' : '') +
-      '<span class="s-status ' + st + '">' + label + '</span></div></div>' +
+      '<div class="s-status ' + st + '">' + label + '</div></div>' +
+      '<div><div class="s-name">' + escapeHtml(a.name) + (a.builtin ? '' : ' 📌') + '</div>' +
+      '<div class="s-desc">' + escapeHtml(a.description || '') + '</div>' +
+      (a.port ? '<div class="s-port">:' + a.port + (a.auth_required ? ' 🔒' : '') + '</div>' : '') + '</div>' +
       '<div class="s-tools">' +
       (a.port && st === 'running' ? '<button class="btn sm" onclick="event.stopPropagation();window.open(\'' + seatOpenUrl(a) + '\',\'_blank\')">打开UI</button>' : '') +
       '<button class="btn sm ghost" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\')">对话</button>' +
