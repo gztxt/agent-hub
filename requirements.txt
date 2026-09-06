@@ -1,0 +1,10 @@
+﻿# Agent Hub 直接依赖（venv 不入 git，此文件为重建依据：pip install -r requirements.txt）
+fastapi
+uvicorn
+aiohttp
+python-dotenv
+jinja2
+pydantic
+croniter
+mcp
+websockets
