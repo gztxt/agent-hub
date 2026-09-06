@@ -37,6 +37,17 @@ function go(page) {
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'chat') renderChatSide();
+  if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
+  if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
+  if (page === 'mcp') loadMcp();
+}
+
+function fillAgentSelect(sel, withAuto) {
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = (withAuto ? '<option value="">自动选择执行 Agent</option>' : '<option value="">默认 jcode</option>') +
+    AGENTS.map(a => '<option value="' + a.id + '">' + escapeHtml(a.name) + '</option>').join('');
+  if (cur) sel.value = cur;
 }
 
 /* 上游 loopback→LAN 语义：把 127.0.0.1 换成当前访问主机名 */
@@ -337,11 +348,225 @@ async function loadTelemetry() {
       '<table><thead><tr><th>来源</th><th>会话</th><th>输入</th><th>输出</th><th>缓存命中</th></tr></thead><tbody>' +
       rows.map(([k, v]) => '<tr><td><b>' + k + '</b></td><td>' + v.sessions + '</td><td>' + v.input_tokens + '</td><td>' + v.output_tokens + '</td><td>' + v.cached_tokens + '</td></tr>').join('') +
       '</tbody></table>' : '<div class="hint">暂无 session_usage 数据</div>';
+    const prof = u.profile || [];
+    $('profTable').innerHTML = prof.length ?
+      '<table><thead><tr><th>来源</th><th>对象</th><th>次数</th><th>成功率</th><th>均耗时</th><th>峰值</th></tr></thead><tbody>' +
+      prof.map(p => '<tr><td>' + p.source + '</td><td><b>' + escapeHtml(p.subject) + '</b></td><td>' + p.calls +
+        '</td><td>' + (p.success_rate >= 99 ? '🟢' : p.success_rate >= 80 ? '🟡' : '🔴') + ' ' + p.success_rate + '%</td>' +
+        '<td>' + p.avg_ms + 'ms</td><td>' + (p.max_ms || '-') + 'ms</td></tr>').join('') + '</tbody></table>'
+      : '<div class="hint">暂无画像数据（对话/指挥官/DAG/定时执行后自动生成）</div>';
     const e = await api('/telemetry/events?limit=20');
     $('eventTable').innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>会话</th><th>事件</th></tr></thead><tbody>' +
       (e.events || []).map(x => '<tr><td>' + (x.created_at || '').slice(5, 16).replace('T', ' ') + '</td><td>' + x.source + '</td><td style="font-family:monospace;font-size:11px">' + escapeHtml((x.session_id || '').slice(0, 14)) + '</td><td>' + x.event + '</td></tr>').join('') +
       '</tbody></table>';
   } catch (err) { toast(err.message, 'err'); }
+}
+
+/* ── S2 自动扫描 ──────────────────────────────────── */
+
+async function runScan() {
+  toast('扫描发现源（docker / systemd / CLI 名单）…');
+  try {
+    const d = await api('/api/scan/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"auto_register":true}' });
+    toast('发现 ' + d.found.length + '，新增 ' + d.added.length + '，已存在 ' + d.skipped_existing.length, 'ok');
+    loadAgents();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ── S3 协同 DAG ──────────────────────────────────── */
+
+let currentRun = null;
+
+async function decomposeRun() {
+  const goal = $('taskGoal').value.trim();
+  if (!goal) return toast('请输入目标', 'err');
+  const btn = $('btnDecompose'); btn.disabled = true; btn.textContent = '⏳ 拆解中…';
+  try {
+    const body = { goal: goal, auto_run: true };
+    if ($('taskAgent').value) body.default_agent = $('taskAgent').value;
+    const d = await api('/api/tasks/decompose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    currentRun = d.run_id;
+    toast('已拆解 ' + d.tasks.length + ' 个子任务并启动', 'ok');
+    loadRuns(); openRun(d.run_id);
+  } catch (e) { toast(e.message, 'err'); }
+  btn.disabled = false; btn.textContent = '🧩 拆解并启动';
+}
+
+async function loadRuns() {
+  try {
+    const d = await api('/api/tasks/runs');
+    $('runsBody').innerHTML = (d.runs || []).map(r =>
+      '<tr><td style="font-family:monospace">' + r.run_id + '</td>' +
+      '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.goal || '') + '">' + escapeHtml((r.goal || '').slice(0, 40)) + '</td>' +
+      '<td>' + ({ running: '🔵执行中', success: '🟢成功', failed: '🔴失败', partial: '🟡部分', pending: '⚪待跑' }[r.state] || r.state) + '</td>' +
+      '<td>' + r.success + '/' + r.total + '</td><td class="hint">' + (r.created_at || '').slice(5, 16).replace('T', ' ') + '</td>' +
+      '<td><button class="btn sm ghost" onclick="openRun(\'' + r.run_id + '\')">查看</button></td></tr>').join('') ||
+      '<tr><td colspan="6" class="hint">尚无协同任务</td></tr>';
+  } catch (e) { /* ignore */ }
+}
+
+async function openRun(runId) {
+  currentRun = runId;
+  try {
+    const d = await api('/api/tasks/' + runId);
+    $('runPanel').style.display = 'block';
+    $('runTitle').textContent = 'Run ' + runId + ' · ' + (d.goal || '').slice(0, 60);
+    renderTaskTable(d.tasks);
+    renderDag(d.tasks);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+const TASK_COLORS = { pending: '#475569', running: '#1d4ed8', success: '#15803d', failed: '#b91c1c', blocked: '#7c2d12' };
+
+function renderTaskTable(tasks) {
+  $('taskBody').innerHTML = tasks.map(t =>
+    '<tr><td><b>' + t.task_id + '</b></td><td>' + (t.agent_id || '-') + '</td>' +
+    '<td>' + (t.deps || []).join(',') + '</td><td>' + t.status + '</td>' +
+    '<td>' + (t.duration_ms != null ? t.duration_ms + 'ms' : '-') + '</td>' +
+    '<td><details><summary class="hint">' + escapeHtml((t.output || t.error || '').slice(0, 50)) + '</summary><pre style="white-space:pre-wrap;font-size:11.5px;max-height:220px;overflow:auto">' + escapeHtml(t.output || t.error || '') + '</pre></details></td></tr>').join('');
+}
+
+function renderDag(tasks) {
+  const byId = {};
+  tasks.forEach(t => byId[t.task_id] = t);
+  const depthMemo = {};
+  function depth(id, guard) {
+    guard = guard || new Set();
+    if (depthMemo[id] != null) return depthMemo[id];
+    if (guard.has(id)) return 0;
+    guard.add(id);
+    const t = byId[id];
+    const dv = (t && t.deps && t.deps.length) ? 1 + Math.max(...t.deps.map(d => depth(d, guard))) : 0;
+    depthMemo[id] = dv;
+    return dv;
+  }
+  const layers = {};
+  tasks.forEach(t => { const L = depth(t.task_id); (layers[L] = layers[L] || []).push(t); });
+  const NW = 170, NH = 56, GX = 220, GY = 86;
+  const maxRows = Math.max(1, ...Object.values(layers).map(l => l.length));
+  const W = (Math.max(...Object.keys(layers).map(Number), 0) + 1) * GX + 40;
+  const H = maxRows * GY + 20;
+  const pos = {};
+  Object.entries(layers).forEach(([L, list]) => list.forEach((t, i) => { pos[t.task_id] = { x: 30 + L * GX, y: 20 + i * GY }; }));
+  let svg = '<svg width="' + W + '" height="' + H + '" style="min-width:' + W + 'px">';
+  svg += '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" fill="#64748b"/></marker></defs>';
+  tasks.forEach(t => (t.deps || []).forEach(dp => {
+    const a = pos[dp], b = pos[t.task_id];
+    if (a && b) svg += '<line x1="' + (a.x + NW) + '" y1="' + (a.y + NH / 2) + '" x2="' + b.x + '" y2="' + (b.y + NH / 2) + '" stroke="#64748b" stroke-width="1.5" marker-end="url(#arw)"/>';
+  }));
+  tasks.forEach(t => {
+    const p = pos[t.task_id];
+    svg += '<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + (TASK_COLORS[t.status] || '#334155') + '22" stroke="' + (TASK_COLORS[t.status] || '#334155') + '" stroke-width="1.5"/>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" fill="#e2e8f0" font-size="11" font-weight="bold">' + t.task_id + ' · ' + (t.agent_id || '') + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 34) + '" fill="#94a3b8" font-size="10">' + escapeHtml((t.prompt || '').slice(0, 18)) + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 48) + '" fill="#cbd5e1" font-size="10">' + t.status + (t.duration_ms != null ? ' · ' + Math.round(t.duration_ms / 100) / 10 + 's' : '') + '</text></g>';
+  });
+  svg += '</svg>';
+  $('dagSvg').innerHTML = svg;
+}
+
+async function startRun(id) { if (!id) return; try { await api('/api/tasks/' + id + '/start', { method: 'POST' }); toast('已调度', 'ok'); setTimeout(() => openRun(id), 1200); } catch (e) { toast(e.message, 'err'); } }
+async function retryRun(id) { if (!id) return; try { await api('/api/tasks/' + id + '/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); toast('失败项已重置', 'ok'); setTimeout(() => openRun(id), 1200); } catch (e) { toast(e.message, 'err'); } }
+async function delRun(id) { if (!id || !confirm('删除 run ' + id + '？')) return; try { await api('/api/tasks/' + id, { method: 'DELETE' }); currentRun = null; $('runPanel').style.display = 'none'; loadRuns(); } catch (e) { toast(e.message, 'err'); } }
+
+/* ── S4 定时任务 ──────────────────────────────────── */
+
+async function createJob() {
+  const body = { name: $('jobName').value.trim(), cron: $('jobCron').value.trim(), kind: $('jobKind').value, payload: $('jobPayload').value.trim() };
+  if (!$('jobName').value.trim() || !body.cron || !body.payload) return toast('名称/cron/载荷必填', 'err');
+  if ($('jobAgent').value) body.agent_id = $('jobAgent').value;
+  try {
+    await api('/api/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    toast('已创建', 'ok'); $('jobName').value = $('jobCron').value = $('jobPayload').value = '';
+    loadJobs();
+  } catch (e) { toast(e.message, 'err'); }
+}
+function jobKindChange() {
+  const k = $('jobKind').value;
+  $('jobAgent').style.display = k === 'agent_prompt' ? '' : 'none';
+  $('jobPayload').placeholder = k === 'shell' ? '白名单命令，如 echo hello' : k === 'agent_prompt' ? '发给 Agent 的 Prompt' : 'http://127.0.0.1:3102/health';
+}
+async function loadJobs() {
+  try {
+    const d = await api('/api/jobs');
+    $('jobAllow').textContent = 'shell 白名单: ' + (d.shell_allow || []).join(', ');
+    $('jobsBody').innerHTML = (d.jobs || []).map(j =>
+      '<tr><td><b>' + escapeHtml(j.name) + '</b><br><span class="hint">' + j.id + '</span></td>' +
+      '<td style="font-family:monospace">' + j.cron + '</td><td>' + j.kind + '</td>' +
+      '<td><button class="btn sm ' + (j.enabled ? '' : 'ghost') + '" onclick="toggleJob(\'' + j.id + '\',' + (j.enabled ? 0 : 1) + ')">' + (j.enabled ? '✔ 启用' : '⏸ 停用') + '</button></td>' +
+      '<td class="hint">' + (j.last_run || '').slice(5, 16).replace('T', ' ') + '</td>' +
+      '<td>' + (j.last_status === 'success' ? '🟢' : j.last_status === 'fail' ? '🔴' : '-') + '</td>' +
+      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:11px;white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
+      '<td style="white-space:nowrap"><button class="btn sm ghost" onclick="runJobNow(\'' + j.id + '\')">▶ 立即</button> ' +
+      '<button class="btn sm danger" onclick="delJob(\'' + j.id + '\')">×</button></td></tr>').join('') ||
+      '<tr><td colspan="8" class="hint">暂无任务</td></tr>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function toggleJob(id, en) { try { await api('/api/jobs/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !!en }) }); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+async function runJobNow(id) { toast('执行中…'); try { const d = await api('/api/jobs/' + id + '/run', { method: 'POST' }); toast(d.status === 'success' ? '执行成功: ' + (d.result || '').slice(0, 60) : '执行失败: ' + (d.result || ''), d.status === 'success' ? 'ok' : 'err'); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+async function delJob(id) { if (!confirm('删除任务 ' + id + '？')) return; try { await api('/api/jobs/' + id, { method: 'DELETE' }); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+
+/* ── S4 MCP 网关 ──────────────────────────────────── */
+
+let mcpToolSel = null;
+
+async function addServer() {
+  const body = { name: $('mcName').value.trim(), transport: $('mcTransport').value };
+  const argsRaw = $('mcArgs').value.trim();
+  if (!body.name) return toast('名称必填', 'err');
+  if (body.transport === 'stdio') {
+    if (!$('mcCmd').value.trim()) return toast('stdio 需 command', 'err');
+    body.command = $('mcCmd').value.trim();
+    body.args = argsRaw ? argsRaw.split(/\s+/) : [];
+  } else {
+    if (!argsRaw) return toast('http 需 URL', 'err');
+    body.url = argsRaw;
+  }
+  try { await api('/mcp/servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast('已注册，聚合刷新中…', 'ok'); $('mcName').value = $('mcCmd').value = $('mcArgs').value = ''; loadMcp(); } catch (e) { toast(e.message, 'err'); }
+}
+async function probeServer() {
+  const cmd = $('mcCmd').value.trim();
+  if (!cmd) return toast('先填 command', 'err');
+  $('mcProbe').style.display = 'block'; $('mcProbe').textContent = '⏳ 连接探测…';
+  try {
+    const d = await api('/mcp/servers/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: cmd, args: $('mcArgs').value.trim() ? $('mcArgs').value.trim().split(/\s+/) : [] }) });
+    $('mcProbe').textContent = JSON.stringify(d.tools, null, 1);
+  } catch (e) { $('mcProbe').textContent = '探测失败: ' + e.message; }
+}
+async function delServer(id) { try { await api('/mcp/servers/' + id, { method: 'DELETE' }); loadMcp(); } catch (e) { toast(e.message, 'err'); } }
+async function loadMcp() {
+  try {
+    const s = await api('/mcp/servers');
+    $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
+      (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
+        '<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">×</button></td></tr>').join('') +
+      '</tbody></table>';
+    $('mcTools').innerHTML = '⏳ 聚合工具中（stdio 会临时拉起进程）…';
+    const t = await api('/mcp/tools');
+    const errs = Object.entries(t.errors || {});
+    $('mcTools').innerHTML = (t.tools || []).map(x =>
+      '<div class="mem-item" style="cursor:pointer" onclick="pickTool(\'' + x.server + '\',\'' + x.name + '\')" id="mt_' + x.server + '_' + x.name + '"><span class="tag agent">' + escapeHtml(x.server_name) + '</span><p><b>' + x.name + '</b> <span class="hint">' + escapeHtml(x.description) + '</span></p></div>').join('') ||
+      '<div class="hint">无工具——注册 server 后此处聚合</div>' +
+      (errs.length ? '<div class="hint" style="color:#fca5a5">异常 server: ' + errs.map(x => x[0] + '(' + x[1].slice(0, 40) + ')').join('; ') + '</div>' : '');
+  } catch (e) { $('mcTools').innerHTML = '<span style="color:#fca5a5">' + e.message + '</span>'; }
+}
+function pickTool(server, tool) {
+  mcpToolSel = { server: server, tool: tool };
+  document.querySelectorAll('[id^=mt_]').forEach(el => el.style.background = '');
+  const el = document.getElementById('mt_' + server + '_' + tool);
+  if (el) el.style.background = '#1d4ed844';
+}
+async function callToolSel() {
+  if (!mcpToolSel) return toast('先点击选择一个工具', 'err');
+  let args = {};
+  const raw = $('mcCallArgs').value.trim();
+  if (raw) { try { args = JSON.parse(raw); } catch (e) { return toast('args 需为 JSON', 'err'); } }
+  $('mcCallOut').style.display = 'block'; $('mcCallOut').textContent = '⏳ 调用中…';
+  try {
+    const d = await api('/mcp/call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server: mcpToolSel.server, tool: mcpToolSel.tool, args: args, agent_id: 'manager' }) });
+    $('mcCallOut').textContent = JSON.stringify(d, null, 1);
+  } catch (e) { $('mcCallOut').textContent = '失败: ' + e.message; }
 }
 
 /* ── 启动 ─────────────────────────────────────────── */
@@ -356,4 +581,8 @@ function tick() {
 }
 setInterval(tick, 1000); tick();
 setInterval(loadAgents, 8000);
+setInterval(() => {
+  if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
+  if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();
+}, 6000);
 loadAgents();

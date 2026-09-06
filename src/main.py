@@ -43,6 +43,8 @@ import hook as hook_mod
 import memory as memory_mod
 import manager as manager_mod
 import tasks as tasks_mod
+import mcpgw as mcpgw_mod
+import cronjobs as cronjobs_mod
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
@@ -61,6 +63,8 @@ app.include_router(hook_mod.router)
 app.include_router(memory_mod.router)
 app.include_router(manager_mod.router)
 app.include_router(tasks_mod.router)
+app.include_router(mcpgw_mod.router)
+app.include_router(cronjobs_mod.router)
 
 discovery: Optional[AgentDiscovery] = None
 
@@ -336,6 +340,11 @@ async def startup():
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr),
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
     asyncio.create_task(tasks_mod.sweep_stale_tasks())
+    mcpgw_mod.ensure_schema()
+    cronjobs_mod.ensure_schema()
+    cronjobs_mod.set_context(
+        chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr))
+    cronjobs_mod.start_engine()
     print(f"[Agent Hub] 启动完成 v0.2.0，监听 {config.host}:{config.port}")
     print(f"[Agent Hub] CCR: {config.ccr_url} | pi: {config.pi_url} | "
           f"jcode: {config.jcode_url} | TDAI: {config.tdaI_url}")

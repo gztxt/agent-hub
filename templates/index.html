@@ -151,6 +151,9 @@
         <button data-page="manager">👑 指挥官</button>
         <button data-page="chat">💬 统一对话</button>
         <button data-page="memory">🧠 记忆中心</button>
+        <button data-page="tasks">⚡ 协同</button>
+        <button data-page="jobs">⏰ 定时</button>
+        <button data-page="mcp">🧰 工具</button>
         <button data-page="ports">🔌 端口</button>
         <button data-page="telemetry">📡 遥测</button>
     </nav>
@@ -169,6 +172,7 @@
             <div class="seats" id="seats"><div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">加载中…</div></div>
             <div style="text-align:center;margin-top:22px">
                 <button class="btn ghost" onclick="openRegister()">＋ 注册自定义 Agent</button>
+                <button class="btn ghost" onclick="runScan()">🔍 自动扫描（docker/systemd 只读发现）</button>
             </div>
         </section>
 
@@ -248,6 +252,79 @@
             <div class="panel" id="ctxPanel" style="display:none"><h3>注入上下文包（/api/memory/context）</h3><pre class="code" id="ctxBody"></pre></div>
         </section>
 
+        <!-- 协同 DAG -->
+        <section class="page" id="page-tasks">
+            <div class="panel">
+                <h3>Leader 拆解 · DAG 协同执行（SQLite 状态机，重启可恢复）</h3>
+                <div class="row toolbar"><textarea id="taskGoal" class="doc" style="min-height:60px" placeholder="复杂任务目标，例如：分别介绍 A 与 B（并行），再汇总对比"></textarea></div>
+                <div class="toolbar">
+                    <select id="taskAgent"><option value="">自动选择执行 Agent</option></select>
+                    <button class="btn" id="btnDecompose" onclick="decomposeRun()">🧩 拆解并启动</button>
+                    <button class="btn ghost" onclick="loadRuns()">刷新列表</button>
+                </div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>Run</th><th>目标</th><th>状态</th><th>进度</th><th>创建</th><th></th></tr></thead>
+                <tbody id="runsBody"></tbody></table>
+            </div>
+            <div class="panel" id="runPanel" style="display:none">
+                <h3 id="runTitle"></h3>
+                <div id="dagSvg" style="overflow-x:auto"></div>
+                <table><thead><tr><th>任务</th><th>Agent</th><th>依赖</th><th>状态</th><th>耗时</th><th>输出/错误（点击行展开）</th></tr></thead>
+                <tbody id="taskBody"></tbody></table>
+                <div class="toolbar" style="margin-top:10px">
+                    <button class="btn ghost sm" onclick="startRun(currentRun)">▶ 启动/续跑</button>
+                    <button class="btn ghost sm" onclick="retryRun(currentRun)">↻ 重试失败项</button>
+                    <button class="btn danger sm" onclick="delRun(currentRun)">删除</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 定时任务 -->
+        <section class="page" id="page-jobs">
+            <div class="panel">
+                <h3>新建定时任务（本地时区 5 段 cron；shell 类走白名单）</h3>
+                <div class="toolbar">
+                    <input id="jobName" placeholder="任务名" style="max-width:160px">
+                    <input id="jobCron" placeholder="*/5 9-18 * * 1-5" style="max-width:160px">
+                    <select id="jobKind" onchange="jobKindChange()"><option value="shell">shell</option><option value="agent_prompt">agent_prompt</option><option value="http">http</option></select>
+                    <select id="jobAgent" style="max-width:140px"></select>
+                </div>
+                <div class="toolbar"><input id="jobPayload" placeholder="命令 / Prompt 文本 / URL" style="flex:1"></div>
+                <div class="toolbar"><span class="hint" id="jobAllow"></span><button class="btn" onclick="createJob()">创建</button></div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>名称</th><th>cron</th><th>类型</th><th>启用</th><th>最近执行</th><th>状态</th><th>结果</th><th></th></tr></thead>
+                <tbody id="jobsBody"></tbody></table>
+            </div>
+        </section>
+
+        <!-- MCP 工具网关 -->
+        <section class="page" id="page-mcp">
+            <div class="panel">
+                <h3>注册 MCP Server（stdio 命令 / http URL；聚合后供全部 Agent 与指挥官调用）</h3>
+                <div class="toolbar">
+                    <input id="mcName" placeholder="名称" style="max-width:140px">
+                    <select id="mcTransport"><option value="stdio">stdio</option><option value="http">http</option></select>
+                    <input id="mcCmd" placeholder="command，如 /home/gztxt/agent-hub/venv/bin/python3">
+                    <input id="mcArgs" placeholder="args（空格分隔）或 http URL" style="flex:1">
+                </div>
+                <div class="toolbar">
+                    <button class="btn ghost sm" onclick="probeServer()">🔎 探测工具（不落库）</button>
+                    <button class="btn sm" onclick="addServer()">注册</button>
+                    <button class="btn ghost sm" onclick="loadMcp()">刷新聚合</button>
+                </div>
+                <pre class="code" id="mcProbe" style="display:none"></pre>
+            </div>
+            <div class="mem-grid" style="grid-template-columns:1fr 1.3fr">
+                <div class="panel"><h3>Servers</h3><div id="mcServers" class="hint">加载中…</div></div>
+                <div class="panel"><h3>聚合工具（60s 缓存）</h3><div id="mcTools" class="hint">加载中…</div>
+                    <div class="toolbar" style="margin-top:10px"><input id="mcCallArgs" placeholder='{"text":"hi"}' style="flex:1"><button class="btn sm" onclick="callToolSel()">测试调用选中工具</button></div>
+                    <pre class="code" id="mcCallOut" style="display:none"></pre>
+                </div>
+            </div>
+        </section>
+
         <!-- 端口 -->
         <section class="page" id="page-ports">
             <div class="toolbar">
@@ -271,6 +348,7 @@
                 <div class="panel"><h3>Token 用量聚合</h3><div id="usageTable" class="hint">加载中…</div></div>
                 <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint">加载中…</div></div>
             </div>
+            <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint">加载中…</div></div>
         </section>
     </main>
 

@@ -79,6 +79,15 @@ TOOLS = [
         "name": "list_sessions", "description": "查询统一对话/会话历史摘要",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"}, "limit": {"type": "integer"}}}}},
+    {"type": "function", "function": {
+        "name": "mcp_tools", "description": "列出 MCP 聚合网关中所有可用工具（server+tool）",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "mcp_call", "description": "调用 MCP 网关工具（经 ACL 与限流）",
+        "parameters": {"type": "object", "properties": {
+            "server": {"type": "string", "description": "server id 或名称"},
+            "tool": {"type": "string"},
+            "args": {"type": "object"}}, "required": ["server", "tool"]}}},
 ]
 
 
@@ -166,6 +175,21 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
         sql += " ORDER BY s.updated_at DESC LIMIT ?"
         params.append(limit)
         return {"sessions": db.query(sql, tuple(params))}
+    if name == "mcp_tools":
+        import mcpgw
+        try:
+            return await mcpgw.aggregated_tools()
+        except Exception as e:  # noqa: BLE001
+            return {"error": repr(e)[:300]}
+    if name == "mcp_call":
+        import mcpgw
+        try:
+            return await mcpgw.mcp_call(mcpgw.CallIn(
+                server=args["server"], tool=args["tool"],
+                args=args.get("args") or {}, agent_id="manager"))
+        except Exception as e:  # noqa: BLE001
+            detail = getattr(e, "detail", None)
+            return {"error": str(detail or e)[:400]}
     return {"error": f"unknown tool {name}"}
 
 
