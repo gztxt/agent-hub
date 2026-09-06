@@ -144,6 +144,11 @@ def execute(sql: str, params: tuple = ()) -> int:
         return cur.rowcount
 
 
+def execute_script(sql: str) -> None:
+    with _lock:
+        _conn.executescript(sql)
+
+
 def upsert_telemetry(source: str, session_id: str, event: str,
                      cwd: Optional[str], payload: dict, usage_scope: Optional[str],
                      trace_id: Optional[str] = None, duration_ms: Optional[int] = None,

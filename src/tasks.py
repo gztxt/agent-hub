@@ -143,8 +143,11 @@ async def decompose(body: DecomposeIn):
     if _ctx.get("agent_ids_fn"):
         known = set(_ctx["agent_ids_fn"]())
     default = body.default_agent or ("jcode" if "jcode" in known else (sorted(known)[0] if known else "jcode"))
-    messages = [{"role": "system", "content": LEADER_PROMPT.format(
-        agents=", ".join(sorted(known)) or "jcode", default=default, maxn=MAX_TASKS)},
+    messages = [{"role": "system", "content": (
+        LEADER_PROMPT
+        .replace("{agents}", ", ".join(sorted(known)) or "jcode")
+        .replace("{default}", default)
+        .replace("{maxn}", str(MAX_TASKS)))},
         {"role": "user", "content": body.goal}]
     try:
         answer, _ = await llm.chat_tools_loop(messages, [], None, max_rounds=1)
@@ -247,9 +250,6 @@ async def _run_task(run_id: str, row: dict):
                    (run_id,))
     upstream = {u["task_id"]: u["output"] or "" for u in ups}
     prompt = row["prompt"]
-    parts = [f"[{u['task_id']}] {upstream[u['task_id']]}"
-             for u in json.loads(row["deps"] or "[]")
-             for u in [u] if False]
     dep_outputs = []
     for d in json.loads(row["deps"] or "[]"):
         if d in upstream:
