@@ -290,7 +290,9 @@ function applyChatMode() {
   } else if (chatMode === 'term') {
     $('termTitle').textContent = (a.name || chatPick) + ' · 终端会话';
     ensureTerm();
-    termRefreshList().then(() => { if (!termSid) termAutoAttach(); });
+    // ★ 修复核心：切换实体时解绑异主会话，画面不再残留上一个 Agent
+    if (termSid && termSidAgent && termSidAgent !== chatPick) termDetach();
+    termRefreshList().then(() => termAutoAttach());
   } else {
     if (a && a.id !== chatPaneInit) { chatPaneInit = a.id; openChatSession(); }
   }
@@ -300,9 +302,9 @@ let chatPaneInit = null;
 async function embedRefresh() { const f = $('embedFrame'); f.src = f.src; }
 function embedNewTab() { const a = entityById(chatPick); const e = (a.entries || []).find(x => x.type === 'embed'); if (e) window.open(lanUrl(e.url), '_blank'); }
 
-/* ── pty 终端（xterm.js + WebSocket） ── */
+/* ── pty 终端（xterm.js + WebSocket）── 修复：会话按实体隔离，切换即换绑 ── */
 
-let term = null, termFit = null, termWs = null, termSid = null;
+let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = null;
 
 function ensureTerm() {
   if (term) return;
@@ -317,17 +319,23 @@ function ensureTerm() {
   setTimeout(fit, 80);
 }
 
+function termDetach() {
+  if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
+  termSid = null; termSidAgent = null;
+}
+
 function wsUrl(path) { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path; }
 
-function termConnect(sid) {
+function termConnect(sid, agent) {
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   termSid = sid;
+  termSidAgent = agent || termSidAgent;
   term.clear();
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
   ws.binaryType = 'arraybuffer';
   ws.onmessage = ev => term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data));
   ws.onopen = () => { term.focus(); if (termFit) termFit.fit(); if (termWs === ws) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
-  ws.onclose = () => { term.write('\r\n\x1b[90m[连接断开——点右上「会话」重连或新建]\x1b[0m'); };
+  ws.onclose = () => { term.write('\r\n\x1b[90m[连接断开——点「会话」重连或新建]\x1b[0m'); };
   termWs = ws;
 }
 
@@ -335,7 +343,7 @@ async function termNew() {
   try {
     const d = await api('/api/term/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: chatPick }) });
     toast('已拉起 ' + chatPick + ' 终端会话', 'ok');
-    termConnect(d.session.id);
+    termConnect(d.session.id, chatPick);
     termRefreshList();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -345,7 +353,7 @@ async function termRefreshList() {
     const d = await api('/api/term/sessions');
     $('termSessList').innerHTML = (d.sessions || []).map(s =>
       '<span class="sess-item' + (s.id === termSid ? '" style="border-color:var(--accent-2)' : '') + '">' +
-      '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\')" style="color:#93c5fd">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
+      '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:#93c5fd">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
       (s.alive ? '' : ' ·已退出') +
       '<button class="btn sm danger" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('');
     return d.sessions || [];
@@ -353,17 +361,24 @@ async function termRefreshList() {
 }
 
 function termAutoAttach() {
-  // 已有本 agent 的活会话则接上，否则提示新建
+  // 只接本实体的活会话；没有就清屏给提示（修复：不再残留上一实体画面）
   api('/api/term/sessions').then(d => {
     const mine = (d.sessions || []).filter(s => s.agent_id === chatPick && s.alive);
-    if (mine.length) termConnect(mine[mine.length - 1].id);
-    else term.write('\x1b[90m提示：点「＋ 新会话」拉起 ' + chatPick + ' 的原生终端\x1b[0m\r\n');
+    if (mine.length) { termConnect(mine[mine.length - 1].id, chatPick); return; }
+    if (termSidAgent === chatPick && termSid) return; // 刚手动连过本实体
+    term.clear();
+    term.write('\x1b[90m提示：点「＋ 新会话」拉起 ' + chatPick + ' 的原生终端\x1b[0m\r\n');
   });
 }
 
 async function termKill() { if (termSid) await termKillOne(termSid); }
 async function termKillOne(sid) {
-  try { await api('/api/term/sessions/' + sid, { method: 'DELETE' }); if (sid === termSid) { termSid = null; } termRefreshList(); } catch (e) { toast(e.message, 'err'); }
+  try {
+    await api('/api/term/sessions/' + sid, { method: 'DELETE' });
+    if (sid === termSid) termDetach();
+    termRefreshList();
+    termAutoAttach();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function openChatSession() {

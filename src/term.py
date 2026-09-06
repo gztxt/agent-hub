@@ -53,6 +53,7 @@ class Session:
         self.cols, self.rows = 80, 24
         self.outputs: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self.viewers: set = set()
+        self.ring = bytearray()  # 输出环形缓冲：重连回放，避免"重挂后白屏"
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
     def to_dict(self):
@@ -130,6 +131,9 @@ def _attach_reader(sess: Session):
             data = os.read(sess.fd, 65536)
             if data:
                 sess.last_io = time.time()
+                sess.ring.extend(data)
+                if len(sess.ring) > 65536:
+                    del sess.ring[:len(sess.ring) - 65536]
                 for q in list(sess.outputs.values()) if isinstance(sess.outputs, dict) else [sess.outputs]:
                     try:
                         q.put_nowait(data)
@@ -161,6 +165,12 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         return
     await ws.accept()
     sess.viewers.add(ws)
+    # 回放最近输出（重连不白屏）
+    if sess.ring:
+        try:
+            await ws.send_bytes(bytes(sess.ring))
+        except Exception:  # noqa: BLE001
+            pass
     # 输出泵：queue → ws
     async def pump():
         while True:

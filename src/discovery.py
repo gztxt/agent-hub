@@ -41,23 +41,33 @@ class AgentDiscovery:
 
     async def discover_all(self) -> List[AgentInfo]:
         procs, units, dockers = await asyncio.to_thread(self._probe_env)
-        agents: List[AgentInfo] = []
-        for p in profiles.all_profiles():
-            status = profiles.detect_status(p, procs, units, dockers)
+        # 第一遍：全部状态（供跨画像联动，如 claude 的 Web UI 宿主 cloudcli）
+        prof_list = profiles.all_profiles()
+        status_map: Dict[str, str] = {}
+        for p in prof_list:
+            st = profiles.detect_status(p, procs, units, dockers)
             port = p.get("port")
-            # 端口活用作 running 的补充证据（面板类），但存在性以进程/单元/容器为准
-            if status == "stopped" and port and self._sync_check_port(port):
-                status = "running"
-            endpoint = p.get("ui") or p.get("panel") or (f"http://127.0.0.1:{port}" if port else "")
+            if st == "stopped" and port and self._sync_check_port(port):
+                st = "running"
+            status_map[p["id"]] = st
+        agents: List[AgentInfo] = []
+        for p in prof_list:
+            status = status_map[p["id"]]
+            endpoint = p.get("ui") or p.get("panel") or (f"http://127.0.0.1:{p['port']}" if p.get("port") else "")
+            entries = profiles.entries_for(p, status)
+            # claude 的 Web 界面 = 社区方案 Claude Code UI（本机 cloudcli 服务承载）
+            if p["id"] == "claude" and status_map.get("cloudcli") == "running":
+                entries = [{"type": "embed", "label": "原生会话",
+                            "url": "http://127.0.0.1:3010"}] + entries
             agents.append(AgentInfo(
                 id=p["id"], name=p["name"], kind=p["kind"], status=status,
-                endpoint=endpoint, port=port,
+                endpoint=endpoint, port=p.get("port"),
                 auth_required=bool(p.get("panel") and re.search(r"18083|12700", str(p.get("panel")))),
                 description=p.get("desc", ""),
                 config_path=self._find_config_path(p["id"]),
                 last_seen=self._iso_now(), builtin=True,
                 working_dir=(p.get("terminal") or {}).get("cwd"),
-                entries=profiles.entries_for(p, status)))
+                entries=entries))
         # 动态注册/扫描项（一律 service 类，仅快捷方式）
         for c in self._custom_agents():
             port = c.get("port")
