@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent Hub - 智管</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏫</text></svg>">
-    <link rel="stylesheet" href="/static/vendor/xterm.css">
+    <link rel="stylesheet" href="/static/vendor/xterm.css?v=20260906b">
     <style>
         /* ── US-003 明快高对比配色：单一色板源 :root，全文引用 var() ── */
         :root {
@@ -286,6 +286,7 @@
                     <div id="chatAgents"></div>
                 </details>
                 <div class="chat-main">
+                    <div class="bar" id="chatModeBar" style="display:none;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)"></div>
                     <!-- 模式1：原生 Web UI 嵌入 -->
                     <div class="pane" id="embedPane">
                         <div class="bar"><b id="embedTitle" style="font-size:13px"></b>
@@ -473,8 +474,8 @@
 
     <div class="footer">Agent Hub v0.2.0 · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     <div id="toast"></div>
-    <script src="/static/vendor/xterm.js"></script>
-    <script src="/static/vendor/fit.js"></script>
-    <script src="/static/hub.js"></script>
+    <script src="/static/vendor/xterm.js?v=20260906b"></script>
+    <script src="/static/vendor/fit.js?v=20260906b"></script>
+    <script src="/static/hub.js?v=20260906b"></script>
 </body>
 </html>

@@ -277,6 +277,7 @@ function pickChatEntity(id) {
 
 function applyChatMode() {
   const a = entityById(chatPick);
+  renderModeBar(a);
   $('embedPane').classList.toggle('on', chatMode === 'embed');
   $('termPane').classList.toggle('on', chatMode === 'term');
   $('chatPane').classList.toggle('on', chatMode === 'chat');
@@ -287,6 +288,7 @@ function applyChatMode() {
     $('embedUrlHint').textContent = url;
     const f = $('embedFrame');
     if (f.dataset.src !== url) { f.src = url; f.dataset.src = url; }
+    probeEmbed(url);
   } else if (chatMode === 'term') {
     $('termTitle').textContent = (a.name || chatPick) + ' · 终端会话';
     ensureTerm();
@@ -294,12 +296,49 @@ function applyChatMode() {
     if (termSid && termSidAgent && termSidAgent !== chatPick) termDetach();
     termRefreshList().then(() => termAutoAttach());
   } else {
-    if (a && a.id !== chatPaneInit) { chatPaneInit = a.id; openChatSession(); }
+    openChatSession();
   }
 }
-let chatPaneInit = null;
 
-async function embedRefresh() { const f = $('embedFrame'); f.src = f.src; }
+/* 模式切换栏：实体有多种会话形态时可互切（修复"嵌入死了切不到对话"） */
+function renderModeBar(a) {
+  const bar = $('chatModeBar');
+  if (!a) { bar.style.display = 'none'; return; }
+  const modes = [];
+  if ((a.entries || []).some(e => e.type === 'embed')) modes.push(['embed', ' 原生界面']);
+  if ((a.entries || []).some(e => e.type === 'term')) modes.push(['term', '⌨ 终端']);
+  if ((a.entries || []).some(e => e.type === 'chat')) modes.push(['chat', '💬 对话']);
+  if (modes.length < 2) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = modes.map(([m, label]) =>
+    '<button class="btn sm ' + (m === chatMode ? '' : 'ghost') + '" onclick="switchMode(\'' + m + '\')">' + label + '</button>').join('');
+}
+function switchMode(m) { chatMode = m; applyChatMode(); }
+
+/* 嵌入存活探测：no-cors fetch 失败=目标端口无响应 → 覆盖层引导切换 */
+async function probeEmbed(url) {
+  const pane = $('embedPane');
+  let dead = pane.querySelector('.embed-dead');
+  if (dead) dead.remove();
+  try {
+    await Promise.race([
+      fetch(url, { mode: 'no-cors', cache: 'no-store' }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
+    ]);
+  } catch (e) {
+    dead = document.createElement('div');
+    dead.className = 'embed-dead';
+    dead.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:rgba(15,23,42,.92);z-index:5';
+    dead.innerHTML = '<div style="font-size:14px;color:#fca5a5">⚠ 目标界面未响应（' + escapeHtml(url) + '）</div>' +
+      '<div style="display:flex;gap:8px"><button class="btn sm" onclick="switchMode(\'chat\')">改用对话模式</button>' +
+      '<button class="btn sm ghost" onclick="switchMode(\'term\')">改用终端</button>' +
+      '<button class="btn sm ghost" onclick="embedRefresh()">重试嵌入</button></div>';
+    if (getComputedStyle(pane).position === 'static') pane.style.position = 'relative';
+    pane.appendChild(dead);
+  }
+}
+
+async function embedRefresh() { const f = $('embedFrame'); f.src = f.src; probeEmbed(f.dataset.src || ''); }
 function embedNewTab() { const a = entityById(chatPick); const e = (a.entries || []).find(x => x.type === 'embed'); if (e) window.open(lanUrl(e.url), '_blank'); }
 
 /* ── pty 终端（xterm.js + WebSocket）── 修复：会话按实体隔离，切换即换绑 ── */

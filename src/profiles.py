@@ -77,7 +77,7 @@ def docker_states() -> Dict[str, str]:
 PROFILES: List[dict] = [
     # ── Agents ────────────────────────────────────────────────
     {"id": "claude", "name": "Claude Code", "kind": "agent",
-     "detect": {"proc": [r"(^|/)claude( |$)"]},
+     "detect": {"proc": [r"(^|/)claude( |$)", r"claude\.js", "@anthropic-ai/claude-code"]},
      "cli": "claude", "port": None, "ui": None,
      "terminal": {"cmd": "claude", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": {"adapter": "claude"},
@@ -105,7 +105,7 @@ PROFILES: List[dict] = [
      "terminal": None, "chat": None,
      "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088"},
     {"id": "cloudcli", "name": "CloudCLI (Claude Code UI)", "kind": "agent",
-     "detect": {"proc": [r"cloudcli"], "systemd": ["cloudcli"]},
+     "detect": {"systemd": ["cloudcli"]},
      "cli": None, "port": 3010, "ui": "http://127.0.0.1:3010",
      "terminal": None, "chat": None,
      "desc": "Claude Code 的 Web UI（systemd: cloudcli，当前未运行）"},
