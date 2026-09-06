@@ -74,7 +74,7 @@
         .avatar.running::after { content: ''; position: absolute; inset: -2px; border-radius: 11px; border: 2px solid #4ade8066; animation: ping 1.8s infinite; }
         .zsleep { position: absolute; bottom: -5px; right: -5px; font-size: 10px; }
         .s-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }
-        .s-status { font-size: 12px; white-space: nowrap; flex: 0 0 auto; text-align: center; }
+        .s-status { font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
         .s-status.running { color: var(--success-text); }
         .s-status.stopped { color: var(--muted); }
         .s-status.error { color: var(--danger-text); }
@@ -220,7 +220,7 @@
             <span><span class="hdot g"></span>Hub 在岗</span>
             <span id="hAgents">Agents: -</span>
             <span id="hErrors"></span>
-            
+            <span id="hTime" class="hint"></span>
         </div>
     </div>
 
@@ -310,7 +310,6 @@
                         <div class="composer">
                             <select id="chatModel" style="max-width:180px;font-size:12px;">
                                 <option value="">默认模型</option>
-                                <option value="open_router/minimax/minimax-m3:free" selected>MiniMax M3 (默认)</option>
                                 <option value="tokenrouter/qwen3.8-flash">Qwen 3.8 Flash (默认)</option>
                                 <option value="open_router/nvidia/nemotron-3-ultra-550b-a55b:free">Nemotron 3 Ultra</option>
                                 <option value="open_router/minimax/minimax-m3:free">MiniMax M3</option>

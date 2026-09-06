@@ -804,7 +804,7 @@ $('regMask').addEventListener('click', ev => { if (ev.target === $('regMask')) c
 
 function tick() {
   const t = new Date().toLocaleString('zh-CN', { hour12: false });
-  // // $('hTime').textContent = t; // 已移除  // 已移除
+  $('hTime').textContent = t;
   $('ftTime').textContent = t;
 }
 setInterval(tick, 1000); tick();
