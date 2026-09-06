@@ -194,9 +194,28 @@ async def manager_chat(body: ManagerChatIn):
     messages = [{"role": "system", "content": SYSTEM_PROMPT + snapshot}]
     messages += [{"role": r["role"], "content": r["content"]} for r in reversed(hist)]
     try:
-        answer, steps = await llm.chat_tools_loop(messages, TOOLS, _dispatch_tool,
+        t_total = __import__("time").monotonic()
+
+        async def timed_dispatch(name, args):
+            t0 = __import__("time").monotonic()
+            ok = False
+            try:
+                out = await _dispatch_tool(name, args)
+                ok = not (isinstance(out, dict) and out.get("error"))
+                return out
+            finally:
+                db.log_profile_event(
+                    "manager_tool", name, "success" if ok else "fail",
+                    int((__import__("time").monotonic() - t0) * 1000),
+                    trace_id=session_id)
+
+        answer, steps = await llm.chat_tools_loop(messages, TOOLS, timed_dispatch,
                                                   max_rounds=6)
+        db.log_profile_event("manager_chat", "manager", "success",
+                             int((__import__("time").monotonic() - t_total) * 1000),
+                             trace_id=session_id)
     except Exception as e:  # noqa: BLE001
+        db.log_profile_event("manager_chat", "manager", "fail", None, trace_id=session_id)
         db.execute("INSERT INTO manager_messages(session_id,role,content,created_at) "
                    "VALUES(?,?,?,?)", (session_id, "assistant", f"[LLM 错误] {e}", now))
         return {"session_id": session_id, "answer": None,

@@ -7,6 +7,7 @@
 - 端口管理（ports.rs → src/ports.py，只读，无 kill —— NAS 军规）
 - 项目类型自动识别（agent_sources.rs → src/sources.py）
 """
+import asyncio
 import json
 import re
 import sys
@@ -36,6 +37,7 @@ from config import config
 from discovery import AgentDiscovery, AgentInfo
 from ports import list_listeners, port_in_use
 from sources import detect_project
+import scanner
 from registry import build_adapters, get_adapter
 import hook as hook_mod
 import memory as memory_mod
@@ -151,7 +153,10 @@ async def unregister_agent(agent_id: str):
 
 async def _chat_dispatch(agent_id: str, message: str,
                          session_id: Optional[str] = None,
-                         model: Optional[str] = None) -> Dict:
+                         model: Optional[str] = None,
+                         trace_id: Optional[str] = None) -> Dict:
+    import time as _time
+    t0 = _time.monotonic()
     adapter = get_adapter(agent_id)
     if adapter is None:
         rows = db.query("SELECT * FROM custom_agents WHERE id=?", (agent_id,))
@@ -171,6 +176,14 @@ async def _chat_dispatch(agent_id: str, message: str,
                         (session_id,))
         history = [{"role": r["role"], "content": r["content"]} for r in reversed(hist)]
     result = await adapter.chat(message, session_id=session_id, model=model, history=history)
+    # S2 画像埋点：append-only，成功率/耗时统计源
+    dur = int((_time.monotonic() - t0) * 1000)
+    db.log_profile_event("hub_chat", agent_id,
+                         "success" if result.get("success") else "fail", dur,
+                         trace_id=trace_id,
+                         detail={"session_id": session_id,
+                                 "usage": result.get("usage"),
+                                 "error": (result.get("error") or "")[:200] or None})
     # 会话落盘
     if session_id:
         now = _now()
@@ -188,11 +201,12 @@ async def _chat_dispatch(agent_id: str, message: str,
 
 
 @app.post("/api/agents/{agent_id}/chat")
-async def chat(agent_id: str, request: ChatRequest):
-    session_id = request.session_id or uuid.uuid4().hex[:12]
-    result = await _chat_dispatch(agent_id, request.message, session_id, request.model)
+async def chat(agent_id: str, request: Request, req: ChatRequest):
+    session_id = req.session_id or uuid.uuid4().hex[:12]
+    trace_id = request.headers.get("x-trace-id")
+    result = await _chat_dispatch(agent_id, req.message, session_id, req.model, trace_id)
     return {"agent_id": agent_id, "session_id": session_id,
-            "message": request.message, "timestamp": _now(), **result}
+            "message": req.message, "timestamp": _now(), **result}
 
 
 @app.post("/api/agents/{agent_id}/chat/stream")
@@ -237,6 +251,21 @@ async def session_messages(session_id: str, limit: int = 100):
 
 
 # ── 端口管理 ──────────────────────────────────────────────────────────
+
+# ── 只读发现扫描（S2）────────────────────────────────
+
+class ScanIn(BaseModel):
+    auto_register: bool = True
+
+
+@app.post("/api/scan/run")
+async def scan_run(body: ScanIn):
+    """发现源扫描（docker/systemd/CLI 名单，全部只读探测）"""
+    result = await asyncio.to_thread(scanner.run_scan, body.auto_register, db)
+    if body.auto_register and result.get("added") and discovery:
+        discovery.reload()
+    return result
+
 
 @app.get("/api/ports")
 async def api_ports():

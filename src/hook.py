@@ -111,4 +111,13 @@ async def usage_summary():
             a[k] += int(usage.get(k) or 0)
     total = {k: sum(a[k] for a in agg.values())
              for k in ("sessions", "input_tokens", "output_tokens", "cached_tokens")}
-    return {"by_source": agg, "total": total}
+    # S2 Agent 画像：成功率 / 平均耗时（profile_events 按 subject 聚合）
+    prof = db.query("""
+        SELECT source, subject, COUNT(*) n,
+               SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) ok,
+               AVG(duration_ms) avg_ms, MAX(duration_ms) max_ms
+        FROM profile_events GROUP BY source, subject ORDER BY n DESC LIMIT 50""")
+    profile = [{"source": p["source"], "subject": p["subject"], "calls": p["n"],
+                "success_rate": round(100.0 * (p["ok"] or 0) / p["n"], 1),
+                "avg_ms": round(p["avg_ms"] or 0), "max_ms": p["max_ms"]} for p in prof]
+    return {"by_source": agg, "total": total, "profile": profile}

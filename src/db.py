@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS custom_agents (
     port INTEGER,
     endpoint TEXT,
     description TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',    -- manual|scan:docker|scan:systemd
     auto_restart INTEGER DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -89,7 +90,25 @@ CREATE TABLE IF NOT EXISTS manager_messages (
 CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_mem_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_mgr_session ON manager_messages(session_id);
+CREATE TABLE IF NOT EXISTS profile_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,        -- hub_chat|manager_tool|task_exec|cron_run
+    subject TEXT NOT NULL,       -- agent_id / tool / run:task
+    trace_id TEXT,
+    status TEXT NOT NULL,        -- success|fail
+    duration_ms INTEGER,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prof_subject ON profile_events(subject);
 """
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    """上游 telemetry_store.rs 的幂等迁移模式"""
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def init_db(path: Path) -> None:
@@ -100,6 +119,11 @@ def init_db(path: Path) -> None:
     _conn.execute("PRAGMA journal_mode=WAL")
     with _lock:
         _conn.executescript(SCHEMA)
+        # S2 画像/追踪列（存量库自动迁移）
+        _add_column_if_missing(_conn, "telemetry_events", "trace_id", "TEXT")
+        _add_column_if_missing(_conn, "telemetry_events", "duration_ms", "INTEGER")
+        _add_column_if_missing(_conn, "telemetry_events", "status", "TEXT")
+        _add_column_if_missing(_conn, "custom_agents", "source", "TEXT DEFAULT 'manual'")
         _conn.commit()
 
 
@@ -121,16 +145,32 @@ def execute(sql: str, params: tuple = ()) -> int:
 
 
 def upsert_telemetry(source: str, session_id: str, event: str,
-                     cwd: Optional[str], payload: dict, usage_scope: Optional[str]) -> None:
+                     cwd: Optional[str], payload: dict, usage_scope: Optional[str],
+                     trace_id: Optional[str] = None, duration_ms: Optional[int] = None,
+                     status: Optional[str] = None) -> None:
     """同一 (source,session_id,event) 重报覆盖而非叠加（Agent_Manager 口径）"""
     execute(
-        """INSERT INTO telemetry_events(source,session_id,event,cwd,payload,usage_scope,created_at)
-           VALUES(?,?,?,?,?,?,?)
+        """INSERT INTO telemetry_events(source,session_id,event,cwd,payload,usage_scope,
+             trace_id,duration_ms,status,created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source,session_id,event) DO UPDATE SET
              cwd=excluded.cwd, payload=excluded.payload,
-             usage_scope=excluded.usage_scope, created_at=excluded.created_at""",
+             usage_scope=excluded.usage_scope, trace_id=excluded.trace_id,
+             duration_ms=excluded.duration_ms, status=excluded.status,
+             created_at=excluded.created_at""",
         (source, session_id, event, cwd, json.dumps(payload, ensure_ascii=False),
-         usage_scope, _now()))
+         usage_scope, trace_id, duration_ms, status, _now()))
+
+
+def log_profile_event(source: str, subject: str, status: str,
+                      duration_ms: Optional[int], trace_id: Optional[str] = None,
+                      detail: Optional[dict] = None) -> None:
+    """S2 画像事件（append-only，统计成功率/耗时的口径源）"""
+    execute(
+        "INSERT INTO profile_events(source,subject,trace_id,status,duration_ms,detail,created_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (source, subject, trace_id, status, duration_ms,
+         json.dumps(detail, ensure_ascii=False) if detail else None, _now()))
 
 
 def add_memory(content: str, category: str = "fact", source: str = "manual",
