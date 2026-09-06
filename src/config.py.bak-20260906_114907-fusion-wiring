@@ -28,21 +28,6 @@ class Config:
         # 认证
         self.ccr_auth = os.getenv("CCR_AUTH_TOKEN", "")
         self.pi_api_key = os.getenv("PI_API_KEY", "")
-        # CCR OpenAI 口(/v1/chat/completions)的 Bearer key：
-        # 优先 CCR_OPENAI_KEY → jcode provider-ccr.env（实测唯一验证可用链）→ CCR_AUTH_TOKEN
-        self.ccr_openai_key = self._resolve_ccr_openai_key()
-
-        # 对话模型（CCR/jcode 直连时的默认 model，留空由网关路由）
-        self.claude_model = os.getenv("CLAUDE_CHAT_MODEL", "")
-        self.jcode_model = os.getenv("JCODE_CHAT_MODEL", "")
-
-        # Manager Agent LLM 网关（FCC 优先，见 MEMORY PT-20260905-02）
-        self.manager_llm_base = os.getenv("MANAGER_LLM_BASE_URL", "http://127.0.0.1:8082/v1")
-        self.manager_llm_key = os.getenv("MANAGER_LLM_API_KEY", "")
-        self.manager_llm_model = os.getenv("MANAGER_LLM_MODEL", "tokenrouter/qwen3.8-flash")
-
-        # Hook 遥测写入鉴权（留空=仅回环可写）
-        self.hook_auth_token = os.getenv("HOOK_AUTH_TOKEN", "")
         
         # 数据路径
         self.data_dir = Path(os.getenv("DATA_DIR", Path.home() / "agent-hub" / "data"))
@@ -52,21 +37,6 @@ class Config:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
     
-    def _resolve_ccr_openai_key(self) -> str:
-        env_key = os.getenv("CCR_OPENAI_KEY", "")
-        if env_key:
-            return env_key
-        import re
-        p = Path.home() / ".config" / "jcode" / "provider-ccr.env"
-        if p.is_file():
-            try:
-                m = re.search(r"JCODE_PROVIDER_CCR_API_KEY=(\S+)", p.read_text())
-                if m:
-                    return m.group(1)
-            except OSError:
-                pass
-        return self.ccr_auth
-
     @property
     def db_path(self) -> Path:
         return self.data_dir / "agents.db"

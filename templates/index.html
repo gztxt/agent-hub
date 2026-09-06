@@ -6,84 +6,290 @@
     <title>Agent Hub - 智管</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-        .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 20px 40px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { font-size: 24px; font-weight: 600; background: linear-gradient(90deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .header .status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #94a3b8; }
-        .header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .container { max-width: 1400px; margin: 0 auto; padding: 40px; }
-        .dashboard-title { font-size: 18px; font-weight: 500; margin-bottom: 24px; color: #94a3b8; }
-        .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
-        .agent-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; transition: all 0.2s; cursor: pointer; }
-        .agent-card:hover { border-color: #60a5fa; transform: translateY(-2px); box-shadow: 0 8px 32px rgba(96, 165, 250, 0.1); }
-        .agent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
-        .agent-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
-        .agent-icon.claude { background: linear-gradient(135deg, #7c3aed, #a78bfa); }
-        .agent-icon.pi { background: linear-gradient(135deg, #2563eb, #60a5fa); }
-        .agent-icon.jcode { background: linear-gradient(135deg, #059669, #34d399); }
-        .agent-icon.tdaI { background: linear-gradient(135deg, #dc2626, #f87171); }
-        .agent-status { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 20px; }
-        .agent-status.running { background: #052e16; color: #4ade80; }
-        .agent-status.stopped { background: #450a0a; color: #f87171; }
-        .agent-status.unknown { background: #1c1917; color: #a8a29e; }
-        .agent-name { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
-        .agent-type { font-size: 12px; color: #64748b; margin-bottom: 12px; }
-        .agent-desc { font-size: 14px; color: #94a3b8; line-height: 1.5; }
-        .agent-meta { display: flex; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #334155; font-size: 12px; color: #64748b; }
-        .agent-meta span { display: flex; align-items: center; gap: 4px; }
-        .footer { text-align: center; padding: 40px; color: #475569; font-size: 12px; }
-        .loading { text-align: center; padding: 60px; color: #64748b; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans CJK SC', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
+        a { color: #60a5fa; }
+        button { cursor: pointer; font-family: inherit; }
+        input, textarea, select { font-family: inherit; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+        input:focus, textarea:focus { outline: none; border-color: #60a5fa; }
+        .btn { background: #1d4ed8; border: none; color: #fff; border-radius: 8px; padding: 8px 14px; font-size: 13px; transition: .15s; }
+        .btn:hover { background: #2563eb; }
+        .btn.ghost { background: transparent; border: 1px solid #334155; color: #94a3b8; }
+        .btn.ghost:hover { border-color: #60a5fa; color: #e2e8f0; }
+        .btn.danger { background: #991b1b; }
+        .btn.danger:hover { background: #b91c1c; }
+        .btn.sm { padding: 4px 9px; font-size: 12px; }
+
+        .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 14px 32px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .header h1 { font-size: 20px; font-weight: 700; background: linear-gradient(90deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hstats { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #94a3b8; flex-wrap: wrap; }
+        .hdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+        .hdot.g { background: #22c55e; animation: pulse 2s infinite; }
+        .hdot.r { background: #ef4444; }
+
+        nav.tabs { display: flex; gap: 4px; padding: 10px 32px 0; border-bottom: 1px solid #1e293b; background: #0f172a; flex-wrap: wrap; }
+        nav.tabs button { background: transparent; border: none; color: #64748b; padding: 10px 16px; font-size: 14px; border-bottom: 2px solid transparent; }
+        nav.tabs button.on { color: #e2e8f0; border-bottom-color: #60a5fa; background: #1e293b40; border-radius: 8px 8px 0 0; }
+
+        main { flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; padding: 24px 32px; }
+        section.page { display: none; }
+        section.page.on { display: block; }
+        .hint { color: #64748b; font-size: 12px; }
+
+        /* ── 教室 ── */
+        .podium-wrap { display: flex; justify-content: center; margin: 8px 0 24px; }
+        .podium { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 2px solid #b45309; background: linear-gradient(180deg, #451a03cc, #1e293b); border-radius: 18px; padding: 18px 44px; transition: .2s; }
+        .podium:hover { transform: scale(1.04); box-shadow: 0 0 24px #b4530955; }
+        .podium .crown { font-size: 30px; }
+        .podium b { color: #fbbf24; font-size: 15px; }
+        .podium span { font-size: 12px; color: #d97706; }
+        .divider { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+        .divider::before, .divider::after { content: ''; flex: 1; border-top: 1px dashed #334155; }
+        .divider span { font-size: 11px; letter-spacing: .2em; color: #475569; text-transform: uppercase; }
+
+        .seats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 820px; margin: 0 auto; }
+        @media (max-width: 900px) { .seats { grid-template-columns: repeat(2, 1fr); } }
+        .seat { position: relative; aspect-ratio: 3/4; border: 2px solid #334155; background: #1e293b; border-radius: 16px; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; transition: .2s; cursor: pointer; user-select: none; }
+        .seat.s-running { border-color: #16a34a88; background: #16a34a0a; }
+        .seat.s-stopped { opacity: .75; }
+        .seat.s-error { border-color: #dc2626aa; background: #dc26260d; }
+        .seat:hover { transform: translateY(-4px) scale(1.02); }
+        .s-badge { position: absolute; right: 10px; top: 10px; width: 9px; height: 9px; border-radius: 50%; }
+        .s-badge.running { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+        .s-badge.stopped { background: #475569; }
+        .s-badge.error { background: #f87171; box-shadow: 0 0 8px #f87171; }
+        .avatar { position: relative; width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 15px; margin-top: 10px; }
+        .avatar.running::after { content: ''; position: absolute; inset: -2px; border-radius: 16px; border: 2px solid #4ade8066; animation: ping 1.8s infinite; }
+        .zsleep { position: absolute; bottom: -6px; font-size: 10px; }
+        .s-status { margin-top: 6px; font-size: 10px; padding: 2px 8px; border-radius: 99px; background: #0f172a; }
+        .s-status.running { color: #4ade80; }
+        .s-status.stopped { color: #64748b; }
+        .s-status.error { color: #f87171; }
+        .s-name { font-size: 12px; font-weight: 600; text-align: center; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .s-desc { font-size: 10px; color: #64748b; text-align: center; margin-top: 2px; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .s-port { font-size: 10px; color: #475569; font-family: monospace; }
+        .s-tools { position: absolute; inset: 0; border-radius: 14px; background: #0f172acc; backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center; gap: 8px; }
+        .seat:hover .s-tools { display: flex; }
+        .s-tools .btn { font-size: 12px; }
+        @keyframes ping { 0% { transform: scale(1); opacity: .8; } 100% { transform: scale(1.5); opacity: 0; } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+        /* ── 聊天 ── */
+        .chat-grid { display: grid; grid-template-columns: 220px 1fr; gap: 16px; height: calc(100vh - 210px); min-height: 420px; }
+        .chat-side { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 10px; overflow-y: auto; }
+        .chat-side .item { padding: 10px; border-radius: 8px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .chat-side .item:hover, .chat-side .item.on { background: #334155; }
+        .chat-main { display: flex; flex-direction: column; background: #1e293b; border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+        .msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+        .msg { max-width: 78%; padding: 10px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+        .msg.user { align-self: flex-end; background: #1d4ed8; border-bottom-right-radius: 4px; }
+        .msg.assistant { align-self: flex-start; background: #334155; border-bottom-left-radius: 4px; }
+        .msg.err { align-self: flex-start; background: #7f1d1d; }
+        .steps { align-self: flex-start; width: 100%; display: flex; flex-direction: column; gap: 6px; }
+        .step { font-size: 12px; border-radius: 8px; padding: 6px 10px; }
+        .step.thought { color: #94a3b8; font-style: italic; background: #0f172a80; }
+        .step.toolcall { background: #78350f55; color: #fbbf24; font-family: monospace; }
+        .step.toolresult { background: #0f172a; border: 1px solid #334155; }
+        .step.toolresult summary { color: #a8a29e; cursor: pointer; }
+        .step.toolresult pre { margin-top: 6px; max-height: 180px; overflow: auto; font-size: 11px; color: #94a3b8; white-space: pre-wrap; }
+        .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #334155; }
+        .composer input { flex: 1; }
+
+        /* ── 表格/卡片通用 ── */
+        .panel { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+        .panel h3 { font-size: 14px; margin-bottom: 10px; color: #93c5fd; }
+        table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #26334a; }
+        th { color: #64748b; font-weight: 500; font-size: 11.5px; }
+        tr:hover td { background: #ffffff05; }
+        .tag { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 10.5px; background: #334155; color: #94a3b8; }
+        .tag.fact { background: #1e3a5f; color: #93c5fd; }
+        .tag.decision { background: #3b2f0b; color: #facc15; }
+        .tag.constraint { background: #4c0519; color: #fb7185; }
+        .tag.preference { background: #14532d; color: #86efac; }
+        .tag.agent { background: #1d4ed8; color: #dbeafe; }
+
+        .mem-grid { display: grid; grid-template-columns: 1.2fr .9fr .9fr; gap: 16px; }
+        @media (max-width: 1100px) { .mem-grid { grid-template-columns: 1fr; } }
+        .mem-list { max-height: 420px; overflow-y: auto; }
+        .mem-item { border-bottom: 1px solid #26334a; padding: 8px 2px; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; }
+        .mem-item p { flex: 1; word-break: break-word; }
+        textarea.doc { width: 100%; min-height: 130px; font-size: 12.5px; line-height: 1.5; }
+        textarea[readonly] { color: #94a3b8; background: #0f172a80; }
+
+        .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+        .toolbar input { flex: 1; min-width: 180px; }
+        pre.code { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; font-size: 12px; overflow-x: auto; color: #a5f3fc; }
+
+        .modal-mask { position: fixed; inset: 0; background: #000a; display: none; align-items: center; justify-content: center; z-index: 50; }
+        .modal-mask.on { display: flex; }
+        .modal { width: min(560px, 92vw); background: #1e293b; border: 1px solid #334155; border-radius: 14px; padding: 20px; max-height: 86vh; overflow-y: auto; }
+        .modal h3 { margin-bottom: 12px; font-size: 15px; }
+        .modal .row { display: flex; gap: 8px; margin-bottom: 10px; }
+        .modal .row input { flex: 1; }
+
+        #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 99; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+        #toast div { background: #0f172a; border: 1px solid #475569; padding: 10px 18px; border-radius: 10px; font-size: 13px; animation: pulse 3s forwards; box-shadow: 0 8px 24px #000a; }
+        #toast div.err { border-color: #dc2626; color: #fca5a5; }
+        #toast div.ok { border-color: #16a34a; color: #86efac; }
+
+        .footer { text-align: center; padding: 16px; color: #475569; font-size: 12px; border-top: 1px solid #1e293b; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🤖 Agent Hub</h1>
-        <div class="status">
-            <div class="status-dot"></div>
-            <span>系统运行中</span>
+        <h1>🏫 Agent Hub · 智管</h1>
+        <div class="hstats">
+            <span><span class="hdot g"></span>Hub 在岗</span>
+            <span id="hAgents">Agents: -</span>
+            <span id="hErrors"></span>
+            <span id="hTime" class="hint"></span>
         </div>
     </div>
-    
-    <div class="container">
-        <div class="dashboard-title">教室视图 — 所有 Agent 状态</div>
-        <div class="agents-grid" id="agentsGrid">
-            <div class="loading">加载中...</div>
-        </div>
-    </div>
-    
-    <div class="footer">
-        Agent Hub v0.1.0 · 本机多 Agent 统一管理中心
-    </div>
-    
-    <script>
-        const agents = [
-            { id: 'claude', name: 'Claude Code', type: 'claude', icon: '🧠', desc: 'Anthropic Claude CLI，通过 CCR 网关提供 OpenAI 兼容 API', port: 3456, url: 'http://127.0.0.1:3456' },
-            { id: 'pi', name: 'Pi Agent', type: 'pi', icon: '📝', desc: 'Pi Coding Agent，Web UI + 子 Agent 编排能力', port: 30141, url: 'http://192.168.5.102:30141' },
-            { id: 'jcode', name: 'JCode', type: 'jcode', icon: '⚡', desc: 'OpenAI 兼容 API 网关，支持多模型路由', port: 3457, url: 'http://127.0.0.1:3457' },
-            { id: 'tdai', name: 'TDAI Memory', type: 'tdai', icon: '🧬', desc: '腾讯 DB Agent 记忆核心，跨 Agent 分层记忆', port: 8420, url: 'http://127.0.0.1:8420' }
-        ];
-        
-        function renderAgents() {
-            const grid = document.getElementById('agentsGrid');
-            grid.innerHTML = agents.map(a => `
-                <div class="agent-card" onclick="window.open('${a.url}', '_blank')">
-                    <div class="agent-card-header">
-                        <div class="agent-icon ${a.type}">${a.icon}</div>
-                        <div class="agent-status running">● 运行中</div>
+
+    <nav class="tabs" id="tabs">
+        <button data-page="classroom" class="on">🏫 教室</button>
+        <button data-page="manager">👑 指挥官</button>
+        <button data-page="chat">💬 统一对话</button>
+        <button data-page="memory">🧠 记忆中心</button>
+        <button data-page="ports">🔌 端口</button>
+        <button data-page="telemetry">📡 遥测</button>
+    </nav>
+
+    <main>
+        <!-- 教室 -->
+        <section class="page on" id="page-classroom">
+            <div class="podium-wrap">
+                <div class="podium" onclick="go('manager')">
+                    <div class="crown">👑</div>
+                    <b>Manager 指挥官</b>
+                    <span>用自然语言指挥所有 Agent →</span>
+                </div>
+            </div>
+            <div class="divider"><span>学生座位</span></div>
+            <div class="seats" id="seats"><div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">加载中…</div></div>
+            <div style="text-align:center;margin-top:22px">
+                <button class="btn ghost" onclick="openRegister()">＋ 注册自定义 Agent</button>
+            </div>
+        </section>
+
+        <!-- 指挥官 -->
+        <section class="page" id="page-manager">
+            <div class="chat-grid">
+                <div class="chat-side">
+                    <div style="padding:8px 10px;font-size:13px;color:#93c5fd">使用提示</div>
+                    <div class="hint" style="padding:0 10px;line-height:1.7">
+                        例：<br>「现在哪些 Agent 在运行？」<br>「打开 pi 的界面」<br>「查一下记忆里关于 CCR 的约束」<br>「3457 端口是谁在用？」<br>「记住：我偏好中文回复」<br><br>工具在服务端真执行；会话已持久化。
                     </div>
-                    <div class="agent-name">${a.name}</div>
-                    <div class="agent-type">${a.type.toUpperCase()} · 端口 ${a.port}</div>
-                    <div class="agent-desc">${a.desc}</div>
-                    <div class="agent-meta">
-                        <span>🔗 ${a.url}</span>
-                        <span>📍 本机</span>
+                    <div style="padding:10px"><button class="btn ghost sm" onclick="clearMgr()">＋ 新会话</button></div>
+                </div>
+                <div class="chat-main">
+                    <div class="msgs" id="mgrMsgs"><div class="hint" style="margin:auto">向指挥官下达指令</div></div>
+                    <div class="composer">
+                        <input id="mgrInput" placeholder="例如：列出所有 Agent 状态" onkeydown="if(event.key==='Enter')mgrSend()">
+                        <button class="btn" onclick="mgrSend()">发送</button>
                     </div>
                 </div>
-            `).join('');
-        }
-        
-        renderAgents();
-    </script>
+            </div>
+        </section>
+
+        <!-- 统一对话 -->
+        <section class="page" id="page-chat">
+            <div class="chat-grid">
+                <div class="chat-side" id="chatAgents"></div>
+                <div class="chat-main">
+                    <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent</div></div>
+                    <div class="composer">
+                        <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
+                        <button class="btn" onclick="chatSend()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 记忆中心 -->
+        <section class="page" id="page-memory">
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>L1 · 可检索记忆</h3>
+                    <div class="toolbar">
+                        <input id="memQ" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadMemories()">
+                        <select id="memCat" onchange="loadMemories()">
+                            <option value="">全部分类</option><option>fact</option><option>decision</option><option>constraint</option><option>preference</option>
+                        </select>
+                    </div>
+                    <div class="mem-list" id="memList"></div>
+                    <div class="row toolbar" style="margin-top:10px">
+                        <input id="memNew" placeholder="新增一条记忆…">
+                        <button class="btn sm" onclick="addMemory()">添加</button>
+                    </div>
+                    <div class="hint">L2 由 L1 经 LLM 压缩生成；manual 手写区自动流程永不触碰（与上游语义一致）</div>
+                </div>
+                <div class="panel">
+                    <h3>L2 · 近 30 天工作记忆</h3>
+                    <textarea class="doc" id="l2content" readonly placeholder="（尚无生成内容）"></textarea>
+                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                    <textarea class="doc" id="l2manual" style="min-height:80px"></textarea>
+                    <div class="toolbar" style="margin-top:8px">
+                        <button class="btn sm" onclick="saveDoc('l2')">保存</button>
+                        <button class="btn ghost sm" onclick="rebuildL2()">🔄 用 LLM 重建</button>
+                    </div>
+                </div>
+                <div class="panel">
+                    <h3>L3 · 长期 Profile</h3>
+                    <textarea class="doc" id="l3content" placeholder="人工确认后写入的稳定长期偏好（草稿→确认制）"></textarea>
+                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                    <textarea class="doc" id="l3manual" style="min-height:80px"></textarea>
+                    <div class="toolbar" style="margin-top:8px">
+                        <button class="btn sm" onclick="saveDoc('l3')">保存</button>
+                        <button class="btn ghost sm" onclick="previewCtx()">注入预览</button>
+                    </div>
+                </div>
+            </div>
+            <div class="panel" id="ctxPanel" style="display:none"><h3>注入上下文包（/api/memory/context）</h3><pre class="code" id="ctxBody"></pre></div>
+        </section>
+
+        <!-- 端口 -->
+        <section class="page" id="page-ports">
+            <div class="toolbar">
+                <input id="portFilter" placeholder="过滤端口/进程/地址…" oninput="renderPorts()">
+                <span class="hint">🔒 只读——本机进程由 systemd/守护方管理，不提供 kill（与上游桌面版的有意差异）</span>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>协议</th><th>端口</th><th>地址</th><th>PID</th><th>进程</th><th>Agent</th></tr></thead>
+                <tbody id="portsBody"></tbody></table>
+            </div>
+        </section>
+
+        <!-- 遥测 -->
+        <section class="page" id="page-telemetry">
+            <div class="panel">
+                <h3>接入方式（覆盖式账本：同 source+session 重报取末值，不叠加）</h3>
+                <pre class="code" id="curlExample"></pre>
+                <div class="hint">未设置 HOOK_AUTH_TOKEN 时仅接受回环来源写入；对外接入请在 .env 配置 token</div>
+            </div>
+            <div class="mem-grid" style="grid-template-columns:1fr 1fr">
+                <div class="panel"><h3>Token 用量聚合</h3><div id="usageTable" class="hint">加载中…</div></div>
+                <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint">加载中…</div></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 注册弹窗 -->
+    <div class="modal-mask" id="regMask">
+        <div class="modal">
+            <h3>注册自定义 Agent（自动识别项目类型）</h3>
+            <div class="row"><input id="regDir" placeholder="项目目录绝对路径，如 /home/gztxt/my-agent"><button class="btn ghost sm" onclick="detectDir()">识别</button></div>
+            <pre class="code" id="regDetect" style="display:none"></pre>
+            <div class="row"><input id="regName" placeholder="名称（可空，默认取目录名）"></div>
+            <div class="toolbar" style="justify-content:flex-end">
+                <button class="btn ghost" onclick="closeRegister()">取消</button>
+                <button class="btn" onclick="registerAgent()">注册</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">Agent Hub v0.2.0 · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
+    <div id="toast"></div>
+    <script src="/static/hub.js"></script>
 </body>
 </html>
