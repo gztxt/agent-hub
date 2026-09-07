@@ -63,7 +63,7 @@ async def _create_message(system: Optional[str], messages: List[dict],
 
 
 async def chat_tools_loop(messages: List[dict], tools: List[dict],
-                          dispatch_tool=None, max_rounds: int = 6,
+                          dispatch_tool=None, max_rounds: int = 10,
                           model: Optional[str] = None,
                           on_step=None) -> Tuple[str, List[dict]]:
     """使用指定 model（默认用全局 MODEL）
@@ -75,6 +75,9 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
 
     v0.5 增量回调：on_step(step) 在每个 thought/toolcall/toolresult 完成后被调用一次，
     用来支持 SSE 流式渲染（前端可看到思考过程，不显假死）。可选，不传 = 老行为。
+
+    v0.5.3 软熔断：检测到连续 3 次同类型工具错误指纹，提前 end_turn 给用户答复；
+    max_rounds 仅作兜底，正常情况 3 轮就停。指纹 = tool_name:error_type:field:first50。
     """
     active_model = model or MODEL
     system = None
@@ -86,6 +89,50 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
             anon_msgs.append({"role": m["role"], "content": m["content"]})
     convo: List[dict] = [{"role": m["role"], "content": m["content"]} for m in anon_msgs]
     steps: List[dict] = []
+    # v0.5.3 软熔断：最近 3 个 tool 调用的指纹；元素 = "name:err_type:field:first50"
+    recent_signatures: List[str] = []
+
+    def _is_err_result(r: Any) -> bool:
+        """判定工具结果是否为错误。兼容 dict {error:...} / {ok:False,...} / 字符串含 'error'。"""
+        if isinstance(r, dict):
+            if "error" in r:
+                return True
+            if "ok" in r and not r.get("ok"):
+                return True
+            return False
+        if isinstance(r, str):
+            try:
+                j = json.loads(r)
+                if isinstance(j, dict):
+                    return _is_err_result(j)
+            except Exception:
+                pass
+            return "error" in r.lower()
+        return False
+
+    def _signature(tool_name: str, r: Any) -> str:
+        """提取指纹。成功结果 = '<name>:ok'，失败 = '<name>:err_type:field:first50'。"""
+        if not _is_err_result(r):
+            return f"{tool_name}:ok"
+        # 取结构化字段（如果 result 是 dict 或可解 JSON 字符串）
+        obj: Dict[str, Any] = {}
+        if isinstance(r, dict):
+            obj = r
+        elif isinstance(r, str):
+            try:
+                obj = json.loads(r)
+            except Exception:
+                obj = {}
+        err_type = str(obj.get("error_type", "unknown")) if isinstance(obj, dict) else "unknown"
+        field = str(obj.get("field", "")) if isinstance(obj, dict) else ""
+        # 错误主文本：error 或 message 或 detail
+        msg = ""
+        if isinstance(obj, dict):
+            msg = str(obj.get("error", "") or obj.get("message", "") or obj.get("detail", ""))
+        elif isinstance(r, str):
+            msg = r
+        first50 = msg[:50]
+        return f"{tool_name}:{err_type}:{field}:{first50}"
 
     for _ in range(max_rounds):
         data = await _create_message(system, convo, tools or None, model=active_model)
@@ -125,6 +172,34 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
             if on_step: await on_step(s)
             tool_results.append({"type": "tool_result", "tool_use_id": tu.get("id", ""),
                                  "content": payload[:8000]})
+
+            # v0.5.3 软熔断：记录指纹 + 判定最近 3 次是否完全相同
+            sig = _signature(name, out)
+            recent_signatures.append(sig)
+            if (len(recent_signatures) >= 3
+                    and len(set(recent_signatures[-3:])) == 1
+                    and not recent_signatures[-1].endswith(":ok")):
+                # 强制 end_turn：构造 fallback answer 步骤（用户能看到"我停了，原因如下"）
+                ok_count = sum(
+                    1 for st in steps
+                    if st.get("kind") == "toolresult"
+                    and not _is_err_result(_try_parse_payload(st.get("content", "")))
+                )
+                ok_summary = (f"已成功收集到 {ok_count} 个工具结果"
+                              if ok_count else "无成功结果")
+                fallback_answer = (
+                    f"我已连续 3 次尝试相同的工具调用但都失败（{sig}），"
+                    f"按智管熔断规则提前结束这轮工具调用。{ok_summary}。"
+                    f"建议：1) 换用别的工具；2) 重新描述任务；"
+                    f"3) 直接告诉用户当前能力边界。"
+                )
+                s_fb = {"kind": "answer", "content": fallback_answer,
+                        "forced_by": "soft_breaker", "signature": sig}
+                steps.append(s_fb)
+                if on_step:
+                    await on_step(s_fb)
+                return fallback_answer, steps
+
         convo.append({"role": "user", "content": tool_results})
 
     # 轮数耗尽：无 tools 强制收尾
@@ -135,3 +210,18 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
     steps.append(s)
     if on_step: await on_step(s)
     return answer, steps
+
+
+def _try_parse_payload(content: Any) -> Any:
+    """toolresult.content 可能是 JSON 字符串；尝试解 dict 用来判定是否错误。
+    解析失败/非 JSON 时原样返回（避免误判）。"""
+    if not isinstance(content, str):
+        return content
+    s = content.strip()
+    if not s or s[0] not in "{[":
+        return content
+    try:
+        import json as _json
+        return _json.loads(s)
+    except Exception:
+        return content

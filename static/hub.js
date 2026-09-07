@@ -195,6 +195,22 @@ function renderSteps(steps) {
       const det = document.createElement('details');
       const sum = document.createElement('summary');
       sum.textContent = '📥 ' + (s.tool || '') + ' 结果';
+      // v0.5.3 验证错误高亮：tool_result JSON 里 error_type=='validation' 时单独醒目渲染
+      try {
+        const j = JSON.parse(s.content);
+        if (j && j.error_type === 'validation') {
+          const v = document.createElement('div');
+          v.style.cssText = 'color:#fca5a5;font-weight:600;margin:4px 0;padding:4px 8px;background:#7f1d1d33;border-radius:4px;';
+          const gotStr = (j.got !== null && j.got !== undefined && j.got !== '') ? `，实际 ${esc(j.got)}` : '';
+          v.textContent = `❌ 参数错误: 字段 ${esc(j.field||'?')} 期望 ${esc(j.expected||'?')}${gotStr}（tool=${esc(j.tool||'?')}）`;
+          det.appendChild(v);
+        } else if (j && (j.error_type === 'not_found' || j.error_type === 'rate_limit' || j.error_type === 'acl' || j.error_type === 'timeout')) {
+          const v = document.createElement('div');
+          v.style.cssText = 'color:#fbbf24;font-weight:600;margin:4px 0;padding:4px 8px;background:#78350f33;border-radius:4px;';
+          v.textContent = `⚠ ${esc(j.error_type)}: ${esc(j.error || '')}`;
+          det.appendChild(v);
+        }
+      } catch (e) {}
       const pre = document.createElement('pre');
       pre.textContent = s.content;
       det.appendChild(sum); det.appendChild(pre);
@@ -710,7 +726,18 @@ function chatSendStream(busy, box, body, sid) {
       const args = JSON.stringify(s.tool_input || {}, null, 0).slice(0,200);
       row.innerHTML = '<span class="badge">🛠</span><span class="text">调用 <b>' + esc(s.tool) + '</b>(<code>' + esc(args) + '</code>)</span>';
     } else if (s.kind === 'toolresult') {
-      row.innerHTML = '<span class="badge">📥</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>';
+      // v0.5.3 验证错误内联醒目（红框 + 字段/期望/实际）
+      let valHtml = '';
+      try {
+        const j = JSON.parse(s.content || '');
+        if (j && j.error_type === 'validation') {
+          const gotStr = (j.got !== null && j.got !== undefined && j.got !== '') ? ` 实际 ${esc(j.got)}` : '';
+          valHtml = '<div style="color:#fca5a5;font-weight:600;background:#7f1d1d33;padding:3px 6px;border-radius:3px;margin:2px 0;">❌ 参数错误: 字段 ' + esc(j.field||'?') + ' 期望 ' + esc(j.expected||'?') + gotStr + '（tool=' + esc(j.tool||'?') + '）</div>';
+        } else if (j && (j.error_type === 'not_found' || j.error_type === 'rate_limit' || j.error_type === 'acl' || j.error_type === 'timeout')) {
+          valHtml = '<div style="color:#fbbf24;font-weight:600;background:#78350f33;padding:3px 6px;border-radius:3px;margin:2px 0;">⚠ ' + esc(j.error_type) + ': ' + esc(j.error || '') + '</div>';
+        }
+      } catch (e) {}
+      row.innerHTML = '<span class="badge">📥</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>' + valHtml;
     } else if (s.kind === 'answer') {
       row.innerHTML = '<span class="badge">💬</span><span class="text">' + esc(s.content||'') + '</span>';
     } else {

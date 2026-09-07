@@ -267,6 +267,136 @@ def _unit_status(unit: str) -> Dict[str, Any]:
     }
 
 
+# ── v0.5.3 Pydantic / MCP 错误结构化解析 ─────────────────
+# 背景：截图（智管调 mcp_call，工具 schema 不匹配）LLM 只看到截 300 字符的 raw Pydantic
+# 错误"Error executing tool echo: 1 validation error for echo..."，无法定位字段名/期望类型/
+# 实际值，只能瞎猜 server 名（18 次失败）。这里把 Pydantic 2.x 错误回填成结构化 dict，
+# 让 LLM 一轮自纠。失败兜底返 None（mcp_call 错误分支继续走原 raw 路径）。
+_VALIDATION_HINT_TYPE = re.compile(
+    r'\[type=([\w_]+)(?:,\s*input_value=([^,]+))?,\s*input_type=([\w]+)\]?'
+)
+# 匹配 Pydantic 2.x 错误头部，如 "1 validation error for Echo"
+_VALIDATION_HEADER = re.compile(r'(\d+)\s+validation\s+errors?\s+for\s+(\S+)', re.IGNORECASE)
+# 单条错误：捕获行首的字段路径（缩进的 2/4 空格标识层级）+ 类型 hint
+_VALIDATION_FIELD_LINE = re.compile(r'^\s{2,}(\S+)\s*$')
+# 自定义 mcp_call 错误（mcpgw 抛的非 Pydantic 错误）
+_MCP_NOT_FOUND = re.compile(r'(?:MCP\s*server\s*未注册|server\s*not\s*found|unknown\s*tool)\s*[:：]?\s*(\S*)', re.IGNORECASE)
+_MCP_TIMEOUT = re.compile(r'(?:timeout|timed?\s*out|超时)', re.IGNORECASE)
+_MCP_RATE_LIMIT = re.compile(r'(?:限流|rate\s*limit|429)', re.IGNORECASE)
+_MCP_ACL = re.compile(r'(?:ACL\s*拒绝|forbidden|403)', re.IGNORECASE)
+
+
+def _parse_validation_error(error_text: str) -> Optional[Dict[str, Any]]:
+    """把 Pydantic 2.x 错误 / MCP 自定义错误解析成结构化 dict；解析不到返 None。
+
+    返回 dict 字段：
+      error_type: "validation" | "not_found" | "timeout" | "rate_limit" | "acl" | "unknown"
+      tool:        Pydantic 报错的 model 名（"Echo"）；解析不到则 "unknown"
+      field:       字段路径（"message" / "items.0.name"）；解析不到则 "unknown"
+      expected:    期望类型/约束（"required" / "integer" / "string" …）；解析不到则 "unknown"
+      got:         实际值字符串（截 80 字符）；拿不到则 None
+      raw:         原 300 字符文本（兜底回显）
+    """
+    if not error_text:
+        return None
+    text = str(error_text)
+
+    # ── 1. 自定义 mcp_call 错误优先（mcpgw 抛的 404/429/403 等）──
+    m_nf = _MCP_NOT_FOUND.search(text)
+    if m_nf:
+        return {
+            "error_type": "not_found",
+            "tool": m_nf.group(1) or "unknown",
+            "field": "unknown",
+            "expected": "registered",
+            "got": None,
+            "raw": text[:300],
+        }
+    if _MCP_RATE_LIMIT.search(text):
+        return {
+            "error_type": "rate_limit",
+            "tool": "unknown", "field": "unknown",
+            "expected": "under_rate_limit", "got": None,
+            "raw": text[:300],
+        }
+    if _MCP_ACL.search(text):
+        return {
+            "error_type": "acl",
+            "tool": "unknown", "field": "unknown",
+            "expected": "acl_allowed", "got": None,
+            "raw": text[:300],
+        }
+    if _MCP_TIMEOUT.search(text) and "validation" not in text.lower():
+        return {
+            "error_type": "timeout",
+            "tool": "unknown", "field": "unknown",
+            "expected": "fast_enough", "got": None,
+            "raw": text[:300],
+        }
+
+    # ── 2. Pydantic 2.x validation error ──
+    if "validation error" not in text.lower():
+        return None
+    header = _VALIDATION_HEADER.search(text)
+    if not header:
+        # 可能是精简版（"Error executing tool X: ..."）—— 仍标 validation 但字段 unknown
+        return {
+            "error_type": "validation",
+            "tool": "unknown", "field": "unknown",
+            "expected": "unknown", "got": None,
+            "raw": text[:300],
+        }
+
+    tool_name = header.group(2) or "unknown"
+    field = "unknown"
+    expected = "unknown"
+    got: Optional[str] = None
+
+    lines = text.splitlines()
+    # 优先用语义化提示（"Field required" / "Input should be a valid integer"）——
+    # spec 要求 expected 字段反映「人类可读约束」而非 Pydantic 内部代码 (missing/int_parsing)。
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Pydantic 2.x 错误：消息行通常缩进更深，含 "Field required" 或 "Input should be"
+        # 字段名通常是上一行（缩进较浅）
+        if "Field required" in stripped:
+            expected = "required"
+            if i > 0:
+                field = lines[i - 1].strip()
+            break
+        if "Input should be" in stripped:
+            # "Input should be a valid integer [type=int_parsing, ...]" → 取 [ 之前部分
+            after = stripped.split("Input should be", 1)[1].strip()
+            expected = after.split("[", 1)[0].strip().strip(",").strip().strip(".").strip()
+            if i > 0:
+                field = lines[i - 1].strip()
+            break
+        if "missing" in stripped and "type=missing" in stripped and expected == "unknown":
+            # 兜底：仅 "[type=missing]" 无 "Field required" 字样的精简格式
+            expected = "required"
+            if i > 0:
+                field = lines[i - 1].strip()
+            break
+    # got 从 [type=X, input_value=Y, input_type=Z] 抓 Y（spec 只用 Y，不用 Z）
+    # 注：expected==required 时字段没传，input_value 是整个 args dict（如 {}）—— 此时 got 不
+    # 反映字段值，会误导 LLM；按 spec 设为 None
+    if expected != "required":
+        for line in lines:
+            m_type = _VALIDATION_HINT_TYPE.search(line)
+            if m_type and m_type.group(2):
+                got = (m_type.group(2) or "").strip().strip("'\"")[:80] or None
+                break
+
+    return {
+        "error_type": "validation",
+        "tool": tool_name,
+        "field": field or "unknown",
+        "expected": expected or "unknown",
+        "got": got,
+        "raw": text[:300],
+    }
+
+
 def set_context(discovery=None, config=None, chat_fn=None):
     if discovery:
         _ctx["discovery"] = discovery
@@ -282,75 +412,82 @@ SYSTEM_PROMPT = """你是 Agent Hub 的 Manager（指挥官），管理本机 AI
 - 回答用户前先用工具取真实状态，不臆测；
 - 「打开某 Agent 界面」调用 open_agent_ui；
 - 用户表达了值得长期记住的偏好/决策时调用 add_memory；
-- 最终用简洁中文汇报。"""
+- 最终用简洁中文汇报。
+
+Tool priority（必须遵守，按顺序优先用）：
+1) 本地 5 个只读执行工具（list_dir / read_file / shell_run / find_files / grep_search）是默认首选——日常『看文件/搜内容/列目录』95% 场景直接用这 5 个，**不要绕 mcp_call**；
+2) search_memory / get_memory_layers 查过往记忆与画像；
+3) chat_with_agent 联系其他 Agent（**不要用此问 hub-self 自己，会形成循环**）；
+4) mcp_call 是最后手段——只在 hub-self 自己的 5 工具 + 其他 16 工具确实解决不了时才考虑；**永远不要**在 mcp_tools 没列出的 server 上调 mcp_call，否则会一直 Pydantic validation error 浪费 token。
+"""
 
 TOOLS = [
     {"type": "function", "function": {
-        "name": "list_agents", "description": "列出所有 Agent 及实时状态",
+        "name": "list_agents", "description": "列出所有已知 Agent 及实时状态（id / 类型 / running/stopped / 端口 / 端点）。回答“现在有哪些 Agent/谁在跑/那个端口是哪个”时第一个调。",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "get_agent", "description": "查询单个 Agent 详情",
+        "name": "get_agent", "description": "查询单个 Agent 的完整画像（profile / 监听 / 配置路径 / 端点）。当 list_agents 列表里看到 id 但需要详情（端口、URL、tags）时调；如果 agent_id 不存在会直接报错，不要反复猜 id。",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"}}, "required": ["agent_id"]}}},
     {"type": "function", "function": {
-        "name": "chat_with_agent", "description": "向指定 Agent 发送消息并获取回复",
+        "name": "chat_with_agent", "description": "向指定 Agent 发送消息并获取回复。**典型场景**：用户想把任务转交给特定 Agent（如让 pi 算东西、让 jcode 改代码）时用。**不要用此工具问 hub-self 自己——会形成死循环**，hub-self 自问自答请直接推理或用本地 5 工具。",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"},
             "message": {"type": "string"}}, "required": ["agent_id", "message"]}}},
     {"type": "function", "function": {
-        "name": "open_agent_ui", "description": "获取指定 Agent 的 Web 界面地址（返回 action）",
+        "name": "open_agent_ui", "description": "获取指定 Agent 的 Web 界面 URL（不是打开浏览器，而是在 hub 前端展示打开按钮）。**典型场景**：用户说“打开 claude/jcode/pi 界面”或“我想看 X 的页面”。返回 action 字段，前端会处理跳转；agent_id 必须先 list_agents 拿准确值。",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"}}, "required": ["agent_id"]}}},
     {"type": "function", "function": {
-        "name": "search_memory", "description": "检索记忆中心 L1 记忆",
+        "name": "search_memory", "description": "按 query 检索记忆中心 L1（用户偏好、决策、约束等结构化条目）。**典型场景**：用户问“之前怎么定的/我记得说过……”或当前任务依赖历史偏好时。query 用自然语言短语而非关键词堆砌，limit 决定返回几条；返回空列表时不要反复重试同 query。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "limit": {"type": "integer"}},
             "required": ["query"]}}},
     {"type": "function", "function": {
-        "name": "get_memory_layers", "description": "查看 L2 工作记忆与 L3 Profile 概览",
+        "name": "get_memory_layers", "description": "查看 L2 当前工作记忆（本次任务上下文）与 L3 用户/系统 Profile 概览（无需 query 的全局快照）。**典型场景**：刚接进对话想“校准”自己——已知用户身份/系统约束时用；不记得某条事实具体内容但知道它在哪一层时用。",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "add_memory", "description": "把用户的偏好/决策写入记忆中心 L1",
+        "name": "add_memory", "description": "把用户表达的稳定偏好/决策写入 L1。**典型场景**：用户说“以后都这样”、“我偏好 X”、“记住我……”。**只存稳定信息**，不要存单次任务细节（“今天改了 jcode 配置”不要存）；category 取值 fact/decision/constraint/preference，不确定就 fact；source 默认空字符串。",
         "parameters": {"type": "object", "properties": {
             "content": {"type": "string"},
             "category": {"type": "string", "enum": ["fact", "decision", "constraint", "preference"]},
             "source": {"type": "string"}}, "required": ["content"]}}},
     {"type": "function", "function": {
-        "name": "list_ports", "description": "列出本机监听端口及归属进程（可过滤端口号）",
+        "name": "list_ports", "description": "列出本机监听端口及归属进程（端口/PID/cmdline）。**典型场景**：用户问“3102/3456/8083 是谁”、诊断端口冲突、或需要判断某服务是否真在跑。可选参数 port 用于精确过滤（不要用模糊词如'3 开头'，传整数即可）。",
         "parameters": {"type": "object", "properties": {
             "port": {"type": "integer"}}}}},
     {"type": "function", "function": {
-        "name": "list_sessions", "description": "查询统一对话/会话历史摘要",
+        "name": "list_sessions", "description": "查询统一对话的会话历史摘要（agent_id / 时间 / 首条消息）。**典型场景**：用户想“找回上次跟 X 的对话”、回顾近期和某 Agent 聊过什么。不传 agent_id 拿全部；limit 控制条数（默认即可）。",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"}, "limit": {"type": "integer"}}}}},
     {"type": "function", "function": {
-        "name": "mcp_tools", "description": "列出 MCP 聚合网关中所有可用工具（server+tool）",
+        "name": "mcp_tools", "description": "列出 MCP 聚合网关中**当前真实可用**的所有 server 与 tool（每次返回即快照，无缓存）。**典型场景**：在调 mcp_call **之前必须**先调一次——拿到 server 准确名 + 该 server 暴露的 tool 名 + 参数 schema。返回里没有的 server/tool **绝对不要**猜，否则 mcp_call 会一直 Pydantic validation error 浪费 token。",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "mcp_call",
-        "description": "调用 MCP 聚合网关中的某个 server+tool。日常任务请用 hub-self 的 list_dir/read_file/shell_run/find_files/grep_search 等 21 工具完成；仅当 mcp_tools 列表里明确看到 server 暴露了该能力（如 hub-demo 的 echo/now）时才用 mcp_call。",
+        "description": "调用 MCP 聚合网关中的某个 server+tool。**【强制前置】永远先调 mcp_tools 看 server 列表；列表里没出现的 server 名绝对不要瞎试，否则会一直 Pydantic validation error 浪费 token**。**日常任务请优先用 hub-self 的本地 5 工具**（list_dir / read_file / shell_run / find_files / grep_search）——它们能解决 95% 任务，mcp_call 是最后手段。【失败自检】看到 'validation error for X'，说明参数 X 的类型/必填/嵌套错了，先 mcp_tools 看 X 的 schema 再调整 args；看到 'server not found'，检查大小写/拼写/当前网关是否注册了该 server（可能已下线）。",
         "parameters": {"type": "object", "properties": {
             "server": {"type": "string", "description": "server id 或名称（如 'hub-demo'）"},
             "tool": {"type": "string"},
             "args": {"type": "object"}}, "required": ["server", "tool"]}}},
     # ── 修复能力工具（v0.4 起，对话框默认不暴露；UI「修复模式」开启才可用）──
     {"type": "function", "function": {
-        "name": "agent_health", "description": "单个 Agent/服务 一页画像：profile、监听、配置 mtime、journal 尾 10 行。仅只读，不动任何东西。",
+        "name": "agent_health", "description": "单个 Agent/服务的一页画像：profile + 监听 + 配置 mtime + journal 尾 10 行。**仅只读**，不动任何东西也不重启。**典型场景**：用户问“X 现在怎么样/挂了没/日志里说啥”、或在做修复前先取证判断能否下手。agent_id 用 list_agents 返回的精确值。",
         "parameters": {"type": "object", "properties": {
             "agent_id": {"type": "string"}}, "required": ["agent_id"]}}},
     {"type": "function", "function": {
-        "name": "safe_restart", "description": "重启白名单内 systemd user 单元（agent-hub/ccr/proxy-panel/pi-web/cloudcli/ccpocket-bridge/fcc-refresh-free/agent-hub-self）。先做时间戳备份再 restart；agent-hub 重启会断本对话，请提前知会用户。",
+        "name": "safe_restart", "description": "重启白名单内的 systemd user 单元（agent-hub / ccr / proxy-panel / pi-web / cloudcli / ccpocket-bridge / fcc-refresh-free / agent-hub-self）。**【重要警告】重启 agent-hub 会立即断掉当前 hub-self 对话**，执行前必须先向用户说清影响 + 等用户显式 yes；reason 必填并写入审计。**典型场景**：服务确认挂掉且 agent_health 证据齐备后用；只是怀疑或只是看日志不要调——先 list_ports / agent_health 取证。",
         "parameters": {"type": "object", "properties": {
             "unit": {"type": "string"},
             "reason": {"type": "string", "description": "为什么重启（写入备份名+审计）"}},
             "required": ["unit", "reason"]}}},
     {"type": "function", "function": {
-        "name": "config_show", "description": "读取并时间戳备份指定配置文件（白名单内），返回 backup 路径与 sha256 前 8 位。绝不写回。",
+        "name": "config_show", "description": "读取并时间戳备份指定配置文件（白名单内：jcode / claude / hermes 配置 + ~/.config/systemd/user/*.service），返回 backup 路径与 sha256 前 8 位。**仅只读，绝不写回**。**典型场景**：任何写配置前必先调一次取证 + 留回滚余地——rollback 需要 backup_id，所以这是 config_write / rollback 链路的第一环。path 用绝对路径，reason 必填。",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "绝对路径，限于 jcode/claude/hermes 配置 + ~/.config/systemd/user/*.service"},
             "reason": {"type": "string"}}, "required": ["path", "reason"]}}},
     {"type": "function", "function": {
-        "name": "config_write", "description": "【双次确认】写白名单内配置。第一次调用仅试写+备份+比对，存为 pending_write；hub-self 第二次被问「执行 pending_write_id=xxx 吗」时答 yes 才真写。任意失败可 rollback。",
+        "name": "config_write", "description": "**【双次确认】**写白名单内配置。**第一次调用**：pending_write_id 留空，仅做“试写+比对+生成 pending id”，不落盘；**第二次调用**：pending_write_id 填上次返回的 id + new_content 再次给完整文件，才真覆盖。任何一步可 rollback。**典型场景**：用户明确说“改 X”且已经先 config_show 取证；不在用户授权链上的不要碰。reason 必填，写入备份名+审计。",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "new_content": {"type": "string", "description": "完整文件新内容（覆盖式）"},
@@ -358,40 +495,40 @@ TOOLS = [
             "pending_write_id": {"type": "string", "description": "首次调用留空；二次确认时填上次返回的 id"}},
             "required": ["path", "new_content", "reason"]}}},
     {"type": "function", "function": {
-        "name": "rollback", "description": "用 backup_id 把指定文件还原到 data/backups/ 下对应备份。仅还原白名单内文件。",
+        "name": "rollback", "description": "用 backup_id（config_show 或 config_write 返回的文件名，不含目录）把指定文件还原到 data/backups/ 下对应备份。**仅还原白名单内文件**。**典型场景**：config_write 写完发现不对、或 service 重启后行为异常需要回到上一版；**调 rollback 前最好先 config_show 当前值对比**，避免直接覆盖丢失改动现场。",
         "parameters": {"type": "object", "properties": {
             "backup_id": {"type": "string", "description": "文件名（不含目录），如 20260907_182856-config.toml-manual-fix-aabbccdd.bak"}},
             "required": ["backup_id"]}}},
     # ── v0.5 只读执行类（默认暴露，路径/命令双重白名单）──
     {"type": "function", "function": {
-        "name": "list_dir", "description": "列出目录内容（白名单内路径），含子目录与文件大小；默认 depth=1 不递归",
+        "name": "list_dir", "description": "列出白名单路径下目录内容（子目录与文件大小）。**默认首选**：用户问“目录里有什么/项目结构/列文件”时直接用这个，不要绕 mcp_call。**失败自检**：path 不在白名单（/home/gztxt|/vol1|/fs/1000/ftp/技术文档）会拒——用户给的路径要先确认在这三个根下；depth 最大 3。",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "绝对路径，限于 /home/gztxt、/vol1、/fs/1000/ftp/技术文档"},
             "depth": {"type": "integer", "description": "递归深度 0=不递归 默认1最大3", "default": 1, "minimum": 0, "maximum": 3},
             "hidden": {"type": "boolean", "description": "是否包含隐藏文件", "default": False}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "read_file", "description": "读取文件前 N 字节（白名单内路径）；默认 4KB 上限 16KB",
+        "name": "read_file", "description": "读取白名单路径下文件的前 N 字节（默认 4KB，上限 16KB）。**默认首选**：用户要看具体文件内容/某段代码/某段配置时用——比 shell_run + cat 更安全（有大小截断）。**失败自检**：path 必须在白名单内；max_bytes 不超过 16384；要看更大文件用 shell_run + head -c。",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "max_bytes": {"type": "integer", "default": 4096, "minimum": 1, "maximum": 16384}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cd/cat/head/tail/find/grep/stat/du/sort/uniq/cut/awk/systemctl status/journalctl -n 等）。字符级拒绝 rm/dd/mkfs/python/>/etc/passwd 等；管道 | 允许；sed 仅只读模式；xargs 仅接白名单命令。",
+        "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cd/cat/head/tail/find/grep/stat/du/sort/uniq/cut/awk/systemctl status/journalctl -n 等；管道 | 允许；sed 仅只读；xargs 仅接白名单命令）。**默认首选**：list_dir/read_file 表达不了时（如要 grep / sort / journalctl / 多步管道）才升级到这个。**【强制】字符级拒绝 rm/dd/mkfs/python/> 等写入类与系统关键文件**，不要尝试绕过；cwd 必须也在白名单内；timeout 上限 20 秒。",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "完整 shell 命令字符串"},
             "cwd": {"type": "string", "description": "工作目录（白名单内），可选；如不用本参数也可用 cd <path>"},
             "timeout": {"type": "integer", "description": "秒", "default": 5, "minimum": 1, "maximum": 20}},
             "required": ["command"]}}},
     {"type": "function", "function": {
-        "name": "find_files", "description": "在白名单路径下按 glob 模式找文件",
+        "name": "find_files", "description": "在白名单路径下按 glob 模式找文件（如 **/*.md 或 *.toml）。**默认首选**：用户问“找某个文件/找所有 X 后缀”时用，比 shell_run + find 更结构化（自动 max_results 截断）。**失败自检**：root 必须在白名单内；max_results 上限 200；glob 写法是 shell glob 不是 regex（如 *.md 不需 .*\\.md）。",
         "parameters": {"type": "object", "properties": {
             "glob_pattern": {"type": "string", "description": "如 **/*.md 或 *.toml"},
             "root": {"type": "string", "description": "根目录"},
             "max_results": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200}},
             "required": ["glob_pattern", "root"]}}},
     {"type": "function", "function": {
-        "name": "grep_search", "description": "在白名单路径下按模式搜内容（仅 grep -rEn）",
+        "name": "grep_search", "description": "在白名单路径下按模式搜内容（仅 grep -rEn，自动加行号与文件名）。**默认首选**：用户问“哪段代码提到 X / 哪个文件有 Y / 全文搜关键字”时用，比 shell_run + grep -r 更结构化（结果含 file:line:content）。**失败自检**：path 必须在白名单内；pattern 是 regex（特殊字符要转义）；ignore_case=true 处理大小写不敏感；max_results 上限 100。",
         "parameters": {"type": "object", "properties": {
             "pattern": {"type": "string"},
             "path": {"type": "string"},
@@ -541,6 +678,58 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
             except Exception:
                 regs = []
             names = [r.get("name") or r.get("id") for r in regs]
+            # ── v0.5.3 解析 Pydantic / MCP 错误为结构化字段，让 LLM 一轮自纠 ──
+            raw_text = str(detail or e)
+            # mcpgw 把 out 序列化成 JSON 字符串塞进 HTTPException.detail；尝试解一层
+            parsed_payload: Any = None
+            try:
+                parsed_payload = json.loads(raw_text)
+            except Exception:
+                pass
+            err_text = raw_text
+            if isinstance(parsed_payload, dict) and parsed_payload.get("error"):
+                err_text = str(parsed_payload["error"])
+            parsed = _parse_validation_error(err_text)
+            if parsed:
+                et = parsed["error_type"]
+                # 把结构化字段拼成"人话"给 LLM（dict 被 llm.chat_tools_loop json.dumps，
+                # LLM 在下一轮既能看到字段也能看到自然语言描述）
+                if et == "validation":
+                    got_str = f"，实际传入 {parsed['got']}" if parsed.get("got") not in (None, "", "null") else "，但没传该字段"
+                    human = (
+                        f"参数错误: tool '{parsed['tool']}' 的 '{parsed['field']}' 字段"
+                        f"应为 {parsed['expected']}{got_str}。"
+                        f"请先调 mcp_tools 查 {parsed['tool']} 的 inputSchema，按 schema 补齐 args 后再调 mcp_call。"
+                    )
+                elif et == "not_found":
+                    human = (
+                        f"找不到 {parsed['tool']}。当前已注册 MCP server: "
+                        f"{names if names else '（空）'}。"
+                        f"请调 mcp_tools 查准确 server 名/工具名再调 mcp_call。"
+                    )
+                elif et == "rate_limit":
+                    human = "触发限流，请稍等 60s 再试。"
+                elif et == "acl":
+                    human = "ACL 拒绝该调用，hub 聚合网关策略禁止此 agent 调该工具。"
+                elif et == "timeout":
+                    human = "上游 MCP server 调用超时（默认 60s），可重试或换工具。"
+                else:
+                    human = f"mcp_call 错误: {err_text[:200]}"
+                return {
+                    "error": human,
+                    "error_type": et,
+                    "field": parsed["field"],
+                    "expected": parsed["expected"],
+                    "got": parsed["got"],
+                    "tool": parsed["tool"],
+                    "raw": parsed["raw"],
+                    "registered_servers": names,
+                    "hint": (
+                        f"当前已注册 MCP server: {names if names else '（空）'}. "
+                        f"如非必要请改用 list_dir/read_file/shell_run/find_files/grep_search 等 hub-self 本地工具."
+                    ),
+                }
+            # 非 validation / 解析失败：原 raw 路径（保证 fallback 兼容）
             hint = (
                 f"当前已注册 MCP server: {names if names else '（空）'}. "
                 f"请改用 list_dir/read_file/shell_run/find_files/grep_search 等 hub-self 21 工具."
@@ -993,8 +1182,9 @@ async def manager_chat(body: ManagerChatIn):
                     int((__import__("time").monotonic() - t0) * 1000),
                     trace_id=session_id)
 
+        # v0.5.3 软熔断：连续 3 次同错误指纹 → 提前 final（max_rounds 仅兜底，正常 3 轮内停）
         answer, steps = await llm.chat_tools_loop(messages, TOOLS, timed_dispatch,
-                                                  max_rounds=6)
+                                                  max_rounds=10)
         db.log_profile_event("manager_chat", "manager", "success",
                              int((__import__("time").monotonic() - t_total) * 1000),
                              trace_id=session_id)
