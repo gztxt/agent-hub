@@ -170,22 +170,23 @@ def _build_task_summary(session_id: str, message: str, steps: list,
     next_steps = []   # 下一步建议
     unfinished = []   # 未完成项（失败时用）
 
-    # 1) 从 answer + steps 抓所有路径
+    # 1) 从 steps 抓所有路径（v0.5.2.2 改：只信 steps 不信 answer，避免 hallucinated 路径）
     paths = set()
-    # answer 内的路径
-    for m in re.finditer(r'(/(?:home|vol1|fs|tmp)/[^\s\)\]<>，。,；;\n]+)', answer or ""):
-        p = m.group(1).rstrip(".,;:!?")
-        # 去尾标点
-        p = re.sub(r'[.,;:!?\)\]]+$', '', p)
-        if len(p) > 8 and not p.endswith(('.md', '.txt', '.json', '.toml', '.py', '.sh')) or p.endswith(('/README.md', '/CLAUDE.md')):
-            # 路径必须够长才收
-            paths.add(p)
-    # steps 里的 list_dir / read_file / find_files 路径（更准）
+    # 计算成功 step 的 tool_name（exit_code 0 + 无 error 字段）
+    succeeded_tools = set()
+    for tr in tool_results:
+        c = tr.get("content") or ""
+        if '"error"' not in c[:300] and "禁用" not in c[:200] and "越界" not in c[:200] and "未找到" not in c[:200]:
+            succeeded_tools.add(tr.get("tool"))
+    # 从成功的 list_dir / read_file / find_files / shell_run 等抓 path
     for tc in tool_calls:
+        tool = tc.get("tool")
+        if tool not in succeeded_tools:
+            continue  # 失败的步骤路径不收
         ti = tc.get("tool_input") or {}
-        for k in ("path", "root", "cwd"):
+        for k in ("path", "root", "cwd", "glob_pattern"):
             v = ti.get(k)
-            if v and isinstance(v, str) and v.startswith(("/", "~")):
+            if v and isinstance(v, str) and (v.startswith(("/", "~")) or "*" in v):
                 paths.add(v)
     # write 类工具（config_write / rollback / safe_restart）算动作
     write_tools = [tc for tc in tool_calls if tc.get("tool") in ("config_write", "rollback", "safe_restart")]

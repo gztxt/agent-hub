@@ -8,6 +8,7 @@
 """
 import hashlib
 import json
+import re
 import os
 import shlex
 import shutil
@@ -65,7 +66,8 @@ READ_SHELL_ALLOWED = frozenset({
 })
 # 字符级黑名单（任何位置出现即拒）—— 写/破坏/系统级操作
 # 注意：'|' 管道操作符**不在**黑名单（v0.5 trace 反馈 LLM 多次用管道全被拒）
-# 仍拒的：写重定向 > >> 2> 2>>、脚本逃逸、系统改写
+# v0.5.2.2 写重定向从黑名单移除（v0.5.1 trace 反馈 `head 2>/dev/null`、`du | sort | head` 等
+# 合法只读命令被误拒）；改用下方 DENY_REDIRECT 正则精确匹配
 READ_SHELL_DENY_SUBSTR = (
     "rm ", "rm\t", "rm$", "rm/",
     "dd ", "mkfs", "fdisk", "parted",
@@ -73,7 +75,6 @@ READ_SHELL_DENY_SUBSTR = (
     "mv ", "mv\t", "mv$", "mv/",
     "cp ", "cp\t", "cp$", "cp/",
     "ln ", "ln\t", "ln$", "ln/",
-    ">", ">>", "2>", "2>>",  # 写重定向（管道 | 不在此列）
     "kill ", "kill\t", "kill$", "pkill", "killall",
     "shutdown", "reboot", "halt", "poweroff",
     "mount", "umount",
@@ -84,11 +85,20 @@ READ_SHELL_DENY_SUBSTR = (
     "iptables", "ip route add", "ip route del", "ip rule",
     "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
     "passwd", "visudo", "sudo ",
-    "crontab", "at ", "batch",
+    "crontab", "batch",  # v0.5.2.2 移除 "at "（误伤 cat/stat/data 等含 at 字符串的命令）；改用 AT_DENY_WORD 精确匹配 \bat\b
     ":(){:|:&};:", "wget ", "curl ", "nc ", "ncat ",
     "python ", "python3 ", "perl ", "ruby ", "node ",  # 拒绝脚本逃逸
     "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/fstab",
 )
+# v0.5.2.2 写重定向精确正则（取代原字符级拒）：
+#   - 单 > 或 >> 写文件到 /path：拒（前不能是 2=stderr 绑流/&=复合/0=旧式 fd）
+#   - &> / &>> 写文件：拒
+#   - 2> / 2>>：放（stderr 绑流到 /dev/null 或文件，是只读 agent 的常见模式）
+# 已知瑕疵：`2>>/path` 仍拒（stderr 追加写文件）；`0>/path` 放（agent 几乎不用）
+DENY_REDIRECT = re.compile(r'(?:(?<![2&0])>(?!>)|&>|>>(?!>))[\s]*/[\w/]')
+# v0.5.2.2 精确拒「at」命令（提交任务调度）—— 必须作为命令起始（行首/管道后/&&/; 后），
+# 不在参数位置（grep at / cat foo 等）
+AT_DENY_WORD = re.compile(r'(?:^|[|;&])\s*at(\s|$)')
 # sed 单独限制：只允许 -n/=/s/ 读模式；拒绝 -i/i/a/c（写模式）
 SED_DENY_FLAGS = ("-i", "-e ", "--in-place", " --follow-symlinks", "/d", "/a\\", "/i\\", "/c\\")
 
@@ -125,6 +135,13 @@ def _shell_allowed(command: str) -> Tuple[bool, str]:
     for deny in READ_SHELL_DENY_SUBSTR:
         if deny in command:
             return False, f"命令含禁用子串「{deny.strip()}」"
+    # v0.5.2.2 精确拒 at 命令（提交任务调度）
+    if AT_DENY_WORD.search(command):
+        return False, "「at」命令禁（提交任务调度）"
+    # v0.5.2.2 写重定向精确拒（替代 v0.5.1 字符级误伤）
+    m = DENY_REDIRECT.search(command)
+    if m:
+        return False, f"写重定向禁（{m.group(0).strip()}）"
     # 第一段必须是白名单命令
     head = command.strip().split()[0]
     # 去路径前缀
