@@ -23,6 +23,7 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 
 import db
+import config
 
 router = APIRouter()
 
@@ -229,6 +230,11 @@ class CallIn(BaseModel):
 
 @router.post("/mcp/call")
 async def mcp_call(body: CallIn):
+    # 确保 db 已初始化（manager 调 mcp_call 路径可能绕过 main.py init）
+    try:
+        db.init_db(config.Config().db_path)
+    except Exception:
+        pass
     _check_rate(body.agent_id or "anon")
     rows = db.query("SELECT * FROM mcp_servers WHERE enabled=1 AND (id=? OR name=?)",
                     (body.server, body.server))

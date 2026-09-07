@@ -76,12 +76,12 @@ READ_SHELL_DENY_SUBSTR = (
     "kill ", "kill\t", "kill$", "pkill", "killall",
     "shutdown", "reboot", "halt", "poweroff",
     "mount", "umount",
-    "apt", "apt-get", "yum", "dnf", "pacman", "zypper",
+    # v0.5.2.9 移除字符级包管理/system 用户管理/apt 误伤（adapters/cyber/aptos 等含 apt 子串的合法目录名会被拒）
+    # 改用下方 PKG_CMD_DENY / SYS_USER_CMD_DENY 正则，命令起始位置才拒
     "systemctl start", "systemctl stop", "systemctl restart",
     "systemctl reload", "systemctl enable", "systemctl disable",
     "systemctl mask", "systemctl unmask", "systemctl daemon-reload",
     "iptables", "ip route add", "ip route del", "ip rule",
-    "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
     "passwd", "visudo", "sudo ",
     "crontab", "batch",  # v0.5.2.2 移除 "at "（误伤 cat/stat/data 等含 at 字符串的命令）；改用 AT_DENY_WORD 精确匹配 \bat\b
     ":(){:|:&};:", "wget ", "curl ", "nc ", "ncat ",
@@ -100,6 +100,14 @@ AT_DENY_WORD = re.compile(r'(?:^|[|;&])\s*at(\s|$)')
 # v0.5.2.3 写类命令精确拒（cp/mv/ln/rm/wget/curl/nc/tee/scp/rsync）—— 同上策略
 WRITE_CMD_DENY = re.compile(
     r'(?:^|[|;&]|\bxargs\s+)\s*(cp|mv|ln|rm|wget|curl|nc|ncat|tee|scp|rsync)\b'
+)
+# v0.5.2.9 包管理命令精确拒（防 adapters/cyber/aptos 等合法目录名误伤）
+PKG_CMD_DENY = re.compile(
+    r'(?:^|[|;&]|\bxargs\s+)\s*(apt(-get|-cache|-key)?|yum|dnf|pacman|zypper|brew|snap|flatpak)\b'
+)
+# v0.5.2.9 系统用户管理命令精确拒
+SYS_USER_CMD_DENY = re.compile(
+    r'(?:^|[|;&]|\bxargs\s+)\s*(useradd|userdel|usermod|groupadd|groupdel|groupmod)\b'
 )
 # sed 单独限制：只允许 -n/=/s/ 读模式；拒绝 -i/i/a/c（写模式）
 SED_DENY_FLAGS = ("-i", "-e ", "--in-place", " --follow-symlinks", "/d", "/a\\", "/i\\", "/c\\")
@@ -186,6 +194,14 @@ def _shell_allowed(command: str) -> Tuple[bool, str]:
     m_w = WRITE_CMD_DENY.search(command)
     if m_w:
         return False, f"「{m_w.group(1)}」命令禁（破坏/网络下载）"
+    # v0.5.2.9 包管理命令精确拒
+    m_p = PKG_CMD_DENY.search(command)
+    if m_p:
+        return False, f"「{m_p.group(1)}」包管理禁"
+    # v0.5.2.9 系统用户管理精确拒
+    m_su = SYS_USER_CMD_DENY.search(command)
+    if m_su:
+        return False, f"「{m_su.group(1)}」系统用户管理禁"
     # v0.5.2.2 写重定向精确拒（替代 v0.5.1 字符级误伤）
     m = DENY_REDIRECT.search(command)
     if m:
@@ -311,9 +327,10 @@ TOOLS = [
         "name": "mcp_tools", "description": "列出 MCP 聚合网关中所有可用工具（server+tool）",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "mcp_call", "description": "调用 MCP 网关工具（经 ACL 与限流）",
+        "name": "mcp_call",
+        "description": "调用 MCP 聚合网关中的某个 server+tool。日常任务请用 hub-self 的 list_dir/read_file/shell_run/find_files/grep_search 等 21 工具完成；仅当 mcp_tools 列表里明确看到 server 暴露了该能力（如 hub-demo 的 echo/now）时才用 mcp_call。",
         "parameters": {"type": "object", "properties": {
-            "server": {"type": "string", "description": "server id 或名称"},
+            "server": {"type": "string", "description": "server id 或名称（如 'hub-demo'）"},
             "tool": {"type": "string"},
             "args": {"type": "object"}}, "required": ["server", "tool"]}}},
     # ── 修复能力工具（v0.4 起，对话框默认不暴露；UI「修复模式」开启才可用）──
@@ -505,13 +522,30 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
             return {"error": repr(e)[:300]}
     if name == "mcp_call":
         import mcpgw
+        # v0.5.2.9 先列已注册 server，错误时告诉 LLM 实际名单（避免它反复猜）
         try:
             return await mcpgw.mcp_call(mcpgw.CallIn(
                 server=args["server"], tool=args["tool"],
                 args=args.get("args") or {}, agent_id="manager"))
         except Exception as e:  # noqa: BLE001
             detail = getattr(e, "detail", None)
-            return {"error": str(detail or e)[:400]}
+            # 直接查 mcp_servers 表，列出实际已注册 server 名字
+            try:
+                import db as _db
+                # 确保 db 已初始化（mcp_call 可能从非 manager 入口进来）
+                try:
+                    _db.init_db(config.Config().db_path)
+                except Exception:
+                    pass
+                regs = _db.query("SELECT id, name FROM mcp_servers ORDER BY created_at")
+            except Exception:
+                regs = []
+            names = [r.get("name") or r.get("id") for r in regs]
+            hint = (
+                f"当前已注册 MCP server: {names if names else '（空）'}. "
+                f"请改用 list_dir/read_file/shell_run/find_files/grep_search 等 hub-self 21 工具."
+            )
+            return {"error": str(detail or e)[:300], "registered_servers": names, "hint": hint}
 
     # ── 修复能力：只读画像 ───────────────────────────────────
     if name == "agent_health":
