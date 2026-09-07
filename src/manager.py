@@ -69,12 +69,10 @@ READ_SHELL_ALLOWED = frozenset({
 # v0.5.2.2 写重定向从黑名单移除（v0.5.1 trace 反馈 `head 2>/dev/null`、`du | sort | head` 等
 # 合法只读命令被误拒）；改用下方 DENY_REDIRECT 正则精确匹配
 READ_SHELL_DENY_SUBSTR = (
-    "rm ", "rm\t", "rm$", "rm/",
+    # v0.5.2.3 移除字符级 cp/mv/ln/rm 拒（改用下方 WRITE_CMD_DENY 正则，命令起始才拒，
+    # 防 grep -i cp / grep -i rm 等合法 grep 模式被误伤）
     "dd ", "mkfs", "fdisk", "parted",
     "chmod", "chown", "chgrp", "setfacl",
-    "mv ", "mv\t", "mv$", "mv/",
-    "cp ", "cp\t", "cp$", "cp/",
-    "ln ", "ln\t", "ln$", "ln/",
     "kill ", "kill\t", "kill$", "pkill", "killall",
     "shutdown", "reboot", "halt", "poweroff",
     "mount", "umount",
@@ -99,6 +97,10 @@ DENY_REDIRECT = re.compile(r'(?:(?<![2&0])>(?!>)|&>|>>(?!>))[\s]*/[\w/]')
 # v0.5.2.2 精确拒「at」命令（提交任务调度）—— 必须作为命令起始（行首/管道后/&&/; 后），
 # 不在参数位置（grep at / cat foo 等）
 AT_DENY_WORD = re.compile(r'(?:^|[|;&])\s*at(\s|$)')
+# v0.5.2.3 写类命令精确拒（cp/mv/ln/rm/wget/curl/nc/tee/scp/rsync）—— 同上策略
+WRITE_CMD_DENY = re.compile(
+    r'(?:^|[|;&]|\bxargs\s+)\s*(cp|mv|ln|rm|wget|curl|nc|ncat|tee|scp|rsync)\b'
+)
 # sed 单独限制：只允许 -n/=/s/ 读模式；拒绝 -i/i/a/c（写模式）
 SED_DENY_FLAGS = ("-i", "-e ", "--in-place", " --follow-symlinks", "/d", "/a\\", "/i\\", "/c\\")
 
@@ -138,6 +140,10 @@ def _shell_allowed(command: str) -> Tuple[bool, str]:
     # v0.5.2.2 精确拒 at 命令（提交任务调度）
     if AT_DENY_WORD.search(command):
         return False, "「at」命令禁（提交任务调度）"
+    # v0.5.2.3 写类命令精确拒（避免误伤 grep -i cp / grep -i rm 等）
+    m_w = WRITE_CMD_DENY.search(command)
+    if m_w:
+        return False, f"「{m_w.group(1)}」命令禁（破坏/网络下载）"
     # v0.5.2.2 写重定向精确拒（替代 v0.5.1 字符级误伤）
     m = DENY_REDIRECT.search(command)
     if m:

@@ -101,6 +101,15 @@
         .msg.user { align-self: flex-end; background: var(--btn); border-bottom-right-radius: 4px; }
         .msg.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
         .msg.err { align-self: flex-start; background: #991b1b; }
+        /* v0.5.2.3 任务总结卡片：表格化 + 紧凑 */
+        .msg.summary { background: var(--surface-2); border-left: 3px solid var(--accent); align-self: flex-start; max-width: 92%; padding: 10px 14px; }
+        .msg.summary .sum-head { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+        .msg.summary .sum-tbl { margin: 6px 0; font-size: 12.5px; line-height: 1.5; }
+        .msg.summary .sum-tbl th { width: 60px; min-width: 60px; padding: 4px 8px; color: var(--muted); font-weight: 500; background: transparent; border-bottom: 1px solid var(--divider); }
+        .msg.summary .sum-tbl td { padding: 4px 8px; border-bottom: 1px solid var(--divider); }
+        .msg.summary .sum-tbl tr:last-child th, .msg.summary .sum-tbl tr:last-child td { border-bottom: none; }
+        .msg.summary .sum-tail { font-size: 12.5px; line-height: 1.55; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--divider); color: var(--text-2); }
+        .msg.summary code { font-size: 12px; }
         .steps { align-self: flex-start; width: 100%; display: flex; flex-direction: column; gap: 6px; }
         .step { font-size: 12px; border-radius: 8px; padding: 6px 10px; line-height: 1.5; }
         .step.thought { color: var(--text-2); font-style: italic; background: #101a2e80; }

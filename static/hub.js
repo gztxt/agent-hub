@@ -213,8 +213,8 @@ function renderSteps(steps) {
   return wrap;
 }
 
-// v0.5.2 任务完成总结卡片：流式 final 事件 + 历史回放都调用
-// v0.5.2.1 重设计：产物视角，不再堆砌"思考 N 步/工具 N 次"等过程统计
+// v0.5.2.3 表格化 + 紧凑化（用户反馈：段落太松散，要紧凑）
+// 设计：两段表格（一段元信息、一段产物）+ 一行下一步/未完成
 function renderSummaryCard(s) {
   if (!s) return null;
   const card = document.createElement('div');
@@ -223,25 +223,44 @@ function renderSummaryCard(s) {
   let color = '#34d399';
   if ((s.status || '').includes('部分')) color = '#fbbf24';
   if ((s.status || '').includes('失败')) color = '#f87171';
-  // 段落
   const products = s.products || [];
   const actions = s.actions || [];
   const commits = s.commits || [];
   const nextSteps = s.next_steps || [];
   const unfinished = s.unfinished || [];
-  const productBullets = [
-    ...products.map(p => `<li>涉及文件 <code>${escapeHtml(p)}</code></li>`),
-    ...actions.map(a => `<li>动作: ${escapeHtml(a)}</li>`),
-    ...commits.map(c => `<li>产物: ${escapeHtml(c)}</li>`),
-  ].join('');
-  const nextBullets = nextSteps.map(n => `<li>${escapeHtml(n)}</li>`).join('');
-  const unfinishedBullets = unfinished.map(u => `<li>${escapeHtml(u)}</li>`).join('');
+  // 表 1：元信息（5 行固定）
+  const metaRows = [
+    ['状态', `<b style="color:${color}">${escapeHtml(s.status || '完成')}</b>`],
+    ['耗时', escapeHtml(s.duration_str || '?')],
+    ['类型', escapeHtml(s.task_kind || '?')],
+    ['模型', `<code>${escapeHtml(s.model || '?')}</code>`],
+    ['会话', `<code>${escapeHtml((s.session_id||'').slice(0,12))}</code>`],
+  ];
+  const metaTable = `<table class="sum-tbl"><tbody>${metaRows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</tbody></table>`;
+  // 表 2：产物（路径 + commit + 动作）
+  const productRows = [];
+  products.forEach(p => productRows.push(['文件', `<code>${escapeHtml(p)}</code>`]));
+  actions.forEach(a => productRows.push(['动作', escapeHtml(a)]));
+  commits.forEach(c => {
+    if (c.startsWith('commit ')) productRows.push(['提交', c]);
+    else productRows.push(['产物', escapeHtml(c)]);
+  });
+  const prodTable = productRows.length
+    ? `<table class="sum-tbl"><tbody>${productRows.slice(0, 8).map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</tbody></table>`
+    : '';
+  // 紧凑下一步/未完成
+  const tail = [];
+  if (nextSteps.length) {
+    tail.push(`<b>下一步:</b> ${nextSteps.map(n => escapeHtml(n)).join(' → ')}`);
+  }
+  if (unfinished.length) {
+    tail.push(`<b style="color:#f87171">未完成:</b> ${unfinished.map(u => escapeHtml(u)).join('; ')}`);
+  }
   card.innerHTML = `
-    <div class="sum-head" style="color:${color}">📋 任务总结 · ${escapeHtml(s.status || '完成')}</div>
-    ${productBullets ? `<div class="sum-section"><b>做了什么</b><ul>${productBullets}</ul></div>` : ''}
-    ${nextBullets ? `<div class="sum-section"><b>下一步建议</b><ul>${nextBullets}</ul></div>` : ''}
-    ${unfinishedBullets ? `<div class="sum-section sum-fail"><b>未完成 / 失败</b><ul>${unfinishedBullets}</ul></div>` : ''}
-    <div class="sum-meta">${escapeHtml(s.duration_str || '?')} · ${escapeHtml(s.task_kind || '?')} · <code>${escapeHtml(s.model || '?')}</code> · session <code>${escapeHtml((s.session_id||'').slice(0,8))}</code></div>
+    <div class="sum-head" style="color:${color}">📋 任务总结</div>
+    ${metaTable}
+    ${prodTable}
+    ${tail.length ? `<div class="sum-tail">${tail.join(' · ')}</div>` : ''}
   `;
   return card;
 }

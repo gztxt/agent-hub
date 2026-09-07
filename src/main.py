@@ -248,26 +248,59 @@ def _build_task_summary(session_id: str, message: str, steps: list,
             except Exception:
                 pass
 
-    # ── 拼 markdown（不复读答案）──
-    parts = [f"**任务总结** · {status}\n"]
-    # 产物段
-    product_lines = []
-    for p in sorted(paths)[:6]:
-        product_lines.append(f"- 涉及文件: `{p}`")
+    # ── v0.5.2.3 表格化 + 紧凑拼装 ──
+    # 设计：两段合一
+    # 段 1: 表格（属性/值）：状态、耗时、类型、模型、session
+    # 段 2: 表格（产物/动作）：路径、commit、动作
+    # 段 3: 紧凑列表：下一步 + 未完成（只一行）
+    # 目标：扫一眼就看完，不上下翻
+    summary_rows = [
+        ("状态", status),
+        ("耗时", dur_str),
+        ("类型", task_kind),
+        ("模型", f"`{model or '?'}`"),
+        ("会话", f"`{session_id[:12]}`"),
+    ]
+    tbl_lines = ["| 属性 | 值 |", "|---|---|"]
+    for k, v in summary_rows:
+        tbl_lines.append(f"| {k} | {v} |")
+    parts = ["\n".join(tbl_lines) + "\n"]
+
+    # 产物/动作表
+    product_rows = []
+    for p in sorted(paths)[:5]:
+        product_rows.append(("文件", f"`{p}`"))
     for a in actions:
-        product_lines.append(f"- 动作: {a}")
+        product_rows.append(("动作", a))
     for c in products:
-        product_lines.append(f"- 产物: {c}")
-    if product_lines:
-        parts.append("**做了什么**\n" + "\n".join(product_lines) + "\n")
-    # 下一步段
+        if c.startswith("commit "):
+            product_rows.append(("产物", c))
+        else:
+            product_rows.append(("产物", c))
+    if product_rows:
+        prod_tbl = ["| 类型 | 内容 |", "|---|---|"]
+        for k, v in product_rows[:8]:
+            prod_tbl.append(f"| {k} | {v} |")
+        parts.append("\n".join(prod_tbl) + "\n")
+
+    # 下一步 + 未完成（一行式紧凑）
+    tail = []
     if next_steps:
-        parts.append("**下一步建议**\n" + "\n".join(f"- {s}" for s in next_steps[:3]) + "\n")
-    # 未完成段
+        # v0.5.2.3 改：只取 1 条最相关的（避免 2 条并列太长）
+        best = next_steps[0].replace("\n", " ").strip()
+        # 去掉 markdown 加粗前缀和列表符
+        best = re.sub(r'^[-*]\s*\*?\*?\d*\.?\s*\*?\*?', '', best).strip()
+        best = re.sub(r'\*\*', '', best).strip()  # 去 **
+        if best:
+            # 截断到 80 字符（中文按 1 字算 1 字符）
+            short = best if len(best) <= 80 else best[:77] + "..."
+            tail.append(f"**下一步**: {short}")
     if unfinished:
-        parts.append("**未完成 / 失败**\n" + "\n".join(f"- {u}" for u in unfinished[:5]) + "\n")
-    # 元信息（轻量）
-    parts.append(f"_{dur_str} · {task_kind} · `{model or '?'}` · session `{session_id[:8]}`_")
+        uf = "; ".join(u.strip().replace("\n", " ") for u in unfinished[:3] if u.strip())
+        if uf:
+            tail.append(f"**未完成**: {uf[:80]}")
+    if tail:
+        parts.append(" · ".join(tail))
 
     summary_md = "\n".join(parts)
     return {
