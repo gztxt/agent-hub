@@ -59,8 +59,31 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 templates_dir = Path(__file__).parent.parent / "templates"
 static_path = Path(__file__).parent.parent / "static"
 templates = Jinja2Templates(directory=str(templates_dir))
+
+# v0.5.2.7 自定义静态资源路由（强制 no-cache，防 .js 改后浏览器用旧 ETag/Last-Modified 304）
+# 替代原 StaticFiles mount（仍保留 fallback）
 if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+    from fastapi.responses import FileResponse
+    from fastapi import Request
+    @app.get("/static/{file_path:path}")
+    async def _static_no_cache(file_path: str, request: Request):
+        f = (static_path / file_path).resolve()
+        # 路径安全：必须在 static_path 下
+        if not str(f).startswith(str(static_path.resolve())):
+            from fastapi import HTTPException
+            raise HTTPException(404)
+        if not f.is_file():
+            from fastapi import HTTPException
+            raise HTTPException(404)
+        return FileResponse(
+            str(f),
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+    # 不再 mount StaticFiles；自定义路由接管 /static/
 
 # 子路由（Hook / 记忆 / 指挥官）
 app.include_router(hook_mod.router)
