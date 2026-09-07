@@ -129,6 +129,82 @@ def _resolve_under(path: str) -> Optional[Path]:
     return None
 
 
+def _count_root_items(path: Path) -> int:
+    """v0.5.3-fix2 数 root 下一层项数（仅 scandir，不递归）。
+
+    不可读/权限拒绝/异常返 -1（让上层走原逻辑，不要假设）。
+    """
+    try:
+        n = 0
+        # scandir 是惰性的；迭代时立即 stat；上限 5000 避免巨型目录卡顿
+        for _ in path.iterdir():
+            n += 1
+            if n > 5000:
+                break
+        return n
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _suggest_narrowed_path(path: Path, items: int) -> str:
+    """v0.5.3-fix2 当 root 项数过多时返缩小范围 hint。
+
+    提示 LLM 改用更具体的子目录（列出 3-5 个最可能的子目录名作为线索）。
+    """
+    hint = (
+        f"建议缩小范围：当前 path `{path}` 下有 {items} 个一级项，"
+        f"grep -r 必超时。可改为指定更具体的子目录，或加 `path=<子目录>`。"
+    )
+    # 列前 5 个子目录名作为线索（仅名称，不递归）
+    try:
+        names = sorted(
+            (e.name for e in path.iterdir() if e.is_dir()),
+            key=str.lower,
+        )[:5]
+        if names:
+            hint += f" 例如子目录：{', '.join(names)}"
+    except Exception:  # noqa: BLE001
+        pass
+    return hint
+
+
+# v0.5.3-fix4 大括号 glob 展开：shell glob 默认不展 {a,b,c}；Path.glob/fnmatch 也不展
+# 用户在 cqq0qno16rf 会话用 **/*.{vue,ts,tsx} 三次都 count=0，走了 60+ 步瞎找
+_BRACE_RE = re.compile(r'\{([^{}]+)\}')
+
+
+def _expand_brace_pattern(pat: str) -> list:
+    """把 **/*.{vue,ts,tsx} 展成 [**/*.vue, **/*.ts, **/*.tsx]。
+
+    - 一次只展一层（最左 `{a,b,c}`），递归调用直到无大括号
+    - 无大括号返 [pat]（原样）
+    - 大括号内为空（{}）返 [pat]（保守原样，不构造非法 glob）
+    - 单选项（{a}）仍替换并继续展（防止 `{a}` 残留）
+    """
+    if not pat:
+        return [pat]
+    m = _BRACE_RE.search(pat)
+    if not m:
+        return [pat]
+    inner = m.group(1).strip()
+    if not inner:
+        return [pat]
+    options = [opt.strip() for opt in inner.split(",") if opt.strip()]
+    if not options:
+        return [pat]
+    # 一次替换最左 {} 块，递归展剩下的
+    expanded: list = []
+    seen: set = set()
+    prefix, suffix = pat[:m.start()], pat[m.end():]
+    for opt in options:
+        sub_pat = prefix + opt + suffix
+        for sub in _expand_brace_pattern(sub_pat):
+            if sub not in seen:
+                seen.add(sub)
+                expanded.append(sub)
+    return expanded
+
+
 def _read_readme_summary(d: Path) -> str:
     """v0.5.2.4 读 README 第一段作为目录描述（限 150 字）。
 
@@ -508,10 +584,11 @@ TOOLS = [
             "hidden": {"type": "boolean", "description": "是否包含隐藏文件", "default": False}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "read_file", "description": "读取白名单路径下文件的前 N 字节（默认 4KB，上限 16KB）。**默认首选**：用户要看具体文件内容/某段代码/某段配置时用——比 shell_run + cat 更安全（有大小截断）。**失败自检**：path 必须在白名单内；max_bytes 不超过 16384；要看更大文件用 shell_run + head -c。",
+        "name": "read_file", "description": "读取白名单路径下文件的一段字节（默认 32KB，支持 offset 偏移 + 负偏移）。**默认首选**：用户要看具体文件内容/某段代码/某段配置时用——比 shell_run + cat 更安全（有大小截断 + 自动提示剩余段）。**失败自检**：path 必须在白名单内；offset 越界会报错提示实际大小；truncated=true 时按 hint 给的 offset/next-call 模板继续读后半段。",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
-            "max_bytes": {"type": "integer", "default": 4096, "minimum": 1, "maximum": 16384}},
+            "max_bytes": {"type": "integer", "default": 32768, "minimum": 1, "maximum": 65536},
+            "offset": {"type": "integer", "minimum": -9223372036854775808, "default": 0, "description": "字节偏移，从第 N 字节开始读；支持负数（如 -100 表示倒数第 100 字节开始）"}},
             "required": ["path"]}}},
     {"type": "function", "function": {
         "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cd/cat/head/tail/find/grep/stat/du/sort/uniq/cut/awk/systemctl status/journalctl -n 等；管道 | 允许；sed 仅只读；xargs 仅接白名单命令）。**默认首选**：list_dir/read_file 表达不了时（如要 grep / sort / journalctl / 多步管道）才升级到这个。**【强制】字符级拒绝 rm/dd/mkfs/python/> 等写入类与系统关键文件**，不要尝试绕过；cwd 必须也在白名单内；timeout 上限 20 秒。",
@@ -1016,25 +1093,52 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
             return {"error": f"列目录失败: {exc}"}
 
     if name == "read_file":
+        # v0.5.4 read_file: max_bytes 默认 32KB，支持 offset + 负偏移；truncated 时
+        # 在 hint 里给 next-call 模板（offset=Y 读后半段）。
         p = _resolve_under(args.get("path") or "")
         if not p:
             return {"error": f"路径越界或不存在: {args.get('path')}",
                     "allowed_roots": list(READ_PATH_ROOTS)}
         if p.is_dir():
             return {"error": f"{p} 是目录，请用 list_dir"}
-        max_bytes = max(1, min(int(args.get("max_bytes") or 4096), 16384))
+        max_bytes = max(1, min(int(args.get("max_bytes") or 32768), 65536))
         try:
-            data = p.read_bytes()[:max_bytes]
+            total_size = p.stat().st_size
+            # offset 语义：支持负数（Python 风格，-N = 倒数第 N 字节）
+            raw_offset = int(args.get("offset") or 0)
+            offset = raw_offset
+            if offset < 0:
+                offset = max(0, total_size + offset)
+            # 越界
+            if offset > total_size:
+                return {"error": f"offset {offset} 超过文件大小 {total_size}"}
+            with p.open("rb") as f:
+                f.seek(offset)
+                data = f.read(max_bytes)
+            read_bytes = len(data)
+            truncated = (offset + read_bytes) < total_size
+            next_offset = offset + read_bytes  # 下次 offset 起点
             try:
                 text = data.decode("utf-8")
             except UnicodeDecodeError:
-                return {"path": str(p), "size": p.stat().st_size,
-                        "truncated_to": len(data),
-                        "note": "二进制文件，前 N 字节 hex 预览",
+                return {"path": str(p), "size": total_size,
+                        "offset": offset, "read_bytes": read_bytes,
+                        "truncated": truncated,
+                        "note": "二进制文件，hex 预览（前 512 hex 字符）",
                         "hex": data.hex()[:512]}
-            return {"path": str(p), "size": p.stat().st_size,
-                    "truncated": p.stat().st_size > max_bytes,
-                    "truncated_to": len(data),
+            if truncated:
+                hint = (
+                    f"文件共 {total_size} 字节，当前读了 {offset}-{next_offset}，"
+                    f"剩余 {total_size - next_offset} 字节。\n"
+                    f"请用 offset={next_offset} 读后半段，"
+                    f"或 max_bytes={min(65536, total_size - offset)} 一次读完。"
+                )
+            else:
+                hint = ""
+            return {"path": str(p), "size": total_size,
+                    "offset": offset, "read_bytes": read_bytes,
+                    "truncated": truncated,
+                    "hint": hint,
                     "content": text}
         except Exception as exc:  # noqa: BLE001
             return {"error": f"读文件失败: {exc}"}
@@ -1094,19 +1198,46 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                     "allowed_roots": list(READ_PATH_ROOTS)}
         pattern = args.get("glob_pattern") or "*"
         max_results = max(1, min(int(args.get("max_results") or 50), 200))
+        # v0.5.3-fix4 大括号展开：shell/Path.glob 不认 {a,b,c}，自动 split
+        expanded_patterns = _expand_brace_pattern(pattern)
         try:
-            matches = []
-            for m in root.glob(pattern):
-                try:
-                    matches.append({"path": str(m), "is_dir": m.is_dir(),
-                                    "size": m.stat().st_size if m.is_file() else None})
-                except Exception:
-                    matches.append({"path": str(m), "error": "stat failed"})
+            matches: list = []
+            seen_paths: set = set()
+            brace_expanded = len(expanded_patterns) > 1
+            for sub_pat in expanded_patterns:
+                # ** 必须 rglob；纯前缀/单层用 glob
+                glob_iter = root.rglob(sub_pat) if "**" in sub_pat else root.glob(sub_pat)
+                for m in glob_iter:
+                    key = str(m)
+                    if key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    try:
+                        matches.append({"path": key, "is_dir": m.is_dir(),
+                                        "size": m.stat().st_size if m.is_file() else None})
+                    except Exception:
+                        matches.append({"path": key, "error": "stat failed"})
+                    if len(matches) >= max_results:
+                        break
                 if len(matches) >= max_results:
                     break
-            return {"root": str(root), "pattern": pattern,
-                    "count": len(matches), "truncated": len(matches) >= max_results,
-                    "matches": matches}
+            result: dict = {
+                "root": str(root), "pattern": pattern,
+                "count": len(matches), "truncated": len(matches) >= max_results,
+                "matches": matches,
+            }
+            if brace_expanded:
+                # hint：列出展开后的子模式（最多 5 条）
+                preview = expanded_patterns[:5]
+                more = f" 等共 {len(expanded_patterns)} 个" if len(expanded_patterns) > 5 else ""
+                result["expanded_patterns"] = expanded_patterns
+                result["brace_expanded"] = True
+                result["hint"] = (
+                    f"检测到 {{a,b,c}} 模式，已自动展开为 {len(expanded_patterns)} 个独立 glob"
+                    f"（{', '.join(preview)}{more}）。Python Path.glob 不认大括号展开，"
+                    f"原样传会返 0 条，已替你处理。"
+                )
+            return result
         except Exception as exc:  # noqa: BLE001
             return {"error": f"find 失败: {exc}"}
 
@@ -1118,9 +1249,19 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
         pattern = args.get("pattern") or ""
         if not pattern:
             return {"error": "pattern 必填"}
-        max_results = max(1, min(int(args.get("max_results") or 20), 100))
+        # v0.5.2.5 默认 30；上限仍 100
+        max_results = max(1, min(int(args.get("max_results") or 30), 100))
         ignore_case = "-i" if args.get("ignore_case") else ""
-        cmd = f"grep -rEn {ignore_case}-- {shlex.quote(pattern)} {shlex.quote(str(p))}"
+
+        # v0.5.3-fix2 root 项数 >100 自动加 --max-depth=2 防超时
+        root_items = _count_root_items(p)
+        auto_narrow = root_items > 100
+        depth_flag = "--max-depth=2 " if auto_narrow else ""
+
+        cmd = (
+            f"grep -rEn {depth_flag}{ignore_case}-- "
+            f"{shlex.quote(pattern)} {shlex.quote(str(p))}"
+        )
         # _shell_allowed 必过（grep 在白名单），但仍校验
         ok, reason = _shell_allowed(cmd)
         if not ok:
@@ -1130,12 +1271,46 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
             r = subprocess.run(
                 cmd, shell=True, capture_output=True, timeout=10)
             out = r.stdout.decode("utf-8", errors="replace") if r.stdout else ""
-            lines = out.splitlines()[:max_results]
-            return {"path": str(p), "pattern": pattern, "count": len(lines),
-                    "truncated": len((r.stdout or "").splitlines()) > max_results,
-                    "matches": lines}
-        except subprocess.TimeoutExpired:
-            return {"error": "grep 超时（10s）"}
+            all_lines = out.splitlines()
+            lines = all_lines[:max_results]
+            result = {
+                "path": str(p),
+                "pattern": pattern,
+                "count": len(lines),
+                "truncated": len(all_lines) > max_results,
+                "matches": lines,
+            }
+            if auto_narrow:
+                result["auto_narrowed"] = True
+                result["auto_narrow_reason"] = (
+                    f"root 项数 {root_items} > 100，自动加 --max-depth=2"
+                )
+                result["hint"] = _suggest_narrowed_path(p, root_items)
+            return result
+        except subprocess.TimeoutExpired as exc:
+            # v0.5.3-fix2 超时也保留 partial stdout + 给缩小 hint
+            partial = ""
+            try:
+                # subprocess.TimeoutExpired 在 Python 3.8+ 提供 .stdout/.stderr
+                partial = (exc.stdout or b"").decode("utf-8", errors="replace") \
+                    if exc.stdout else ""
+            except Exception:  # noqa: BLE001
+                partial = ""
+            partial_lines = partial.splitlines()[:max_results]
+            return {
+                "path": str(p),
+                "pattern": pattern,
+                "count": len(partial_lines),
+                "truncated": True,
+                "matches": partial_lines,
+                "error": "grep 超时（10s）",
+                "hint": (
+                    f"建议缩小 path 或显式加更小的子目录。"
+                    f"例如用 `path=<具体子目录>` 替代当前 root `{p}`。"
+                    + (_suggest_narrowed_path(p, root_items)
+                       if root_items and root_items > 0 else "")
+                ),
+            }
         except Exception as exc:  # noqa: BLE001
             return {"error": f"grep 失败: {exc}"}
 

@@ -22,6 +22,110 @@ TIMEOUT = aiohttp.ClientTimeout(total=240)
 MAX_TOKENS = int(os.getenv("MANAGER_LLM_MAX_TOKENS", "4096"))
 
 
+# v0.5.4 sub-α Fix 1：Nemotron/FCC 走 Anthropic-compatible 协议时，模型把 tool_call
+# 当 text 块直出 raw XML（<tool_call><function=...><parameter>...</parameter></tool_call>）。
+# 这里把这种块整段剥掉，避免污染 answer 字段。
+import re
+
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", re.DOTALL
+)
+_TOOL_CALL_OPEN_RE = re.compile(
+    r"<\s*tool_call\s*>.*", re.DOTALL
+)
+_FUNCTION_BLOCK_RE = re.compile(
+    r"<\s*function\s*=[^>]*>.*?<\s*/\s*function\s*>", re.DOTALL
+)
+
+
+def _strip_tool_xml(text: str) -> str:
+    """从 text 块里剥掉 raw XML tool_call 残留。
+
+    处理三种情况：
+    1. 完整闭合 <tool_call>...</tool_call>
+    2. 只剥开标签后所有内容（LLM 经常不闭合）
+    3. <function=...>...</function> 单段（部分上游变体）
+
+    返回 strip 后的剩余文本；空字符串由调用方判定为"被剥光"。
+    """
+    if not text:
+        return ""
+    cleaned = _TOOL_CALL_BLOCK_RE.sub("", text)
+    cleaned = _TOOL_CALL_OPEN_RE.sub("", cleaned)
+    cleaned = _FUNCTION_BLOCK_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _is_ok_result(content: Any) -> bool:
+    """Fix 6 helper：判定工具结果是否成功。与 _is_err_result 互补。"""
+    return not _is_err_result_static(content)
+
+
+async def _force_empty_answer_fallback(answer: str, steps: List[dict],
+                                 on_step) -> Tuple[str, List[dict]]:
+    """Fix 6：answer 为空 / 是占位符 + steps 里没有任何 answer → 强制构造用户可见的兜底答复。
+
+    场景：模型整个走 tool_call 模拟（raw XML 被 Fix 1 剥光）/ 软熔断后空返 /
+    max_rounds 耗尽且最后一轮只回了 raw XML 或占位符（"（达到最大工具调用轮数）"）。
+    返回前会向 steps 追加一条 forced_by=empty_answer_sanitize 的 answer 步骤，
+    确保总结卡片一定有内容。
+    """
+    PLACEHOLDER = "（达到最大工具调用轮数）"
+    has_answer = any(s.get("kind") == "answer" for s in steps)
+    # 占位符不算有效 answer → 必须替换
+    is_placeholder = answer.strip() == PLACEHOLDER
+    if answer.strip() and has_answer and not is_placeholder:
+        return answer, steps  # 已有正常答案，啥也不做
+
+    ok_steps = [s for s in steps
+                if s.get("kind") == "toolresult"
+                and _is_ok_result(s.get("content", ""))]
+    fail_steps = [s for s in steps
+                  if s.get("kind") == "toolresult"
+                  and not _is_ok_result(s.get("content", ""))]
+    tool_set = sorted({s.get("tool") for s in steps if s.get("kind") == "toolcall"
+                       and s.get("tool")})
+    tool_list_str = (", ".join(tool_set[:5]) + (" 等" if len(tool_set) > 5 else ""))
+
+    fallback = (
+        f"我尝试用 {len(tool_set)} 个工具（{tool_list_str}）"
+        f"调用 {len(steps)} 步，成功 {len(ok_steps)} 步、失败 {len(fail_steps)} 步，"
+        f"但未生成自然语言答复（模型直出 tool_call XML 而非结构化 tool_calls）。\n\n"
+        f"建议：1) 换个更具体的问题；2) 告诉我你想做什么，我用最直接的工具做。"
+    )
+    new_answer = (fallback if is_placeholder
+                  else (answer.strip() or fallback))
+    # 若 steps 还没 answer（end_turn/兜底分支追加的那条通常 in 前面），这里补一条
+    if not has_answer:
+        s_fb = {"kind": "answer", "content": new_answer,
+                "forced_by": "empty_answer_sanitize"}
+        steps.append(s_fb)
+        if on_step:
+            await on_step(s_fb)
+    return new_answer, steps
+
+
+def _is_err_result_static(r: Any) -> bool:
+    """_is_err_result 的纯函数版本（供 _is_ok_result 调用，也兼容 None/非 dict/非 str）。"""
+    if r is None:
+        return False
+    if isinstance(r, dict):
+        if "error" in r:
+            return True
+        if "ok" in r and not r.get("ok"):
+            return True
+        return False
+    if isinstance(r, str):
+        try:
+            j = json.loads(r)
+            if isinstance(j, dict):
+                return _is_err_result_static(j)
+        except Exception:
+            pass
+        return "error" in r.lower()
+    return False
+
+
 def configured() -> bool:
     return bool(BASE_URL)
 
@@ -137,7 +241,26 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
     for _ in range(max_rounds):
         data = await _create_message(system, convo, tools or None, model=active_model)
         content_blocks = data.get("content") or []
-        texts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+        # v0.5.4 sub-α Fix 1：text 剥离 raw tool_call XML。
+        # 部分上游（Nemotron/FCC Anthropic-compatible）把 tool_call 当 text 块直出，
+        # 之前会把整段 XML 当 answer 拼出去污染前端。剥掉，保持真正的人话文本。
+        raw_texts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+        cleaned_pairs = [(t, _strip_tool_xml(t)) for t in raw_texts]
+        texts = [c for _o, c in cleaned_pairs if c.strip()]
+        xml_leftover = [o for o, c in cleaned_pairs if not c.strip() and o.strip()]
+        if xml_leftover:
+            # LLM 想调工具却没用结构化 tool_use，留个 step 让前端能看到。
+            s_xml = {
+                "kind": "thought",
+                "content": (
+                    "[模型直出 tool_call raw XML，已剥离；该请求应通过结构化"
+                    " tool_use 而非文本模拟]"
+                ),
+                "stripped_xml_chars": sum(len(t) for t in xml_leftover),
+            }
+            steps.append(s_xml)
+            if on_step:
+                await on_step(s_xml)
         thoughts = [b.get("thinking", "") for b in content_blocks if b.get("type") == "thinking"]
         for th in thoughts:
             if th.strip():
@@ -148,6 +271,10 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
         if not tool_uses:
             # FCC 上游把正文切成多个 text block（夹 thinking），直接拼接不加换行
             answer = "".join(texts).strip()
+            # v0.5.4 sub-α Fix 6：end_turn 但 answer 空 → 强制构造 fallback。
+            # 场景：模型整个返回都是 raw XML tool_call 模拟 + 一个 end_turn。
+            if not answer:
+                answer, steps = await _force_empty_answer_fallback(answer, steps, on_step)
             s = {"kind": "answer", "content": answer}
             steps.append(s)
             if on_step: await on_step(s)
@@ -198,14 +325,24 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
                 steps.append(s_fb)
                 if on_step:
                     await on_step(s_fb)
+                # Fix 6：sanitize 兜底（理论上 fallback_answer 不会空，但守一遍）
+                fallback_answer, steps = await _force_empty_answer_fallback(
+                    fallback_answer, steps, on_step
+                )
                 return fallback_answer, steps
 
         convo.append({"role": "user", "content": tool_results})
 
     # 轮数耗尽：无 tools 强制收尾
     data = await _create_message(system, convo, None, model=active_model)
-    answer = "".join(b.get("text", "") for b in (data.get("content") or [])
-                     if b.get("type") == "text").strip() or "（达到最大工具调用轮数）"
+    # 同样先剥 raw XML 再用
+    raw_texts2 = [b.get("text", "") for b in (data.get("content") or [])
+                  if b.get("type") == "text"]
+    cleaned2 = [_strip_tool_xml(t) for t in raw_texts2]
+    cleaned_text = "".join(c for c in cleaned2 if c).strip()
+    answer = cleaned_text or "（达到最大工具调用轮数）"
+    # Fix 6：sanitize（万一是 raw XML 满屏）
+    answer, steps = await _force_empty_answer_fallback(answer, steps, on_step)
     s = {"kind": "answer", "content": answer}
     steps.append(s)
     if on_step: await on_step(s)
