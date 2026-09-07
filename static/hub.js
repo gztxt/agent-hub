@@ -257,8 +257,8 @@ function renderSummaryCard(s) {
     tail.push(`<b style="color:#f87171">未完成:</b> ${unfinished.map(u => escapeHtml(u)).join('; ')}`);
   }
   card.innerHTML = `
-    <div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:0;margin-bottom:4px"><span class="sum-head" style="color:${color}">📋 任务总结</span><span class="sum-meta">会话 <code>${escapeHtml((s.session_id||'').slice(0,12))}</code></span></div>
-    <div style="line-height:1.3">${metaTable}${prodTable}</div>
+    <div style="margin:0 0 6px 0;padding:0;line-height:1.4"><span class="sum-head" style="color:${color}">📋 任务总结</span><span class="sum-meta" style="margin-left:8px">会话 <code>${escapeHtml((s.session_id||'').slice(0,12))}</code></span></div>
+    <div style="margin:0;padding:0;line-height:1.5">${metaTable}${prodTable}</div>
     ${tail.length ? `<div class="sum-tail">${tail.join(' · ')}</div>` : ''}
   `;
   return card;
@@ -655,21 +655,21 @@ function chatSendStream(busy, box, body, sid) {
 .stream-step.toolresult { border-left-color:#34d399; color:#34d399; }
 .stream-step.answer { border-left-color:#fbbf24; color:#fbbf24; font-weight:500; }
 .stream-step .badge { display:inline-block; width:1.5em; }
-.msg.summary { background:linear-gradient(135deg,#1f2937 0%,#0f172a 100%); border:1px solid #334155; border-radius:8px; padding:6px 10px; margin:4px 0; font-size:12px; color:var(--text-1); line-height:1.4; }
-.msg.summary .sum-head { font-size:13px; font-weight:600; display:inline-block; margin-right:8px; padding-right:8px; border-right:1px solid #334155; }
-.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:11px; }
+.msg.summary { background:linear-gradient(135deg,#1f2937 0%,#0f172a 100%); border:1px solid #334155; border-radius:8px; padding:8px 12px; margin:4px 0; font-size:12.5px; color:var(--text-1); line-height:1.45; }
+.msg.summary .sum-head { font-size:14px; font-weight:600; display:inline-block; margin:0; padding:0 8px 0 0; border-right:1px solid #334155; }
+.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:12px; margin:0; padding:0; }
 .msg.summary .sum-meta b { color:var(--text-1); font-weight:500; }
-.msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; }
-.msg.summary .sum-tbl { display:table; border-collapse:collapse; margin:0 0 4px 0; font-size:11.5px; line-height:1.4; table-layout:fixed; width:auto; min-width:240px; max-width:100%; }
-.msg.summary .sum-tbl + .sum-tbl { margin-top:2px; }
-.msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:1px 6px 1px 0; text-align:left; width:48px; min-width:48px; white-space:nowrap; }
-.msg.summary .sum-tbl td { padding:1px 0 1px 6px; color:var(--text-1); border-left:1px dotted #334155; overflow-wrap:anywhere; word-break:break-word; }
-.msg.summary .sum-tbl td code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; word-break:break-all; overflow-wrap:anywhere; }
+.msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:11.5px; }
+.msg.summary .sum-tbl { display:table; border-collapse:collapse; margin:0 !important; padding:0; font-size:12.5px; line-height:1.5; table-layout:fixed; width:auto; min-width:240px; max-width:100%; border-spacing:0; }
+.msg.summary .sum-tbl + .sum-tbl { margin:2px 0 0 0 !important; }
+.msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:0 6px 0 0; text-align:left; width:48px; min-width:48px; white-space:nowrap; vertical-align:top; }
+.msg.summary .sum-tbl td { padding:0 0 0 6px; margin:0; color:var(--text-1); border-left:1px dotted #334155; overflow-wrap:anywhere; word-break:break-word; vertical-align:top; }
+.msg.summary .sum-tbl td code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:11.5px; word-break:break-all; overflow-wrap:anywhere; }
 /* 窄屏：表格 100% 宽 */
 @media (max-width: 500px) {
   .msg.summary .sum-tbl { width:100%; }
 }
-.msg.summary .sum-tail { margin-top:4px; padding-top:4px; border-top:1px dashed #334155; color:var(--text-2); font-size:11.5px; line-height:1.4; }
+.msg.summary .sum-tail { display:block; margin:6px 0 0 0; padding:6px 0 0 0; border-top:1px dashed #334155; color:var(--text-2); font-size:12px; line-height:1.5; }
 .msg.summary .sum-tail b { color:#93c5fd; }
 .msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
 .msg.summary .sum-row .k { color:var(--text-2); min-width:48px; flex-shrink:0; }
