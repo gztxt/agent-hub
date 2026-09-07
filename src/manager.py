@@ -61,8 +61,11 @@ READ_SHELL_ALLOWED = frozenset({
     "systemctl", "journalctl", "ps", "pgrep", "ss", "netstat",
     "ip", "ifconfig", "route", "traceroute", "ping", "nslookup",
     "which", "type", "echo", "true", "false", "test",
+    "cd", "sort", "uniq", "tr", "cut", "awk", "sed", "xargs",  # 导航/文本流（只读模式）
 })
 # 字符级黑名单（任何位置出现即拒）—— 写/破坏/系统级操作
+# 注意：'|' 管道操作符**不在**黑名单（v0.5 trace 反馈 LLM 多次用管道全被拒）
+# 仍拒的：写重定向 > >> 2> 2>>、脚本逃逸、系统改写
 READ_SHELL_DENY_SUBSTR = (
     "rm ", "rm\t", "rm$", "rm/",
     "dd ", "mkfs", "fdisk", "parted",
@@ -70,7 +73,7 @@ READ_SHELL_DENY_SUBSTR = (
     "mv ", "mv\t", "mv$", "mv/",
     "cp ", "cp\t", "cp$", "cp/",
     "ln ", "ln\t", "ln$", "ln/",
-    ">", ">>", "2>", "2>>",  # 重定向
+    ">", ">>", "2>", "2>>",  # 写重定向（管道 | 不在此列）
     "kill ", "kill\t", "kill$", "pkill", "killall",
     "shutdown", "reboot", "halt", "poweroff",
     "mount", "umount",
@@ -86,6 +89,8 @@ READ_SHELL_DENY_SUBSTR = (
     "python ", "python3 ", "perl ", "ruby ", "node ",  # 拒绝脚本逃逸
     "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/fstab",
 )
+# sed 单独限制：只允许 -n/=/s/ 读模式；拒绝 -i/i/a/c（写模式）
+SED_DENY_FLAGS = ("-i", "-e ", "--in-place", " --follow-symlinks", "/d", "/a\\", "/i\\", "/c\\")
 
 
 def _resolve_under(path: str) -> Optional[Path]:
@@ -105,7 +110,15 @@ def _resolve_under(path: str) -> Optional[Path]:
 
 
 def _shell_allowed(command: str) -> Tuple[bool, str]:
-    """校验 command 是否在白名单内。返回 (ok, reason)。"""
+    """校验 command 是否在白名单内。返回 (ok, reason)。
+
+    策略：
+    1. 字符级黑名单（> >> 2> 2>>、rm/dd/mkfs、python/node、/etc/passwd 等）
+    2. 第一段命令必须在白名单（cd/sort/uniq/tr/cut/awk/sed/xargs 也允许）
+    3. 管道 | 允许（v0.5 反馈：列大目录常用 ls | grep / | head）
+    4. sed 单独限制 -i（写模式）；awk 默认只读
+    5. xargs 限制只接 echo/cat 之类只读命令
+    """
     if not command or not command.strip():
         return False, "空命令"
     # 先扫黑名单
@@ -118,6 +131,28 @@ def _shell_allowed(command: str) -> Tuple[bool, str]:
     head_base = head.rsplit("/", 1)[-1]
     if head_base not in READ_SHELL_ALLOWED:
         return False, f"命令「{head_base}」不在白名单（可执行：{sorted(READ_SHELL_ALLOWED)}）"
+    # sed 写模式额外拒
+    if head_base == "sed":
+        for f in SED_DENY_FLAGS:
+            if f in command:
+                return False, f"sed 写模式「{f.strip()}」禁"
+    # xargs 接非只读命令拒（防 xargs rm 这类逃逸）
+    if head_base == "xargs":
+        # 抓 xargs 后第一个非选项 token 作目标命令
+        parts = command.split()
+        for i, p in enumerate(parts):
+            if p == "xargs":
+                tail = parts[i+1:]
+                # 跳过 -n -I -L -P 等选项
+                j = 0
+                while j < len(tail) and tail[j].startswith("-"):
+                    j += 1
+                if j >= len(tail):
+                    return False, "xargs 后缺命令"
+                tgt = tail[j].rsplit("/", 1)[-1]
+                if tgt not in READ_SHELL_ALLOWED:
+                    return False, f"xargs 目标「{tgt}」不在白名单（防 rm 逃逸）"
+                break
     return True, "ok"
 
 
@@ -258,9 +293,10 @@ TOOLS = [
             "max_bytes": {"type": "integer", "default": 4096, "minimum": 1, "maximum": 16384}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cat/head/tail/find/grep/stat/du/df/free/pwd/whoami/date/uname/systemctl status/journalctl -n/ps -ef/id/env 等）。字符级拒绝 rm/dd/mkfs 等写操作。",
+        "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cd/cat/head/tail/find/grep/stat/du/sort/uniq/cut/awk/systemctl status/journalctl -n 等）。字符级拒绝 rm/dd/mkfs/python/>/etc/passwd 等；管道 | 允许；sed 仅只读模式；xargs 仅接白名单命令。",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "完整 shell 命令字符串"},
+            "cwd": {"type": "string", "description": "工作目录（白名单内），可选；如不用本参数也可用 cd <path>"},
             "timeout": {"type": "integer", "description": "秒", "default": 5, "minimum": 1, "maximum": 20}},
             "required": ["command"]}}},
     {"type": "function", "function": {
@@ -713,26 +749,36 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                     "allowed_commands": sorted(READ_SHELL_ALLOWED),
                     "deny_substrings": list(READ_SHELL_DENY_SUBSTR)[:10]}
         timeout = max(1, min(int(args.get("timeout") or 5), 20))
+        # v0.5.1 cwd 参数：显式工作目录（白名单内），省去 `cd X && cmd` 的拼接
+        cwd = args.get("cwd")
+        if cwd:
+            cwdr = _resolve_under(str(cwd))
+            if not cwdr:
+                return {"error": f"cwd 越界: {cwd}",
+                        "allowed_roots": list(READ_PATH_ROOTS)}
+            cwd = str(cwdr)
         try:
             r = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+                cwd=cwd,
                 env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
             out = r.stdout or ""
             err = r.stderr or ""
-            # 输出截断到 8KB
-            out_trunc = len(out) > 8192
-            err_trunc = len(err) > 4096
+            # v0.5.1 输出截断提升到 32KB（v0.5 8KB 太小，列大目录 ls -lh 被截）
+            out_trunc = len(out) > 32768
+            err_trunc = len(err) > 8192
             return {
                 "command": cmd,
+                "cwd": cwd or None,
                 "exit_code": r.returncode,
-                "stdout": out[:8192],
+                "stdout": out[:32768],
                 "stdout_truncated": out_trunc,
-                "stderr": err[:4096],
+                "stderr": err[:8192],
                 "stderr_truncated": err_trunc,
                 "timeout": timeout,
             }
         except subprocess.TimeoutExpired:
-            return {"error": f"超时（{timeout}s）", "command": cmd}
+            return {"error": f"超时（{timeout}s）", "command": cmd, "cwd": cwd or None}
         except Exception as exc:  # noqa: BLE001
             return {"error": f"执行失败: {exc}"}
 
