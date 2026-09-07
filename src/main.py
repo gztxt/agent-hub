@@ -115,30 +115,36 @@ def _build_task_summary(session_id: str, message: str, steps: list,
                         success: bool = True, error: str = "") -> dict:
     """v0.5.2 任务完成总结报告：从步骤 + 答案 + 时长自动汇总。
 
-    返回结构同时给：① 落 chat_messages role=summary；② 推 SSE final.summary；
-    ③ 写入 telemetry（db.log_profile_event）。
+    v0.5.2 改进（用户反馈"总结是复读答案"）：
+    - 不再堆砌"思考 N 步 / 工具 N 次"等过程统计
+    - 改为"产物视角"：这次任务**实际产出**了啥（路径/commit/动作）
+    - 加"下一步建议"段（从 answer 末尾 if 建议/需要/要不要 类语句）
+    - 失败时给"未完成项"清单
+
+    返回结构同时给：① 落 chat_messages role=summary；② 推 SSE final.summary。
     """
-    # 工具调用统计
+    import re
     tool_calls = [s for s in steps if s.get("kind") == "toolcall"]
     tool_results = [s for s in steps if s.get("kind") == "toolresult"]
-    thoughts = [s for s in steps if s.get("kind") == "thought"]
     tool_names = [t.get("tool") for t in tool_calls]
     tool_freq = {}
     for n in tool_names:
         tool_freq[n] = tool_freq.get(n, 0) + 1
-    tool_summary = ", ".join(f"{n}×{c}" for n, c in sorted(tool_freq.items(), key=lambda x: -x[1])) or "无"
-    # 工具失败统计
-    failed_tools = [r for r in tool_results if '"error"' in (r.get("content") or "")[:200]
-                    or "error" in (r.get("content") or "")[:200][:60].lower()]
-    # 任务判定（按用户问题关键词简单分类）
+    failed_tools = [r.get("tool") for r in tool_results
+                    if ('"error"' in (r.get("content") or "")[:300]
+                        or "禁用" in (r.get("content") or "")[:200]
+                        or "越界" in (r.get("content") or "")[:200]
+                        or "未找到" in (r.get("content") or "")[:200])]
+
+    # 任务判定
     task_kind = "查询/分析"
-    msg_low = (message or "").lower()
     if any(k in message for k in ("列", "找", "查", "读", "看", "list", "find", "read")):
         task_kind = "信息查询"
-    if any(k in message for k in ("改", "写", "配置", "重启", "回滚", "写", "config", "restart", "rollback", "修复")):
+    if any(k in message for k in ("改", "写", "配置", "重启", "回滚", "config", "restart", "rollback", "修复", "加", "补")):
         task_kind = "配置/修复"
     if any(k in message for k in ("删", "清理", "归档", "remove", "clean")):
         task_kind = "清理/归档"
+
     # 时长
     if duration_ms < 1000:
         dur_str = f"{duration_ms}ms"
@@ -146,45 +152,137 @@ def _build_task_summary(session_id: str, message: str, steps: list,
         dur_str = f"{duration_ms/1000:.1f}s"
     else:
         dur_str = f"{duration_ms//60000}分{duration_ms%60000//1000}秒"
+
     # 状态
     if not success:
         status = "❌ 失败"
+        status_emoji = "❌"
     elif failed_tools:
         status = f"⚠️ 部分成功（{len(failed_tools)}/{len(tool_calls)} 工具失败）"
+        status_emoji = "⚠️"
     else:
         status = "✅ 完成"
-    # answer 摘要（前 80 字；去首尾空白 + 多行折一）
-    ans_clean = " ".join((answer or "").split())
-    ans_preview = ans_clean[:80] + ("..." if len(ans_clean) > 80 else "")
-    # 报告 markdown（前端直接渲染）
-    summary_md = (
-        f"**任务总结** · {status}\n\n"
-        f"- **类型**: {task_kind}\n"
-        f"- **耗时**: {dur_str}\n"
-        f"- **步骤**: 思考 {len(thoughts)} 步 / 工具 {len(tool_calls)} 次 / 结果 {len(tool_results)} 条\n"
-        f"- **工具使用**: {tool_summary}\n"
-        f"- **模型**: `{model or '?'}`\n"
-        f"- **会话ID**: `{session_id[:12]}`\n"
-    )
-    if failed_tools:
-        summary_md += f"- **失败工具**: {[r.get('tool') for r in failed_tools]}\n"
-    if error:
-        summary_md += f"\n**错误**: {error[:200]}\n"
-    summary_md += f"\n**答案摘要**: {ans_preview}"
+        status_emoji = "✅"
+
+    # ── v0.5.2 产物视角提取 ──
+    products = []     # 产物：路径 / commit / 关键 action
+    actions = []      # 动作："重启 ccr"/"写 README" 等
+    next_steps = []   # 下一步建议
+    unfinished = []   # 未完成项（失败时用）
+
+    # 1) 从 answer + steps 抓所有路径
+    paths = set()
+    # answer 内的路径
+    for m in re.finditer(r'(/(?:home|vol1|fs|tmp)/[^\s\)\]<>，。,；;\n]+)', answer or ""):
+        p = m.group(1).rstrip(".,;:!?")
+        # 去尾标点
+        p = re.sub(r'[.,;:!?\)\]]+$', '', p)
+        if len(p) > 8 and not p.endswith(('.md', '.txt', '.json', '.toml', '.py', '.sh')) or p.endswith(('/README.md', '/CLAUDE.md')):
+            # 路径必须够长才收
+            paths.add(p)
+    # steps 里的 list_dir / read_file / find_files 路径（更准）
+    for tc in tool_calls:
+        ti = tc.get("tool_input") or {}
+        for k in ("path", "root", "cwd"):
+            v = ti.get(k)
+            if v and isinstance(v, str) and v.startswith(("/", "~")):
+                paths.add(v)
+    # write 类工具（config_write / rollback / safe_restart）算动作
+    write_tools = [tc for tc in tool_calls if tc.get("tool") in ("config_write", "rollback", "safe_restart")]
+    for tc in write_tools:
+        ti = tc.get("tool_input") or {}
+        if tc.get("tool") == "config_write" and ti.get("path"):
+            actions.append(f"写 {ti['path']}（待用户二次确认）")
+        elif tc.get("tool") == "safe_restart" and ti.get("unit"):
+            actions.append(f"重启 systemd unit {ti['unit']}")
+        elif tc.get("tool") == "rollback" and ti.get("backup_id"):
+            actions.append(f"回滚 {ti['backup_id']}")
+
+    # 2) commit SHA（要求是 hex-only 7-40 字符；前 8 字符显示）
+    # 锚定 `commit xxx` 上下文或行内反引号包住的 hex 串，避免把日期 20260906 误判
+    for m in re.finditer(r'commit\s+`?([0-9a-f]{7,40})`?', answer or ""):
+        c = m.group(1)
+        if re.match(r'^[0-9a-f]{7,40}$', c):
+            products.append(f"commit `{c[:8]}`")
+            if len([p for p in products if p.startswith("commit")]) >= 3: break
+
+    # 2.5) 答案章节结构（## 标题）—— 让总结"知道答案有 N 节"但不复读正文
+    sections = re.findall(r'^\s*#{1,3}\s+(.+?)$', answer or "", re.M)
+    if sections:
+        products.append(f"答案含 {len(sections)} 个章节：{', '.join(sections[:4])}{'...' if len(sections) > 4 else ''}")
+
+    # 3) 数字化的"产出了 N 项"
+    n_items = re.search(r'(\d+)\s*(?:个|项|条|步|文件)', answer or "")
+    if n_items and not products:
+        # 不重复堆路径太多
+        pass
+
+    # 4) 下一步建议（从 answer 末尾找 if 引导的语句）
+    lines = (answer or "").split("\n")
+    for ln in lines[-8:]:
+        s = ln.strip()
+        if not s: continue
+        if re.search(r'(需要我|要不要|建议|可以|下一步|需要做|如需|需要你)', s):
+            # 截短到 80 字
+            s_short = s if len(s) <= 80 else s[:77] + "..."
+            next_steps.append(s_short)
+            if len(next_steps) >= 2: break
+
+    # 5) 失败时填未完成
+    if not success:
+        unfinished.append(f"任务异常：{(error or 'unknown')[:120]}")
+    elif failed_tools:
+        for ft in failed_tools:
+            unfinished.append(f"{ft} 被拒/失败")
+    # 失败工具的具体原因
+    for tr in tool_results:
+        if tr.get("tool") in failed_tools:
+            try:
+                import json as _json
+                c = tr.get("content") or ""
+                # 截到 80 字
+                j = _json.loads(c) if c.startswith("{") else {}
+                if j.get("error"):
+                    unfinished.append(f"  └─ {tr.get('tool')}: {j['error'][:80]}")
+            except Exception:
+                pass
+
+    # ── 拼 markdown（不复读答案）──
+    parts = [f"**任务总结** · {status}\n"]
+    # 产物段
+    product_lines = []
+    for p in sorted(paths)[:6]:
+        product_lines.append(f"- 涉及文件: `{p}`")
+    for a in actions:
+        product_lines.append(f"- 动作: {a}")
+    for c in products:
+        product_lines.append(f"- 产物: {c}")
+    if product_lines:
+        parts.append("**做了什么**\n" + "\n".join(product_lines) + "\n")
+    # 下一步段
+    if next_steps:
+        parts.append("**下一步建议**\n" + "\n".join(f"- {s}" for s in next_steps[:3]) + "\n")
+    # 未完成段
+    if unfinished:
+        parts.append("**未完成 / 失败**\n" + "\n".join(f"- {u}" for u in unfinished[:5]) + "\n")
+    # 元信息（轻量）
+    parts.append(f"_{dur_str} · {task_kind} · `{model or '?'}` · session `{session_id[:8]}`_")
+
+    summary_md = "\n".join(parts)
     return {
         "status": status,
+        "status_emoji": status_emoji,
         "task_kind": task_kind,
         "duration_ms": duration_ms,
         "duration_str": dur_str,
-        "thoughts": len(thoughts),
-        "tool_calls": len(tool_calls),
-        "tool_results": len(tool_results),
         "tool_freq": tool_freq,
-        "tool_summary": tool_summary,
-        "failed_tools": [r.get("tool") for r in failed_tools],
+        "products": list(sorted(paths)[:6]),
+        "actions": actions,
+        "commits": products,
+        "next_steps": next_steps[:3],
+        "unfinished": unfinished[:5],
         "model": model or "?",
         "session_id": session_id,
-        "answer_preview": ans_preview,
         "summary_md": summary_md,
         "error": error,
     }

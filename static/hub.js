@@ -214,29 +214,34 @@ function renderSteps(steps) {
 }
 
 // v0.5.2 任务完成总结卡片：流式 final 事件 + 历史回放都调用
+// v0.5.2.1 重设计：产物视角，不再堆砌"思考 N 步/工具 N 次"等过程统计
 function renderSummaryCard(s) {
   if (!s) return null;
   const card = document.createElement('div');
   card.className = 'msg summary';
-  // 状态色（✅ 绿 / ⚠ 黄 / ❌ 红）
+  // 状态色
   let color = '#34d399';
   if ((s.status || '').includes('部分')) color = '#fbbf24';
   if ((s.status || '').includes('失败')) color = '#f87171';
-  // 工具频率 pill
-  const tf = s.tool_freq || {};
-  const tfPills = Object.entries(tf).map(([n, c]) =>
-    `<span class="pill">${n}×${c}</span>`).join(' ') || '<span class="muted">无</span>';
-  // 答案预览
-  const preview = s.answer_preview || '';
+  // 段落
+  const products = s.products || [];
+  const actions = s.actions || [];
+  const commits = s.commits || [];
+  const nextSteps = s.next_steps || [];
+  const unfinished = s.unfinished || [];
+  const productBullets = [
+    ...products.map(p => `<li>涉及文件 <code>${escapeHtml(p)}</code></li>`),
+    ...actions.map(a => `<li>动作: ${escapeHtml(a)}</li>`),
+    ...commits.map(c => `<li>产物: ${escapeHtml(c)}</li>`),
+  ].join('');
+  const nextBullets = nextSteps.map(n => `<li>${escapeHtml(n)}</li>`).join('');
+  const unfinishedBullets = unfinished.map(u => `<li>${escapeHtml(u)}</li>`).join('');
   card.innerHTML = `
-    <div class="sum-head" style="color:${color}">📋 任务总结 · ${s.status || '完成'}</div>
-    <div class="sum-row"><span class="k">类型</span><span class="v">${s.task_kind || '?'}</span></div>
-    <div class="sum-row"><span class="k">耗时</span><span class="v">${s.duration_str || '?'}</span></div>
-    <div class="sum-row"><span class="k">步骤</span><span class="v">思考 ${s.thoughts||0} / 工具 ${s.tool_calls||0} / 结果 ${s.tool_results||0}</span></div>
-    <div class="sum-row"><span class="k">工具</span><span class="v">${tfPills}</span></div>
-    <div class="sum-row"><span class="k">模型</span><span class="v"><code>${s.model || '?'}</code></span></div>
-    ${s.failed_tools && s.failed_tools.length ? `<div class="sum-row"><span class="k">失败</span><span class="v" style="color:#f87171">${s.failed_tools.join(', ')}</span></div>` : ''}
-    <div class="sum-preview">${preview}</div>
+    <div class="sum-head" style="color:${color}">📋 任务总结 · ${escapeHtml(s.status || '完成')}</div>
+    ${productBullets ? `<div class="sum-section"><b>做了什么</b><ul>${productBullets}</ul></div>` : ''}
+    ${nextBullets ? `<div class="sum-section"><b>下一步建议</b><ul>${nextBullets}</ul></div>` : ''}
+    ${unfinishedBullets ? `<div class="sum-section sum-fail"><b>未完成 / 失败</b><ul>${unfinishedBullets}</ul></div>` : ''}
+    <div class="sum-meta">${escapeHtml(s.duration_str || '?')} · ${escapeHtml(s.task_kind || '?')} · <code>${escapeHtml(s.model || '?')}</code> · session <code>${escapeHtml((s.session_id||'').slice(0,8))}</code></div>
   `;
   return card;
 }
@@ -530,18 +535,21 @@ async function openChatSession() {
 function renderChatMsg(m) {
   // v0.5.2 任务总结消息：role='summary' 走独立卡片（不回放成普通 assistant 文字）
   if (m.role === 'summary') {
-    try {
-      const meta = m.meta ? JSON.parse(m.meta) : {};
-      const sum = renderSummaryCard({
-        status: meta.status, task_kind: meta.task_kind,
-        duration_str: meta.duration_ms ? (meta.duration_ms < 1000 ? meta.duration_ms+'ms' : (meta.duration_ms/1000).toFixed(1)+'s') : '?',
-        duration_ms: meta.duration_ms,
-        thoughts: 0, tool_calls: Object.values(meta.tool_freq || {}).reduce((a,b)=>a+b, 0),
-        tool_results: 0, tool_freq: meta.tool_freq || {},
-        model: meta.model, answer_preview: (m.content || '').replace(/^\*\*任务总结\*\*[^\n]*\n\n/, '').slice(0, 200)
-      });
-      return sum || document.createElement('div');
-    } catch (e) { /* fallthrough */ }
+    // 后端 summary.content 已是结构化 markdown（**做了什么** / **下一步** / 元信息行）
+    // 这里做最小化渲染：转 <br/> + 把 **加粗** 转 <b>，不去碰其他字符
+    const card = document.createElement('div');
+    card.className = 'msg summary';
+    let color = '#34d399';
+    const text = m.content || '';
+    if (text.includes('部分')) color = '#fbbf24';
+    if (text.includes('失败')) color = '#f87171';
+    // 极简 markdown → html
+    let html = escapeHtml(text)
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\n/g, '<br/>');
+    card.innerHTML = `<div class="sum-head" style="color:${color}">${html.split('<br/>')[0]}</div><div class="sum-body">${html.split('<br/>').slice(1).join('<br/>')}</div>`;
+    return card;
   }
   const el = document.createElement('div');
   el.className = 'msg ' + (m.role === 'user' ? 'user' : m.role === 'error' ? 'err' : 'assistant');
@@ -638,6 +646,16 @@ function chatSendStream(busy, box, body, sid) {
 .msg.summary .sum-row .muted { color:#64748b; }
 .msg.summary .sum-row code { background:#0f172a; color:#fbbf24; padding:0 4px; border-radius:3px; }
 .msg.summary .sum-preview { margin-top:6px; padding-top:6px; border-top:1px dashed #475569; color:var(--text-2); font-style:italic; word-break:break-all; }
+.msg.summary .sum-section { margin:6px 0 4px 0; padding-left:8px; border-left:2px solid #475569; }
+.msg.summary .sum-section b { color:#93c5fd; display:block; margin-bottom:2px; font-size:12px; }
+.msg.summary .sum-section ul { margin:0; padding-left:18px; color:var(--text-1); }
+.msg.summary .sum-section li { padding:1px 0; }
+.msg.summary .sum-section code { background:#0f172a; color:#fbbf24; padding:0 4px; border-radius:3px; font-size:11px; }
+.msg.summary .sum-fail { border-left-color:#f87171; }
+.msg.summary .sum-fail b { color:#f87171; }
+.msg.summary .sum-fail li { color:#fca5a5; }
+.msg.summary .sum-meta { color:var(--text-2); font-size:11px; margin-top:6px; padding-top:4px; border-top:1px dashed #334155; }
+.msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; }
 `;
     document.head.appendChild(s);
   }
