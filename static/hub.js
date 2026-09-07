@@ -660,11 +660,17 @@ function chatSendStream(busy, box, body, sid) {
 .msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:11px; }
 .msg.summary .sum-meta b { color:var(--text-1); font-weight:500; }
 .msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; }
-.msg.summary .sum-tbl { display:inline-table; border-collapse:collapse; margin:0; font-size:11.5px; line-height:1.3; vertical-align:top; }
-.msg.summary .sum-tbl + .sum-tbl { margin-left:8px; }
+.msg.summary .sum-tbl { display:inline-table; border-collapse:collapse; margin:0 8px 0 0; font-size:11.5px; line-height:1.4; vertical-align:top; max-width:100%; }
+.msg.summary .sum-tbl + .sum-tbl { margin-left:0; margin-top:4px; }
 .msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:1px 6px 1px 0; text-align:left; min-width:36px; white-space:nowrap; }
-.msg.summary .sum-tbl td { padding:1px 0 1px 6px; color:var(--text-1); border-left:1px dotted #334155; }
-.msg.summary .sum-tbl td code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; }
+.msg.summary .sum-tbl td { padding:1px 0 1px 6px; color:var(--text-1); border-left:1px dotted #334155; max-width:300px; overflow-wrap:anywhere; word-break:break-word; }
+.msg.summary .sum-tbl td code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; word-break:break-all; overflow-wrap:anywhere; }
+/* v0.5.2.6 窄屏（手机 <500px）表格自动堆叠 */
+@media (max-width: 500px) {
+  .msg.summary .sum-tbl { display:table; width:100%; margin:0 0 4px 0; }
+  .msg.summary .sum-tbl + .sum-tbl { margin-top:2px; }
+  .msg.summary .sum-tbl td { max-width:none; }
+}
 .msg.summary .sum-tail { margin-top:4px; padding-top:4px; border-top:1px dashed #334155; color:var(--text-2); font-size:11.5px; line-height:1.4; }
 .msg.summary .sum-tail b { color:#93c5fd; }
 .msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
