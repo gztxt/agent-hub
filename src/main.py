@@ -81,6 +81,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     cwd: Optional[str] = None
     tools: Optional[bool] = None  # hub-self: 启用指挥官工具环
+    repair_mode: Optional[bool] = None  # hub-self v0.4：开启后才暴露修复工具（白名单 restart/配置写/回滚）
 
 
 class AgentRegisterRequest(BaseModel):
@@ -170,17 +171,37 @@ HUB_SELF_SYSTEM = """你是 Agent Hub 的智管自身对话（Commander 对话�
 最终用简洁中文汇报。"""
 
 
-async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history, trace_id):
+async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
+                                       trace_id, repair_mode=False):
     """hub-self 接入指挥官工具环（list_agents/open_agent_ui/search_memory/...）
 
     复用 manager.TOOLS + manager._dispatch_tool；落盘复用 chat_sessions/chat_messages 表。
     cwd 注入到 system prompt；model 默认走 MANAGER_LLM_MODEL。
+
+    v0.4 修复模式门控：repair_mode=True 时才把 5 个修复工具（agent_health/safe_restart/
+    config_show/config_write/rollback）暴露给 LLM；默认 False 走原 11 工具。两次确认
+    协议、双次确认状态下 chat_sessions 的 meta 等都由 manager._dispatch_tool 内部处理。
     """
     import time as _time
     import manager as manager_mod
     import llm as llm_mod
     t0 = _time.monotonic()
-    sys_prompt = HUB_SELF_SYSTEM + (f"\n\n当前工作目录：{cwd}" if cwd else "")
+    # 工具集门控：默认 11 工具；修复模式开 16
+    if repair_mode:
+        tools_for_llm = manager_mod.TOOLS
+        sys_extra = ("\n\n【修复模式已开启】可使用 5 个修复工具：agent_health / safe_restart "
+                     "/ config_show / config_write / rollback。注意："
+                     "(1) safe_restart 仅限白名单 8 单元；(2) config_write 必须双次确认；"
+                     "(3) 修改前永远先 config_show；(4) 写 systemd unit 会自动 daemon-reload。")
+    else:
+        REPAIR_TOOL_NAMES = {"agent_health", "safe_restart", "config_show",
+                             "config_write", "rollback"}
+        tools_for_llm = [t for t in manager_mod.TOOLS
+                         if t.get("function", {}).get("name") not in REPAIR_TOOL_NAMES]
+        sys_extra = ("\n\n【修复模式关闭】白名单 restart / 配置写 / 回滚 等高危工具已隐藏。"
+                     "若用户想修复 Agent（重启服务、改配置），明确告知："
+                     "请在 UI 顶部「⚙ 修复模式」开关处打开后再问。")
+    sys_prompt = HUB_SELF_SYSTEM + sys_extra + (f"\n\n当前工作目录：{cwd}" if cwd else "")
     msgs = [{"role": "system", "content": sys_prompt}] + list(history or []) + [
         {"role": "user", "content": message}]
     try:
@@ -194,7 +215,7 @@ async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
                     "hubself_tool", name, "success", int((_time.monotonic() - ts) * 1000),
                     trace_id=session_id)
         answer, steps = await llm_mod.chat_tools_loop(
-            msgs, manager_mod.TOOLS, timed, max_rounds=6, model=model)
+            msgs, tools_for_llm, timed, max_rounds=6, model=model)
         dur = int((_time.monotonic() - t0) * 1000)
         db.log_profile_event("hubself_chat", "hub-self", "success", dur,
                              trace_id=trace_id or session_id,
@@ -228,6 +249,7 @@ async def _chat_dispatch(agent_id: str, message: str,
                          model: Optional[str] = None,
                          cwd: Optional[str] = None,
                          tools: Optional[bool] = None,
+                         repair_mode: Optional[bool] = None,
                          trace_id: Optional[str] = None) -> Dict:
     import time as _time
     t0 = _time.monotonic()
@@ -252,7 +274,7 @@ async def _chat_dispatch(agent_id: str, message: str,
     # hub-self 工具环模式：复用 manager.py 的 TOOLS + 工具分发
     if agent_id == "hub-self" and tools:
         return await _chat_dispatch_hubself_tools(
-            message, session_id, model, cwd, history, trace_id)
+            message, session_id, model, cwd, history, trace_id, repair_mode=repair_mode)
     result = await adapter.chat(message, session_id=session_id, model=model,
                                 history=history, cwd=cwd)
     # S2 画像埋点：append-only，成功率/耗时统计源
@@ -284,7 +306,8 @@ async def chat(agent_id: str, request: Request, req: ChatRequest):
     session_id = req.session_id or uuid.uuid4().hex[:12]
     trace_id = request.headers.get("x-trace-id")
     result = await _chat_dispatch(agent_id, req.message, session_id, req.model,
-                                  cwd=req.cwd, tools=req.tools, trace_id=trace_id)
+                                  cwd=req.cwd, tools=req.tools, repair_mode=req.repair_mode,
+                                  trace_id=trace_id)
     return {"agent_id": agent_id, "session_id": session_id,
             "message": req.message, "timestamp": _now(), **result}
 

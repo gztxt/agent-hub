@@ -309,7 +309,37 @@ function applyChatMode() {
     chatSessLoad();
     const tr = $('chatToolsRow');
     if (tr) tr.style.display = chatPick === 'hub-self' ? 'inline-flex' : 'none';
+    // v0.4 修复模式：仅 hub-self + 工具开时显示，默认从 localStorage 恢复
+    const rr = $('chatRepairRow');
+    if (rr) {
+      const showRepair = chatPick === 'hub-self' && $('chatToolsOn')?.checked;
+      rr.style.display = showRepair ? 'inline-flex' : 'none';
+      const cb = $('chatRepairOn');
+      if (cb) cb.checked = localStorage.getItem('hub.repair.' + chatPick) === '1';
+    }
+    repairModeWire();
   }
+}
+// v0.4 修复模式开关联动：改主色、落 localStorage；chatToolsOn 变化时同步显隐
+function repairModeWire() {
+  const toolsCb = $('chatToolsOn');
+  const repairCb = $('chatRepairOn');
+  const repairRow = $('chatRepairRow');
+  if (!toolsCb || !repairCb || !repairRow) return;
+  if (repairCb.dataset.wired === '1') return; // 幂等
+  repairCb.dataset.wired = '1';
+  const sync = () => {
+    const on = toolsCb.checked;
+    repairRow.style.display = (chatPick === 'hub-self' && on) ? 'inline-flex' : 'none';
+    repairRow.style.color = repairCb.checked ? '#dc2626' : '';
+  };
+  toolsCb.addEventListener('change', sync);
+  repairCb.addEventListener('change', () => {
+    localStorage.setItem('hub.repair.' + chatPick, repairCb.checked ? '1' : '0');
+    sync();
+    if (repairCb.checked) toast('⚠ 修复模式开启——LLM 可见白名单 restart / 配置写 / 回滚工具；改完请关闭', 'warn');
+  });
+  sync();
 }
 
 /* 模式切换栏：实体有多种会话形态时可互切（修复"嵌入死了切不到对话"） */
@@ -496,6 +526,7 @@ async function chatSend() {
   const model = $('chatModel')?.value || '';
   const cwd = $('chatCwd')?.value || '';
   const tools = chatPick === 'hub-self' && $('chatToolsOn')?.checked;
+  const repair = chatPick === 'hub-self' && $('chatRepairOn')?.checked;
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
@@ -510,6 +541,7 @@ async function chatSend() {
   box.appendChild(busy);
   const body = { message: msg, session_id: sid, model: model, cwd: cwd || null };
   if (tools) body.tools = true;
+  if (repair) body.repair_mode = true;
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

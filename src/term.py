@@ -229,9 +229,15 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                 if not sess.alive:
                     break
                 continue
-            await ws.send_bytes(data)
+            # 真正修：send_bytes 必须 try（手机断网/切网络 → WS 已断 → 1006）
+            try:
+                await ws.send_bytes(data)
+            except Exception:  # noqa: BLE001
+                # WS 已断开：pump 退场，由收尾 try 兜底
+                break
             if not sess.alive:
                 break
+        # 收尾：捕获 WS 已断开的情况（手机重连/切网络 → 客户端 1006），不再把异常抛回 event loop
         try:
             await ws.send_bytes(b"\r\n\x1b[90m[process exited]\x1b[0m")
         except Exception:  # noqa: BLE001
