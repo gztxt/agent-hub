@@ -44,8 +44,9 @@ def _openai_tools_to_anthropic(tools: List[dict]) -> List[dict]:
 
 
 async def _create_message(system: Optional[str], messages: List[dict],
-                          tools: Optional[List[dict]] = None) -> Dict[str, Any]:
-    body: Dict[str, Any] = {"model": MODEL, "max_tokens": MAX_TOKENS,
+                          tools: Optional[List[dict]] = None,
+                          model: Optional[str] = None) -> Dict[str, Any]:
+    body: Dict[str, Any] = {"model": model or MODEL, "max_tokens": MAX_TOKENS,
                             "messages": messages}
     if system:
         body["system"] = system
@@ -64,11 +65,14 @@ async def _create_message(system: Optional[str], messages: List[dict],
 async def chat_tools_loop(messages: List[dict], tools: List[dict],
                           dispatch_tool=None, max_rounds: int = 6,
                           model: Optional[str] = None) -> Tuple[str, List[dict]]:
-    """多轮工具环（上游 mcp_agent.rs 收敛策略）：
+    """使用指定 model（默认用全局 MODEL）
+
+    多轮工具环（上游 mcp_agent.rs 收敛策略）：
     stop_reason=tool_use → 执行 → tool_result 回填 → 继续；end_turn 终止。
     messages 为 OpenAI 风格 {role,content}，内部转 Anthropic 结构。
     返回 (final_text, steps)。
     """
+    active_model = model or MODEL
     system = None
     anon_msgs = []
     for m in messages:
@@ -80,7 +84,7 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
     steps: List[dict] = []
 
     for _ in range(max_rounds):
-        data = await _create_message(system, convo, tools or None)
+        data = await _create_message(system, convo, tools or None, model=active_model)
         content_blocks = data.get("content") or []
         texts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
         thoughts = [b.get("thinking", "") for b in content_blocks if b.get("type") == "thinking"]
@@ -112,7 +116,7 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
         convo.append({"role": "user", "content": tool_results})
 
     # 轮数耗尽：无 tools 强制收尾
-    data = await _create_message(system, convo, None)
+    data = await _create_message(system, convo, None, model=active_model)
     answer = "".join(b.get("text", "") for b in (data.get("content") or [])
                      if b.get("type") == "text").strip() or "（达到最大工具调用轮数）"
     steps.append({"kind": "answer", "content": answer})

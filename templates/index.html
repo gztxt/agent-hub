@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent Hub - 智管</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏫</text></svg>">
-    <link rel="stylesheet" href="/static/vendor/xterm.css?v=20260906b">
+    <link rel="stylesheet" href="/static/vendor/xterm.css?v=20260907c">
     <style>
         /* ── US-003 明快高对比配色：单一色板源 :root，全文引用 var() ── */
         :root {
@@ -306,16 +306,35 @@
                     </div>
                     <!-- 模式3：对话框（智管自身/有 chat 适配器者） -->
                     <div class="pane on" id="chatPane">
+                        <!-- 对话工具栏（参考 pi/qwenpaw：模型 + 工作目录 + 会话 + 工具） -->
+                        <div class="bar" id="chatToolbar" style="gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+                            <select id="chatModel" style="max-width:200px;font-size:12px" title="对话模型（CCR /v1/models 动态）">
+                                <option value="">加载模型中…</option>
+                            </select>
+                            <button class="btn ghost sm" id="chatModelRefresh" title="重新拉取模型列表" onclick="loadChatModels(true)">↻</button>
+                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                                <span class="hint" style="font-size:11px">📁</span>
+                                <select id="chatCwd" style="max-width:280px;font-size:12px" title="工作目录（hub-self 注入 LLM 上下文）">
+                                    <option value="">加载中…</option>
+                                </select>
+                                <button class="btn ghost sm" title="自定义路径" onclick="chatCwdCustom()">✎</button>
+                            </span>
+                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                                <span class="hint" style="font-size:11px">💬</span>
+                                <select id="chatSessList" style="max-width:160px;font-size:12px" title="切换/管理会话">
+                                    <option value="">当前会话</option>
+                                </select>
+                                <button class="btn ghost sm" title="新建会话" onclick="chatSessNew()">＋</button>
+                                <button class="btn ghost sm" title="重命名" onclick="chatSessRename()">✎</button>
+                                <button class="btn ghost sm" title="刷新列表" onclick="chatSessLoad()">↻</button>
+                            </span>
+                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px" id="chatToolsRow" title="hub-self 启用指挥官工具环（带工具调用展示）">
+                                <input type="checkbox" id="chatToolsOn" style="width:auto;margin:0 4px 0 0">
+                                <label for="chatToolsOn" style="font-size:12px;color:var(--text-2);cursor:pointer">🛠 工具</label>
+                            </span>
+                        </div>
                         <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent 或「智管对话」</div></div>
                         <div class="composer">
-                            <select id="chatModel" style="max-width:180px;font-size:12px;">
-                                <option value="">默认模型</option>
-                                <option value="open_router/minimax/minimax-m3:free" selected>MiniMax M3 (默认)</option>
-                                <option value="tokenrouter/qwen3.8-flash">Qwen 3.8 Flash (默认)</option>
-                                <option value="open_router/nvidia/nemotron-3-ultra-550b-a55b:free">Nemotron 3 Ultra</option>
-                                <option value="open_router/minimax/minimax-m3:free">MiniMax M3</option>
-                                <option value="agnes/agnes-2.5-flash">Agnes 2.5 Flash</option>
-                            </select>
                             <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
                             <button class="btn" onclick="chatSend()">发送</button>
                         </div>
@@ -480,10 +499,10 @@
         </div>
     </div>
 
-    <div class="footer">Agent Hub v0.2.0 · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
+    <div class="footer">Agent Hub v{{ version }} · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     <div id="toast"></div>
-    <script src="/static/vendor/xterm.js?v=20260906b"></script>
-    <script src="/static/vendor/fit.js?v=20260906b"></script>
-    <script src="/static/hub.js?v=20260906b"></script>
+    <script src="/static/vendor/xterm.js?v=20260907c"></script>
+    <script src="/static/vendor/fit.js?v=20260907c"></script>
+    <script src="/static/hub.js?v=20260907c"></script>
 </body>
 </html>

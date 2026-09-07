@@ -38,8 +38,15 @@ class OpenAICompatAdapter(BaseAdapter):
 
     async def chat(self, message: str, session_id: Optional[str] = None,
                    model: Optional[str] = None, history: Optional[List[dict]] = None,
-                   **kwargs) -> Dict[str, Any]:
-        messages = (history or []) + [{"role": "user", "content": message}]
+                   cwd: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+        messages = list(history or [])
+        # hub-self / 智管自身对话：cwd 作为上下文元数据注入 prompt（参考 pi Agent 工作目录传参）
+        if cwd and self.agent_id == "hub-self" and not any(
+                m.get("role") == "system" and "工作目录" in (m.get("content") or "")
+                for m in messages):
+            messages = [{"role": "system",
+                         "content": f"当前工作目录：{cwd}。回答与文件/路径相关的问题时优先基于此目录。"}] + messages
+        messages = messages + [{"role": "user", "content": message}]
         body = {"model": model or self.default_model or "default",
                 "messages": messages, "stream": False}
         url = f"{self.base_url}/v1/chat/completions"

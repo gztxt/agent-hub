@@ -1,4 +1,4 @@
-"""Agent Hub - 主入口（Agent_Manager 融合版 v0.2.0）
+"""Agent Hub - 主入口（Agent_Manager 融合版 v0.3.0）
 
 融合自 Zafer-Liu/Agent_Manager (Apache-2.0) 的设计与语义：
 - Hook 遥测端点（agent_http.rs → src/hook.py）
@@ -49,7 +49,10 @@ import term as term_mod
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
-app = FastAPI(title="Agent Hub", version="0.2.0")
+# 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
+VERSION = "0.3.0"
+
+app = FastAPI(title="Agent Hub", version=VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -76,6 +79,8 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     model: Optional[str] = None
+    cwd: Optional[str] = None
+    tools: Optional[bool] = None  # hub-self: 启用指挥官工具环
 
 
 class AgentRegisterRequest(BaseModel):
@@ -92,7 +97,7 @@ def _now() -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "agent-hub", "version": "0.2.0", "port": config.port}
+    return {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port}
 
 
 # ── Agents ────────────────────────────────────────────────────────────
@@ -159,9 +164,70 @@ async def unregister_agent(agent_id: str):
 
 # ── 统一对话（Phase 2：真实适配器直连）──────────────────────────────
 
+HUB_SELF_SYSTEM = """你是 Agent Hub 的智管自身对话（Commander 对话模式）。
+工作目录 cwd 作为上下文元数据会拼在 system 里，请基于它回答路径相关问题。
+如有"现在哪些 Agent 在线""帮我查记忆""打开 xxx 界面"等诉求，调用对应工具。
+最终用简洁中文汇报。"""
+
+
+async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history, trace_id):
+    """hub-self 接入指挥官工具环（list_agents/open_agent_ui/search_memory/...）
+
+    复用 manager.TOOLS + manager._dispatch_tool；落盘复用 chat_sessions/chat_messages 表。
+    cwd 注入到 system prompt；model 默认走 MANAGER_LLM_MODEL。
+    """
+    import time as _time
+    import manager as manager_mod
+    import llm as llm_mod
+    t0 = _time.monotonic()
+    sys_prompt = HUB_SELF_SYSTEM + (f"\n\n当前工作目录：{cwd}" if cwd else "")
+    msgs = [{"role": "system", "content": sys_prompt}] + list(history or []) + [
+        {"role": "user", "content": message}]
+    try:
+        async def timed(name, args):
+            ts = _time.monotonic()
+            try:
+                out = await manager_mod._dispatch_tool(name, args)
+                return out
+            finally:
+                db.log_profile_event(
+                    "hubself_tool", name, "success", int((_time.monotonic() - ts) * 1000),
+                    trace_id=session_id)
+        answer, steps = await llm_mod.chat_tools_loop(
+            msgs, manager_mod.TOOLS, timed, max_rounds=6, model=model)
+        dur = int((_time.monotonic() - t0) * 1000)
+        db.log_profile_event("hubself_chat", "hub-self", "success", dur,
+                             trace_id=trace_id or session_id,
+                             detail={"session_id": session_id})
+        # 会话落盘（同 chat_sessions/chat_messages）
+        if session_id:
+            now = _now()
+            db.execute("INSERT OR IGNORE INTO chat_sessions(id,agent_id,title,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?)",
+                       (session_id, "hub-self", message[:60], now, now))
+            db.execute("INSERT INTO chat_messages(session_id,role,content,created_at) "
+                       "VALUES(?,?,?,?)", (session_id, "user", message, now))
+            db.execute("INSERT INTO chat_messages(session_id,role,content,meta,created_at) "
+                       "VALUES(?,?,?,?,?)",
+                       (session_id, "assistant", answer,
+                        json.dumps({"steps": steps}, ensure_ascii=False), now))
+            db.execute("UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, session_id))
+        return {"success": True, "agent": "hub-self", "response": answer,
+                "model": model or llm_mod.MODEL, "steps": steps}
+    except Exception as e:  # noqa: BLE001
+        dur = int((_time.monotonic() - t0) * 1000)
+        db.log_profile_event("hubself_chat", "hub-self", "fail", dur,
+                             trace_id=trace_id or session_id,
+                             detail={"error": str(e)[:200]})
+        return {"success": False, "agent": "hub-self", "error": str(e)[:500],
+                "hint": "检查 .env 的 MANAGER_LLM_API_KEY 与 FCC(:8082) 是否可达"}
+
+
 async def _chat_dispatch(agent_id: str, message: str,
                          session_id: Optional[str] = None,
                          model: Optional[str] = None,
+                         cwd: Optional[str] = None,
+                         tools: Optional[bool] = None,
                          trace_id: Optional[str] = None) -> Dict:
     import time as _time
     t0 = _time.monotonic()
@@ -183,7 +249,12 @@ async def _chat_dispatch(agent_id: str, message: str,
                         "AND role IN ('user','assistant') ORDER BY id DESC LIMIT 20",
                         (session_id,))
         history = [{"role": r["role"], "content": r["content"]} for r in reversed(hist)]
-    result = await adapter.chat(message, session_id=session_id, model=model, history=history)
+    # hub-self 工具环模式：复用 manager.py 的 TOOLS + 工具分发
+    if agent_id == "hub-self" and tools:
+        return await _chat_dispatch_hubself_tools(
+            message, session_id, model, cwd, history, trace_id)
+    result = await adapter.chat(message, session_id=session_id, model=model,
+                                history=history, cwd=cwd)
     # S2 画像埋点：append-only，成功率/耗时统计源
     dur = int((_time.monotonic() - t0) * 1000)
     db.log_profile_event("hub_chat", agent_id,
@@ -212,7 +283,8 @@ async def _chat_dispatch(agent_id: str, message: str,
 async def chat(agent_id: str, request: Request, req: ChatRequest):
     session_id = req.session_id or uuid.uuid4().hex[:12]
     trace_id = request.headers.get("x-trace-id")
-    result = await _chat_dispatch(agent_id, req.message, session_id, req.model, trace_id)
+    result = await _chat_dispatch(agent_id, req.message, session_id, req.model,
+                                  cwd=req.cwd, tools=req.tools, trace_id=trace_id)
     return {"agent_id": agent_id, "session_id": session_id,
             "message": req.message, "timestamp": _now(), **result}
 
@@ -227,7 +299,7 @@ async def chat_stream(agent_id: str, request: ChatRequest):
     async def gen():
         yield f"data: {json.dumps({'session_id': session_id})}\n\n"
         async for chunk in adapter.chat_stream(request.message, session_id=session_id,
-                                               model=request.model):
+                                               model=request.model, cwd=request.cwd):
             yield chunk
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -256,6 +328,75 @@ async def session_messages(session_id: str, limit: int = 100):
     return {"messages": db.query(
         "SELECT role,content,meta,created_at FROM chat_messages "
         "WHERE session_id=? ORDER BY id ASC LIMIT ?", (session_id, limit))}
+
+
+class SessionPatch(BaseModel):
+    title: Optional[str] = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session(session_id: str, req: SessionPatch):
+    if req.title is None:
+        raise HTTPException(400, "no fields to update")
+    n = db.execute("UPDATE chat_sessions SET title=?, updated_at=? WHERE id=?",
+                   (req.title.strip()[:120], _now(), session_id))
+    if not n:
+        raise HTTPException(404, "session not found")
+    return {"status": "renamed", "id": session_id, "title": req.title}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    n1 = db.execute("DELETE FROM chat_messages WHERE session_id=?", (session_id,))
+    n2 = db.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
+    if not n2:
+        raise HTTPException(404, "session not found")
+    return {"status": "deleted", "id": session_id, "messages": n1}
+
+
+# ── 模型代理（前端动态加载：CCR/jcode 等 OpenAI 兼容 /v1/models）────
+
+@app.get("/api/models")
+async def list_models(agent_id: Optional[str] = None):
+    """统一模型列表端点。
+
+    默认拉 hub-self(CCR:3456) 的 /v1/models 作为"全局可对话模型"。
+    按 vendor/display_name 去重后返回；带分组（qwen/deepseek/nvidia/openrouter/agnes）。"""
+    adapter_id = agent_id or "hub-self"
+    adapter = get_adapter(adapter_id)
+    base = None
+    if hasattr(adapter, "base_url"):
+        base = adapter.base_url
+    if not base:
+        return {"models": [], "groups": {}, "error": "no compatible adapter"}
+    import aiohttp as _aio
+    out: list = []
+    try:
+        async with _aio.ClientSession() as s:
+            async with s.get(f"{base}/v1/models",
+                             headers=adapter.build_headers() if hasattr(adapter, "build_headers") else {},
+                             timeout=_aio.ClientTimeout(total=8)) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    out = data.get("data") or []
+    except Exception as e:  # noqa: BLE001
+        return {"models": out, "groups": {}, "error": str(e)[:200]}
+    # 去重 + 分组
+    seen = set()
+    groups: dict = {}
+    cleaned = []
+    for m in out:
+        mid = m.get("id")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        cleaned.append({"id": mid, "name": m.get("display_name") or mid,
+                        "owner": m.get("owned_by") or "?"})
+        # 分组键 = mid 第一段（vendor/）
+        gk = mid.split("/", 1)[0] if "/" in mid else "default"
+        groups.setdefault(gk, []).append(mid)
+    return {"models": cleaned, "groups": groups, "count": len(cleaned),
+            "source": adapter_id}
 
 
 # ── 端口管理 ──────────────────────────────────────────────────────────
@@ -298,7 +439,7 @@ async def api_port_detail(port: int):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(request, "index.html", {"version": VERSION})
 
 
 # ── 兼容旧端点：/api/memory（别名到 L1 列表）──────────────────────────
@@ -347,7 +488,7 @@ async def startup():
     cronjobs_mod.set_context(
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr))
     cronjobs_mod.start_engine()
-    print(f"[Agent Hub] 启动完成 v0.2.0，监听 {config.host}:{config.port}")
+    print(f"[Agent Hub] 启动完成 v{VERSION}，监听 {config.host}:{config.port}")
     print(f"[Agent Hub] CCR: {config.ccr_url} | pi: {config.pi_url} | "
           f"jcode: {config.jcode_url} | TDAI: {config.tdaI_url}")
     print(f"[Agent Hub] Manager LLM: {config.manager_llm_base} model={config.manager_llm_model}")

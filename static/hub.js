@@ -1,4 +1,5 @@
-/* Agent Hub v0.2.0 教室视图 — 复刻 Agent_Manager(Dashboard/Manager/Memory/Ports) 交互语义 */
+/* Agent Hub v0.3.0 教室视图 — 复刻 Agent_Manager(Dashboard/Manager/Memory/Ports) 交互语义
+   v0.3 chat: 动态模型选择器 + 工作目录 + 会话管理 + hub-self 工具环 */
 'use strict';
 
 const $ = id => document.getElementById(id);
@@ -148,7 +149,6 @@ function showDetail(id) {
   const a = AGENTS.find(x => x.id === id);
   if (a) toast(a.name + ' · ' + a.type + ' · ' + a.status + ' · ' + (a.endpoint || '-') + (a.working_dir ? ' · ' + a.working_dir : ''));
 }
-function gotoChat(id) { chatPick = id; go('chat'); renderChatSide(); }
 async function delAgent(id) {
   if (!confirm('删除自定义 Agent: ' + id + '？（仅注销视图，不停止其自身服务）')) return;
   try { await api('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已删除', 'ok'); loadAgents(); }
@@ -303,6 +303,12 @@ function applyChatMode() {
     termRefreshList().then(() => termAutoAttach());
   } else {
     openChatSession();
+    // v0.3 对话工具栏三联动：模型/工作目录/会话列表 + hub-self 工具开关显隐
+    loadChatModels(false);
+    chatCwdLoad();
+    chatSessLoad();
+    const tr = $('chatToolsRow');
+    if (tr) tr.style.display = chatPick === 'hub-self' ? 'inline-flex' : 'none';
   }
 }
 
@@ -451,22 +457,45 @@ async function termKillOne(sid) {
 async function openChatSession() {
   const box = $('chatMsgs');
   box.innerHTML = '';
+  chatSessLoad();
+  chatCwdLoad();
   const sid = localStorage.getItem(sessKey(chatPick));
   if (!sid) { box.innerHTML = '<div class="hint" style="margin:auto">开始新会话（' + escapeHtml(chatPick) + '）</div>'; return; }
   try {
     const d = await api('/api/sessions/' + encodeURIComponent(sid) + '/messages');
     for (const m of d.messages || []) {
-      const el = document.createElement('div');
-      el.className = 'msg ' + (m.role === 'user' ? 'user' : m.role === 'error' ? 'err' : 'assistant');
-      el.textContent = m.content;
-      box.appendChild(el);
+      box.appendChild(renderChatMsg(m));
     }
   } catch (e) { localStorage.removeItem(sessKey(chatPick)); }
+}
+
+function renderChatMsg(m) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + (m.role === 'user' ? 'user' : m.role === 'error' ? 'err' : 'assistant');
+  el.textContent = m.content || '';
+  // hub-self 工具环：meta.steps 内嵌时一并展示（折叠的 step 流）
+  if (m.meta) {
+    try {
+      const meta = JSON.parse(m.meta);
+      if (meta && Array.isArray(meta.steps) && meta.steps.length) {
+        const det = document.createElement('details');
+        det.style.cssText = 'margin-top:6px;font-size:12px;color:var(--text-2)';
+        const sum = document.createElement('summary');
+        sum.textContent = '🛠 工具调用 (' + meta.steps.filter(s => s.kind === 'toolcall').length + ')';
+        det.appendChild(sum);
+        det.appendChild(renderSteps(meta.steps.filter(s => s.kind !== 'answer')));
+        el.appendChild(det);
+      }
+    } catch (e) { /* ignore */ }
+  }
+  return el;
 }
 
 async function chatSend() {
   const input = $('chatInput');
   const model = $('chatModel')?.value || '';
+  const cwd = $('chatCwd')?.value || '';
+  const tools = chatPick === 'hub-self' && $('chatToolsOn')?.checked;
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
@@ -479,16 +508,161 @@ async function chatSend() {
   const busy = document.createElement('div');
   busy.className = 'msg assistant'; busy.textContent = '⏳ 回复中…';
   box.appendChild(busy);
+  const body = { message: msg, session_id: sid, model: model, cwd: cwd || null };
+  if (tools) body.tools = true;
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: sid, model: model }) });
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     busy.className = 'msg ' + (d.success ? 'assistant' : 'err');
-    const modelLabel = model ? ' [' + model.split('/').pop() + ']' : '';
-    busy.textContent = (d.response || d.error || JSON.stringify(d.hint || d)) + modelLabel +
-      (d.usage ? ('\n· tokens: in ' + (d.usage.prompt_tokens || d.usage.input_tokens || '-') + ' / out ' + (d.usage.completion_tokens || d.usage.output_tokens || '-')) : '');
+    let txt = (d.response || d.error || JSON.stringify(d.hint || d));
+    if (d.model) txt += '\n· model: ' + d.model;
+    if (d.usage) txt += '\n· tokens: in ' + (d.usage.prompt_tokens || d.usage.input_tokens || '-') + ' / out ' + (d.usage.completion_tokens || d.usage.output_tokens || '-');
+    busy.textContent = txt;
+    // hub-self 工具环：step 流展示（折叠 details 在 busy 下方）
+    if (Array.isArray(d.steps) && d.steps.length) {
+      const det = document.createElement('details');
+      det.style.cssText = 'margin-top:6px;font-size:12px;color:var(--text-2)';
+      det.open = true;
+      const sum = document.createElement('summary');
+      sum.textContent = '🛠 工具调用 (' + d.steps.filter(s => s.kind === 'toolcall').length + ' 步)';
+      det.appendChild(sum);
+      det.appendChild(renderSteps(d.steps.filter(s => s.kind !== 'answer')));
+      busy.appendChild(det);
+    }
+    chatSessLoad();  // 刷新会话列表（title 等信息更新）
   } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
   box.scrollTop = box.scrollHeight;
 }
+
+/* ── 模型选择器（动态拉取 CCR /v1/models）── */
+let CHAT_MODELS = [];
+async function loadChatModels(force) {
+  const sel = $('chatModel');
+  if (!sel) return;
+  const cached = !force && CHAT_MODELS.length && (Date.now() - (CHAT_MODELS._ts || 0) < 60000);
+  if (!cached) {
+    try {
+      const d = await api('/api/models');
+      CHAT_MODELS = (d.models || []).map(m => ({ ...m, _groups: d.groups || {} }));
+      CHAT_MODELS._ts = Date.now();
+      CHAT_MODELS._src = d.source;
+    } catch (e) {
+      sel.innerHTML = '<option value="">模型加载失败</option>';
+      return;
+    }
+  }
+  // 当前 agent 默认 model（localStorage 记忆）
+  const saved = localStorage.getItem('hub.model.' + chatPick) || '';
+  // 按 vendor 分组
+  const groups = (CHAT_MODELS._groups) || {};
+  const groupedKeys = Object.keys(groups);
+  let html = '<option value="">默认（网关路由）</option>';
+  for (const gk of groupedKeys) {
+    html += '<optgroup label="' + escapeHtml(gk) + '">';
+    for (const mid of groups[gk]) {
+      const m = CHAT_MODELS.find(x => x.id === mid);
+      const label = m && m.name && m.name !== mid ? (mid + ' — ' + m.name) : mid;
+      html += '<option value="' + escapeHtml(mid) + '"' + (mid === saved ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    }
+    html += '</optgroup>';
+  }
+  // 兜底：未分组的也展示
+  const grouped = new Set(groupedKeys.flatMap(k => groups[k]));
+  const leftovers = CHAT_MODELS.filter(m => !grouped.has(m.id));
+  if (leftovers.length) {
+    html += '<optgroup label="其他">';
+    for (const m of leftovers) {
+      html += '<option value="' + escapeHtml(m.id) + '"' + (m.id === saved ? ' selected' : '') + '>' + escapeHtml(m.name || m.id) + '</option>';
+    }
+    html += '</optgroup>';
+  }
+  sel.innerHTML = html;
+}
+$('chatModel')?.addEventListener?.('change', e => {
+  localStorage.setItem('hub.model.' + chatPick, e.target.value);
+});
+
+/* ── 工作目录（CWD 选择器）── */
+const DEFAULT_CWDS = ['/fs/1000/ftp/技术文档', '/home/gztxt', '/home/gztxt/agent-hub', '/vol1/1000/技术文档', '/tmp'];
+function chatCwdLoad() {
+  const sel = $('chatCwd');
+  if (!sel) return;
+  // 1) agent 画像默认 cwd（hub-self/claude/jcode/hermes/bash）
+  const a = entityById(chatPick);
+  const profCwd = a && a.working_dir;
+  // 2) localStorage 历史选择
+  const saved = localStorage.getItem('hub.cwd.' + chatPick) || '';
+  // 3) 合并去重
+  const seen = new Set();
+  const list = [];
+  if (profCwd) { list.push({ v: profCwd, label: profCwd + ' ★画像' }); seen.add(profCwd); }
+  if (saved && !seen.has(saved)) { list.push({ v: saved, label: saved + ' ★最近' }); seen.add(saved); }
+  for (const d of DEFAULT_CWDS) {
+    if (!seen.has(d)) { list.push({ v: d, label: d }); seen.add(d); }
+  }
+  sel.innerHTML = list.map(x => '<option value="' + escapeHtml(x.v) + '"' +
+    (x.v === saved || (!saved && x.v === profCwd) ? ' selected' : '') + '>' + escapeHtml(x.label) + '</option>').join('');
+}
+function chatCwdCustom() {
+  const cur = $('chatCwd')?.value || '';
+  const v = prompt('自定义工作目录（绝对路径）', cur);
+  if (v && v.trim()) {
+    $('chatCwd').value = v.trim();
+    localStorage.setItem('hub.cwd.' + chatPick, v.trim());
+    toast('已设 cwd: ' + v.trim(), 'ok');
+  }
+}
+$('chatCwd')?.addEventListener?.('change', e => {
+  localStorage.setItem('hub.cwd.' + chatPick, e.target.value);
+});
+
+/* ── 会话管理 ── */
+let CHAT_SESSIONS = [];
+async function chatSessLoad() {
+  const sel = $('chatSessList');
+  if (!sel) return;
+  const cur = localStorage.getItem(sessKey(chatPick)) || '';
+  try {
+    const d = await api('/api/sessions?agent_id=' + encodeURIComponent(chatPick) + '&limit=30');
+    CHAT_SESSIONS = d.sessions || [];
+    const opts = ['<option value="">当前会话</option>'];
+    opts.push('<option value="__new__">＋ 新会话</option>');
+    for (const s of CHAT_SESSIONS) {
+      const title = (s.title || '未命名').slice(0, 24);
+      const ts = (s.updated_at || '').slice(5, 16).replace('T', ' ');
+      opts.push('<option value="' + escapeHtml(s.id) + '"' + (s.id === cur ? ' selected' : '') + '>' +
+        escapeHtml(ts + ' · ' + title) + '</option>');
+    }
+    sel.innerHTML = opts.join('');
+  } catch (e) { /* ignore */ }
+}
+function chatSessNew() {
+  localStorage.removeItem(sessKey(chatPick));
+  openChatSession();
+  toast('已开新会话', 'ok');
+}
+async function chatSessRename() {
+  const sid = localStorage.getItem(sessKey(chatPick));
+  if (!sid) return toast('当前无会话', 'err');
+  const cur = CHAT_SESSIONS.find(s => s.id === sid);
+  const title = prompt('新标题', (cur && cur.title) || '');
+  if (!title) return;
+  try {
+    await api('/api/sessions/' + encodeURIComponent(sid), { method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: title }) });
+    chatSessLoad();
+    toast('已重命名', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
+$('chatSessList')?.addEventListener?.('change', async e => {
+  const v = e.target.value;
+  if (v === '__new__') { chatSessNew(); return; }
+  if (!v) return;
+  localStorage.setItem(sessKey(chatPick), v);
+  openChatSession();
+});
+
+/* applyChatMode 已内置：切换到 chat 模式时三联动刷新 */
 
 /* ── 记忆中心 ─────────────────────────────────────── */
 
