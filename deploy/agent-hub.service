@@ -1,0 +1,21 @@
+[Unit]
+Description=Agent Hub 智管 (FastAPI :3102)
+Documentation=file:///home/gztxt/agent-hub/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gztxt/agent-hub
+ExecStart=/home/gztxt/agent-hub/venv/bin/python3 -m uvicorn src.main:app --host 0.0.0.0 --port 3102
+# 注意：.env 由应用自身加载（src/config.py 覆盖模式），此处不重复注入，避免双份真值
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-hub
+# 不设 MemoryMax：本服务会 fork jcode/claude/hermes 的 pty 子进程，
+# 上限过低会在用户开嵌入式终端时把整个 hub 一起 OOM 掉（2026-09-07 决策）
+
+[Install]
+WantedBy=default.target
