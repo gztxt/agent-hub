@@ -257,9 +257,8 @@ function renderSummaryCard(s) {
     tail.push(`<b style="color:#f87171">未完成:</b> ${unfinished.map(u => escapeHtml(u)).join('; ')}`);
   }
   card.innerHTML = `
-    <div class="sum-head" style="color:${color}">📋 任务总结</div>
-    ${metaTable}
-    ${prodTable}
+    <div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:0;margin-bottom:4px"><span class="sum-head" style="color:${color}">📋 任务总结</span><span class="sum-meta">会话 <code>${escapeHtml((s.session_id||'').slice(0,12))}</code></span></div>
+    <div style="line-height:1.3">${metaTable}${prodTable}</div>
     ${tail.length ? `<div class="sum-tail">${tail.join(' · ')}</div>` : ''}
   `;
   return card;
@@ -656,8 +655,18 @@ function chatSendStream(busy, box, body, sid) {
 .stream-step.toolresult { border-left-color:#34d399; color:#34d399; }
 .stream-step.answer { border-left-color:#fbbf24; color:#fbbf24; font-weight:500; }
 .stream-step .badge { display:inline-block; width:1.5em; }
-.msg.summary { background:linear-gradient(135deg,#1f2937 0%,#0f172a 100%); border:1px solid #334155; border-radius:8px; padding:10px 12px; margin:8px 0; font-size:12px; color:var(--text-1); }
-.msg.summary .sum-head { font-size:13px; font-weight:600; margin-bottom:6px; padding-bottom:4px; border-bottom:1px dashed #475569; }
+.msg.summary { background:linear-gradient(135deg,#1f2937 0%,#0f172a 100%); border:1px solid #334155; border-radius:8px; padding:6px 10px; margin:4px 0; font-size:12px; color:var(--text-1); line-height:1.4; }
+.msg.summary .sum-head { font-size:13px; font-weight:600; display:inline-block; margin-right:8px; padding-right:8px; border-right:1px solid #334155; }
+.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:11px; }
+.msg.summary .sum-meta b { color:var(--text-1); font-weight:500; }
+.msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; }
+.msg.summary .sum-tbl { display:inline-table; border-collapse:collapse; margin:0; font-size:11.5px; line-height:1.3; vertical-align:top; }
+.msg.summary .sum-tbl + .sum-tbl { margin-left:8px; }
+.msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:1px 6px 1px 0; text-align:left; min-width:36px; white-space:nowrap; }
+.msg.summary .sum-tbl td { padding:1px 0 1px 6px; color:var(--text-1); border-left:1px dotted #334155; }
+.msg.summary .sum-tbl td code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; font-size:10.5px; }
+.msg.summary .sum-tail { margin-top:4px; padding-top:4px; border-top:1px dashed #334155; color:var(--text-2); font-size:11.5px; line-height:1.4; }
+.msg.summary .sum-tail b { color:#93c5fd; }
 .msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
 .msg.summary .sum-row .k { color:var(--text-2); min-width:48px; flex-shrink:0; }
 .msg.summary .sum-row .v { color:var(--text-1); }
@@ -673,8 +682,6 @@ function chatSendStream(busy, box, body, sid) {
 .msg.summary .sum-fail { border-left-color:#f87171; }
 .msg.summary .sum-fail b { color:#f87171; }
 .msg.summary .sum-fail li { color:#fca5a5; }
-.msg.summary .sum-meta { color:var(--text-2); font-size:11px; margin-top:6px; padding-top:4px; border-top:1px dashed #334155; }
-.msg.summary .sum-meta code { background:#0f172a; color:#fbbf24; padding:0 3px; border-radius:2px; }
 `;
     document.head.appendChild(s);
   }
