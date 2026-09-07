@@ -121,6 +121,48 @@ def _resolve_under(path: str) -> Optional[Path]:
     return None
 
 
+def _read_readme_summary(d: Path) -> str:
+    """v0.5.2.4 读 README 第一段作为目录描述（限 150 字）。
+
+    候选顺序：README.md / README / readme.md / readme / 项目同名.md
+    失败/无 README → 返空串
+    """
+    candidates = ["README.md", "README", "readme.md", "readme", f"{d.name}.md"]
+    text = ""
+    for name in candidates:
+        f = d / name
+        if f.is_file() and f.stat().st_size < 256_000:  # 256K 上限
+            try:
+                text = f.read_text(encoding="utf-8", errors="ignore")
+                if text:
+                    break
+            except Exception:
+                continue
+    if not text:
+        return ""
+    # 提取第一段：跳过标题/空行/HTML/comment
+    import re
+    lines = text.splitlines()
+    para_lines = []
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            if para_lines: break  # 段结束
+            continue
+        if s.startswith("#") or s.startswith("<") or s.startswith("<!--") or s.startswith("/*"):
+            continue
+        # 去 markdown 加粗/链接
+        s = re.sub(r'\*\*', '', s)
+        s = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', s)
+        para_lines.append(s)
+    summary = " ".join(para_lines).strip()
+    if not summary:
+        return ""
+    if len(summary) > 150:
+        summary = summary[:147] + "..."
+    return summary
+
+
 def _shell_allowed(command: str) -> Tuple[bool, str]:
     """校验 command 是否在白名单内。返回 (ok, reason)。
 
@@ -196,8 +238,10 @@ def _unit_status(unit: str) -> Dict[str, Any]:
     """读 systemctl is-active / is-enabled；不抛。"""
     def _run(args: List[str]) -> str:
         try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=4)
-            return (r.stdout or r.stderr or "").strip()
+            # v0.5.2.4 bytes + decode 兜底
+            r = subprocess.run(args, capture_output=True, timeout=4)
+            out = r.stdout.decode("utf-8", errors="replace") if r.stdout else (r.stderr.decode("utf-8", errors="replace") if r.stderr else "")
+            return out.strip()
         except Exception as exc:  # noqa: BLE001
             return f"err:{type(exc).__name__}"
     return {
@@ -499,10 +543,12 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
         journal_tail = []
         if unit:
             try:
+                # v0.5.2.4 bytes + decode 兜底
                 r = subprocess.run(
                     ["journalctl", "--user", "-u", unit, "-n", "10", "--no-pager", "-q"],
-                    capture_output=True, text=True, timeout=4)
-                journal_tail = (r.stdout or "").splitlines()[-10:]
+                    capture_output=True, timeout=4)
+                out = r.stdout.decode("utf-8", errors="replace") if r.stdout else ""
+                journal_tail = out.splitlines()[-10:]
             except Exception as exc:  # noqa: BLE001
                 journal_tail = [f"err:{type(exc).__name__}"]
         return {
@@ -705,6 +751,8 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                     "allowed_roots": list(READ_PATH_ROOTS)}
         depth = max(0, min(int(args.get("depth") or 1), 3))
         hidden = bool(args.get("hidden"))
+        # v0.5.2.4: 探测深度（depth=0 时不读 README；只 1 层且只对顶层加 desc）
+        with_desc = depth <= 1
         try:
             items = []
             for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
@@ -712,12 +760,16 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                     continue
                 try:
                     st = child.stat()
-                    items.append({
+                    item = {
                         "name": child.name,
                         "type": "dir" if child.is_dir() else "file",
                         "size": st.st_size,
                         "mtime": st.st_mtime,
-                    })
+                    }
+                    # v0.5.2.4 自动读 README 第一段作为 description（仅 depth<=1 的目录）
+                    if with_desc and child.is_dir():
+                        item["description"] = _read_readme_summary(child)
+                    items.append(item)
                     if depth > 0 and child.is_dir():
                         # 递归一层
                         for sub in sorted(child.iterdir(), key=lambda x: x.name.lower()):
@@ -781,12 +833,19 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                         "allowed_roots": list(READ_PATH_ROOTS)}
             cwd = str(cwdr)
         try:
+            # v0.5.2.4 改用 bytes + errors=replace 兜底（部分子进程用 GBK 输出，
+            # LC_ALL=C.UTF-8 不一定管用；用 bytes 后用 utf-8 解 + 错误替换）
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+                cmd, shell=True, capture_output=True, timeout=timeout,
                 cwd=cwd,
                 env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
-            out = r.stdout or ""
-            err = r.stderr or ""
+            # 解码为文本，错误字符替换为 �
+            try:
+                out = r.stdout.decode("utf-8", errors="replace")
+                err = r.stderr.decode("utf-8", errors="replace")
+            except Exception:
+                out = str(r.stdout)
+                err = str(r.stderr)
             # v0.5.1 输出截断提升到 32KB（v0.5 8KB 太小，列大目录 ls -lh 被截）
             out_trunc = len(out) > 32768
             err_trunc = len(err) > 8192
@@ -844,9 +903,11 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
         if not ok:
             return {"error": f"内部校验: {reason}"}
         try:
+            # v0.5.2.4 改 bytes + decode 兜底
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=10)
-            lines = (r.stdout or "").splitlines()[:max_results]
+                cmd, shell=True, capture_output=True, timeout=10)
+            out = r.stdout.decode("utf-8", errors="replace") if r.stdout else ""
+            lines = out.splitlines()[:max_results]
             return {"path": str(p), "pattern": pattern, "count": len(lines),
                     "truncated": len((r.stdout or "").splitlines()) > max_results,
                     "matches": lines}

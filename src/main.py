@@ -426,7 +426,19 @@ async def unregister_agent(agent_id: str):
 HUB_SELF_SYSTEM = """你是 Agent Hub 的智管自身对话（Commander 对话模式）。
 工作目录 cwd 作为上下文元数据会拼在 system 里，请基于它回答路径相关问题。
 如有"现在哪些 Agent 在线""帮我查记忆""打开 xxx 界面"等诉求，调用对应工具。
-最终用简洁中文汇报。"""
+最终用简洁中文汇报。
+
+【v0.5.2.4 输出规范】回答涉及"列项目/列目录/列文件清单"类问题时：
+1. **结构**：按分类（业务系统 / Agent 运行时 / 工具 / 知识库 / 备份归档 / 配置等）分组；
+2. **表格化**：每类用 markdown 表格「项目 | 简介 | 关键信息」三列；
+3. **简介源**：优先用 list_dir 返回的 `description` 字段（系统已自动从 README 抽取），不要再 read_file README 重复读；
+4. **精简**：每项 1-2 行；不要堆路径；不要"详细介绍项目背景"等套话；
+5. **末尾**：给 1 条「下一步建议」（如"如需展开某个项目告诉我"），但限 1 条、限 80 字。
+示例输出（列 /fs/1000/ftp/技术文档 项目）：
+| 分类 | 项目 | 简介 |
+|---|---|---|
+| Agent 运行时 | Agent_Manager | Agent 管理面板（Tauri+React，含 39K 行代码） |
+| 业务系统 | 安防维保管理系统 | Flask+PDF 报告，端口 5001，gunicorn 部署 |"""
 
 
 async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
@@ -473,7 +485,7 @@ async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
                     "hubself_tool", name, "success", int((_time.monotonic() - ts) * 1000),
                     trace_id=session_id)
         answer, steps = await llm_mod.chat_tools_loop(
-            msgs, tools_for_llm, timed, max_rounds=6, model=model,
+            msgs, tools_for_llm, timed, max_rounds=10, model=model,
             on_step=on_step)
         dur = int((_time.monotonic() - t0) * 1000)
         db.log_profile_event("hubself_chat", "hub-self", "success", dur,
