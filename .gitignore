@@ -6,3 +6,6 @@ data/
 *.bak
 *.bak-*
 *.log
+
+# 修复工具时间戳备份（data/backups/）
+data/backups/

@@ -9,6 +9,7 @@
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -46,6 +47,78 @@ SAFE_WRITE_UNITS_GLOB = str(Path(os.path.expanduser("~")) / ".config" / "systemd
 
 BACKUP_DIR = Path(__file__).resolve().parent.parent / "data" / "backups"
 BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── v0.5 只读执行白名单 ────────────────────────────────────
+READ_PATH_ROOTS = (
+    str(Path(os.path.expanduser("~"))),         # /home/gztxt
+    "/vol1",
+    "/fs/1000/ftp/技术文档",
+)
+READ_SHELL_ALLOWED = frozenset({
+    "ls", "cat", "head", "tail", "find", "grep", "stat", "du",
+    "df", "free", "pwd", "whoami", "date", "uname", "id", "env",
+    "readlink", "basename", "dirname", "wc", "file", "tree",
+    "systemctl", "journalctl", "ps", "pgrep", "ss", "netstat",
+    "ip", "ifconfig", "route", "traceroute", "ping", "nslookup",
+    "which", "type", "echo", "true", "false", "test",
+})
+# 字符级黑名单（任何位置出现即拒）—— 写/破坏/系统级操作
+READ_SHELL_DENY_SUBSTR = (
+    "rm ", "rm\t", "rm$", "rm/",
+    "dd ", "mkfs", "fdisk", "parted",
+    "chmod", "chown", "chgrp", "setfacl",
+    "mv ", "mv\t", "mv$", "mv/",
+    "cp ", "cp\t", "cp$", "cp/",
+    "ln ", "ln\t", "ln$", "ln/",
+    ">", ">>", "2>", "2>>",  # 重定向
+    "kill ", "kill\t", "kill$", "pkill", "killall",
+    "shutdown", "reboot", "halt", "poweroff",
+    "mount", "umount",
+    "apt", "apt-get", "yum", "dnf", "pacman", "zypper",
+    "systemctl start", "systemctl stop", "systemctl restart",
+    "systemctl reload", "systemctl enable", "systemctl disable",
+    "systemctl mask", "systemctl unmask", "systemctl daemon-reload",
+    "iptables", "ip route add", "ip route del", "ip rule",
+    "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
+    "passwd", "visudo", "sudo ",
+    "crontab", "at ", "batch",
+    ":(){:|:&};:", "wget ", "curl ", "nc ", "ncat ",
+    "python ", "python3 ", "perl ", "ruby ", "node ",  # 拒绝脚本逃逸
+    "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/fstab",
+)
+
+
+def _resolve_under(path: str) -> Optional[Path]:
+    """把 path 解析为真实路径，校验在 READ_PATH_ROOTS 内。越界/不存在返回 None。"""
+    if not path:
+        return None
+    try:
+        p = Path(path).expanduser().resolve(strict=False)
+    except Exception:
+        return None
+    ps = str(p)
+    for root in READ_PATH_ROOTS:
+        root_p = str(Path(root).resolve(strict=False))
+        if ps == root_p or ps.startswith(root_p + "/"):
+            return p
+    return None
+
+
+def _shell_allowed(command: str) -> Tuple[bool, str]:
+    """校验 command 是否在白名单内。返回 (ok, reason)。"""
+    if not command or not command.strip():
+        return False, "空命令"
+    # 先扫黑名单
+    for deny in READ_SHELL_DENY_SUBSTR:
+        if deny in command:
+            return False, f"命令含禁用子串「{deny.strip()}」"
+    # 第一段必须是白名单命令
+    head = command.strip().split()[0]
+    # 去路径前缀
+    head_base = head.rsplit("/", 1)[-1]
+    if head_base not in READ_SHELL_ALLOWED:
+        return False, f"命令「{head_base}」不在白名单（可执行：{sorted(READ_SHELL_ALLOWED)}）"
+    return True, "ok"
 
 
 def _safe_backup(path: str, reason: str) -> Tuple[str, str]:
@@ -170,6 +243,41 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "backup_id": {"type": "string", "description": "文件名（不含目录），如 20260907_182856-config.toml-manual-fix-aabbccdd.bak"}},
             "required": ["backup_id"]}}},
+    # ── v0.5 只读执行类（默认暴露，路径/命令双重白名单）──
+    {"type": "function", "function": {
+        "name": "list_dir", "description": "列出目录内容（白名单内路径），含子目录与文件大小；默认 depth=1 不递归",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "绝对路径，限于 /home/gztxt、/vol1、/fs/1000/ftp/技术文档"},
+            "depth": {"type": "integer", "description": "递归深度 0=不递归 默认1最大3", "default": 1, "minimum": 0, "maximum": 3},
+            "hidden": {"type": "boolean", "description": "是否包含隐藏文件", "default": False}},
+            "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "read_file", "description": "读取文件前 N 字节（白名单内路径）；默认 4KB 上限 16KB",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "max_bytes": {"type": "integer", "default": 4096, "minimum": 1, "maximum": 16384}},
+            "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "shell_run", "description": "执行白名单内只读 shell 命令（ls/cat/head/tail/find/grep/stat/du/df/free/pwd/whoami/date/uname/systemctl status/journalctl -n/ps -ef/id/env 等）。字符级拒绝 rm/dd/mkfs 等写操作。",
+        "parameters": {"type": "object", "properties": {
+            "command": {"type": "string", "description": "完整 shell 命令字符串"},
+            "timeout": {"type": "integer", "description": "秒", "default": 5, "minimum": 1, "maximum": 20}},
+            "required": ["command"]}}},
+    {"type": "function", "function": {
+        "name": "find_files", "description": "在白名单路径下按 glob 模式找文件",
+        "parameters": {"type": "object", "properties": {
+            "glob_pattern": {"type": "string", "description": "如 **/*.md 或 *.toml"},
+            "root": {"type": "string", "description": "根目录"},
+            "max_results": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200}},
+            "required": ["glob_pattern", "root"]}}},
+    {"type": "function", "function": {
+        "name": "grep_search", "description": "在白名单路径下按模式搜内容（仅 grep -rEn）",
+        "parameters": {"type": "object", "properties": {
+            "pattern": {"type": "string"},
+            "path": {"type": "string"},
+            "max_results": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            "ignore_case": {"type": "boolean", "default": False}},
+            "required": ["pattern", "path"]}}},
 ]
 
 
@@ -209,7 +317,39 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
         chat_fn = _ctx.get("chat_fn")
         if not chat_fn:
             return {"error": "chat not ready"}
-        return await chat_fn(args["agent_id"], args["message"])
+        target = args["agent_id"]
+        message = args.get("message", "")
+        require_alive = bool(args.get("require_alive"))
+        if require_alive:
+            # 先健康检查：profile+端口+有 adapter
+            discovery = _ctx.get("discovery")
+            agent = discovery.get_agent(target) if discovery else None
+            if not agent:
+                return {"error": f"agent {target} 不存在", "reason": "not_registered",
+                        "hint": "调 list_agents 查可用 agent"}
+            if agent.status != "running":
+                return {"error": f"{target} 当前状态 {agent.status}",
+                        "reason": "not_alive",
+                        "hint": "v0.5 起智管有 10 个本地工具（list_dir/read_file/shell_run 等）可直接修复，"
+                                "不必依赖其他 Agent"}
+        try:
+            r = await chat_fn(target, message)
+            # 归一化错误：上游返回 dict 含 error 时，补 reason 字段
+            if isinstance(r, dict) and r.get("error") and "reason" not in r:
+                err = str(r["error"])
+                reason = "unknown"
+                if "404" in err or "not found" in err.lower():
+                    reason = "not_registered"
+                elif "timeout" in err.lower() or "Connection" in err:
+                    reason = "timeout_or_unreachable"
+                elif "down" in err.lower() or "503" in err or "not running" in err.lower():
+                    reason = "not_alive"
+                elif "tool" in err.lower() or "401" in err or "403" in err:
+                    reason = "auth_or_tool"
+                r["reason"] = reason
+            return r
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:300], "reason": "exception"}
     if name == "open_agent_ui":
         url = _ui_url_for(args["agent_id"])
         if not url:
@@ -497,6 +637,154 @@ async def _dispatch_tool(name: str, args: Dict[str, Any]):
                 reloaded = False
         return {"rolled_back_from": bid, "to": str(target),
                 "guard_backup": guard_bp, "systemd_reloaded": reloaded}
+
+    # ── v0.5 只读执行 ──────────────────────────────────────
+    if name == "list_dir":
+        p = _resolve_under(args.get("path") or "")
+        if not p:
+            return {"error": f"路径越界或不存在: {args.get('path')}",
+                    "allowed_roots": list(READ_PATH_ROOTS)}
+        depth = max(0, min(int(args.get("depth") or 1), 3))
+        hidden = bool(args.get("hidden"))
+        try:
+            items = []
+            for child in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                if not hidden and child.name.startswith("."):
+                    continue
+                try:
+                    st = child.stat()
+                    items.append({
+                        "name": child.name,
+                        "type": "dir" if child.is_dir() else "file",
+                        "size": st.st_size,
+                        "mtime": st.st_mtime,
+                    })
+                    if depth > 0 and child.is_dir():
+                        # 递归一层
+                        for sub in sorted(child.iterdir(), key=lambda x: x.name.lower()):
+                            if not hidden and sub.name.startswith("."):
+                                continue
+                            try:
+                                sst = sub.stat()
+                                items.append({
+                                    "name": f"{child.name}/{sub.name}",
+                                    "type": "dir" if sub.is_dir() else "file",
+                                    "size": sst.st_size,
+                                    "mtime": sst.st_mtime,
+                                    "depth": 1,
+                                })
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            return {"path": str(p), "depth": depth, "count": len(items), "items": items[:200]}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"列目录失败: {exc}"}
+
+    if name == "read_file":
+        p = _resolve_under(args.get("path") or "")
+        if not p:
+            return {"error": f"路径越界或不存在: {args.get('path')}",
+                    "allowed_roots": list(READ_PATH_ROOTS)}
+        if p.is_dir():
+            return {"error": f"{p} 是目录，请用 list_dir"}
+        max_bytes = max(1, min(int(args.get("max_bytes") or 4096), 16384))
+        try:
+            data = p.read_bytes()[:max_bytes]
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                return {"path": str(p), "size": p.stat().st_size,
+                        "truncated_to": len(data),
+                        "note": "二进制文件，前 N 字节 hex 预览",
+                        "hex": data.hex()[:512]}
+            return {"path": str(p), "size": p.stat().st_size,
+                    "truncated": p.stat().st_size > max_bytes,
+                    "truncated_to": len(data),
+                    "content": text}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"读文件失败: {exc}"}
+
+    if name == "shell_run":
+        cmd = args.get("command") or ""
+        ok, reason = _shell_allowed(cmd)
+        if not ok:
+            return {"error": f"shell 拒: {reason}",
+                    "allowed_commands": sorted(READ_SHELL_ALLOWED),
+                    "deny_substrings": list(READ_SHELL_DENY_SUBSTR)[:10]}
+        timeout = max(1, min(int(args.get("timeout") or 5), 20))
+        try:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=timeout,
+                env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"})
+            out = r.stdout or ""
+            err = r.stderr or ""
+            # 输出截断到 8KB
+            out_trunc = len(out) > 8192
+            err_trunc = len(err) > 4096
+            return {
+                "command": cmd,
+                "exit_code": r.returncode,
+                "stdout": out[:8192],
+                "stdout_truncated": out_trunc,
+                "stderr": err[:4096],
+                "stderr_truncated": err_trunc,
+                "timeout": timeout,
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": f"超时（{timeout}s）", "command": cmd}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"执行失败: {exc}"}
+
+    if name == "find_files":
+        root = _resolve_under(args.get("root") or "")
+        if not root:
+            return {"error": f"root 越界: {args.get('root')}",
+                    "allowed_roots": list(READ_PATH_ROOTS)}
+        pattern = args.get("glob_pattern") or "*"
+        max_results = max(1, min(int(args.get("max_results") or 50), 200))
+        try:
+            matches = []
+            for m in root.glob(pattern):
+                try:
+                    matches.append({"path": str(m), "is_dir": m.is_dir(),
+                                    "size": m.stat().st_size if m.is_file() else None})
+                except Exception:
+                    matches.append({"path": str(m), "error": "stat failed"})
+                if len(matches) >= max_results:
+                    break
+            return {"root": str(root), "pattern": pattern,
+                    "count": len(matches), "truncated": len(matches) >= max_results,
+                    "matches": matches}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"find 失败: {exc}"}
+
+    if name == "grep_search":
+        p = _resolve_under(args.get("path") or "")
+        if not p:
+            return {"error": f"path 越界: {args.get('path')}",
+                    "allowed_roots": list(READ_PATH_ROOTS)}
+        pattern = args.get("pattern") or ""
+        if not pattern:
+            return {"error": "pattern 必填"}
+        max_results = max(1, min(int(args.get("max_results") or 20), 100))
+        ignore_case = "-i" if args.get("ignore_case") else ""
+        cmd = f"grep -rEn {ignore_case}-- {shlex.quote(pattern)} {shlex.quote(str(p))}"
+        # _shell_allowed 必过（grep 在白名单），但仍校验
+        ok, reason = _shell_allowed(cmd)
+        if not ok:
+            return {"error": f"内部校验: {reason}"}
+        try:
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=10)
+            lines = (r.stdout or "").splitlines()[:max_results]
+            return {"path": str(p), "pattern": pattern, "count": len(lines),
+                    "truncated": len((r.stdout or "").splitlines()) > max_results,
+                    "matches": lines}
+        except subprocess.TimeoutExpired:
+            return {"error": "grep 超时（10s）"}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"grep 失败: {exc}"}
 
     return {"error": f"unknown tool {name}"}
 

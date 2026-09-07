@@ -542,6 +542,11 @@ async function chatSend() {
   const body = { message: msg, session_id: sid, model: model, cwd: cwd || null };
   if (tools) body.tools = true;
   if (repair) body.repair_mode = true;
+  // v0.5 流式：hub-self 走 /chat/stream SSE 实时显示思考/工具/答案（修"假死"）
+  if (chatPick === 'hub-self') {
+    return chatSendStream(busy, box, body, sid);
+  }
+  // 其他 Agent：仍走老 /chat
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -563,6 +568,105 @@ async function chatSend() {
     }
     chatSessLoad();  // 刷新会话列表（title 等信息更新）
   } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
+  box.scrollTop = box.scrollHeight;
+}
+
+// v0.5 SSE 流式版本：SSE 拿到 step 事件就 append 到 busy 内，实时渲染思考/工具/答案
+function chatSendStream(busy, box, body, sid) {
+  // 一次性注入流式样式
+  if (!document.getElementById('stream-css')) {
+    const s = document.createElement('style');
+    s.id = 'stream-css';
+    s.textContent = `
+.stream-status { font-size:12px; color:var(--text-2); padding:4px 0; font-family:monospace; }
+.stream-steps { margin-top:6px; font-size:12px; }
+.stream-step { padding:3px 0; border-left:2px solid var(--line); padding-left:8px; margin:2px 0; font-family:monospace; word-break:break-all; }
+.stream-step.thought { border-left-color:#a78bfa; color:#a78bfa; }
+.stream-step.toolcall { border-left-color:#60a5fa; color:#60a5fa; }
+.stream-step.toolresult { border-left-color:#34d399; color:#34d399; }
+.stream-step.answer { border-left-color:#fbbf24; color:#fbbf24; font-weight:500; }
+.stream-step .badge { display:inline-block; width:1.5em; }
+`;
+    document.head.appendChild(s);
+  }
+  // busy 改容器：上 status bar + 下 step 流（每步都 append）+ 终态 message
+  busy.textContent = '';
+  const status = document.createElement('div');
+  status.className = 'stream-status';
+  status.textContent = '🔄 思考中…';
+  const stepsBox = document.createElement('div');
+  stepsBox.className = 'stream-steps';
+  busy.appendChild(status);
+  busy.appendChild(stepsBox);
+  const allSteps = [];
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function appendStep(s) {
+    allSteps.push(s);
+    const row = document.createElement('div');
+    row.className = 'stream-step ' + (s.kind || '');
+    if (s.kind === 'thought') {
+      row.innerHTML = '<span class="badge">💭</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>';
+    } else if (s.kind === 'toolcall') {
+      const args = JSON.stringify(s.tool_input || {}, null, 0).slice(0,200);
+      row.innerHTML = '<span class="badge">🛠</span><span class="text">调用 <b>' + esc(s.tool) + '</b>(<code>' + esc(args) + '</code>)</span>';
+    } else if (s.kind === 'toolresult') {
+      row.innerHTML = '<span class="badge">📥</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>';
+    } else if (s.kind === 'answer') {
+      row.innerHTML = '<span class="badge">💬</span><span class="text">' + esc(s.content||'') + '</span>';
+    } else {
+      row.textContent = JSON.stringify(s).slice(0,200);
+    }
+    stepsBox.appendChild(row);
+    box.scrollTop = box.scrollHeight;
+  }
+  fetch('/api/agents/hub-self/chat/stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(r => {
+    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+    const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    function pump() {
+      return rd.read().then(({value, done}) => {
+        if (done) return;
+        buf += dec.decode(value, { stream: true });
+        // SSE 一帧以 \n\n 切分
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const line = frame.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          try {
+            const obj = JSON.parse(line.slice(6));
+            if (obj.event === 'start') {
+              status.textContent = '🔄 思考中… (' + (obj.session_id || sid).slice(0,8) + ')';
+            } else if (obj.event === 'step') {
+              appendStep(obj.step);
+              const tc = allSteps.filter(s => s.kind === 'toolcall').length;
+              status.textContent = '⏳ 进度: 思考 ' + allSteps.filter(s=>s.kind==='thought').length + ' / 工具 ' + tc + ' / 结果 ' + allSteps.filter(s=>s.kind==='toolresult').length;
+            } else if (obj.event === 'final') {
+              busy.className = 'msg ' + (obj.success ? 'assistant' : 'err');
+              busy.textContent = obj.response || obj.error || JSON.stringify(obj.hint || obj);
+              if (obj.model) busy.textContent += '\n· model: ' + obj.model;
+              status.remove();
+              chatSessLoad();
+            } else if (obj.event === 'error') {
+              busy.className = 'msg err';
+              busy.textContent = '[错误] ' + (obj.error || 'unknown');
+              status.remove();
+            }
+          } catch (e) { /* ignore frame */ }
+        }
+        return pump();
+      }).catch(e => {
+        status.remove();
+        busy.className = 'msg err';
+        busy.textContent = '[流式中断] ' + e.message + '（已自动回退非流式）';
+        // 回退非流式
+        api('/api/agents/hub-self/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          .then(d => { busy.textContent = d.response || d.error || JSON.stringify(d); busy.className = 'msg ' + (d.success ? 'assistant' : 'err'); chatSessLoad(); });
+      });
+    }
+    return pump();
+  });
   box.scrollTop = box.scrollHeight;
 }
 

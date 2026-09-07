@@ -96,6 +96,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _load_history(session_id: Optional[str], limit: int = 12):
+    """从 chat_messages 表读最近 N 轮 user/assistant 消息，oldest-first 列表。
+    流式端点复用。session_id 为空返 []。"""
+    if not session_id:
+        return []
+    try:
+        hist = db.query("SELECT role,content FROM chat_messages WHERE session_id=? "
+                        "AND role IN ('user','assistant') ORDER BY id DESC LIMIT ?",
+                        (session_id, limit))
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(hist)]
+    except Exception:
+        return []
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port}
@@ -172,7 +186,7 @@ HUB_SELF_SYSTEM = """你是 Agent Hub 的智管自身对话（Commander 对话�
 
 
 async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
-                                       trace_id, repair_mode=False):
+                                       trace_id, repair_mode=False, on_step=None):
     """hub-self 接入指挥官工具环（list_agents/open_agent_ui/search_memory/...）
 
     复用 manager.TOOLS + manager._dispatch_tool；落盘复用 chat_sessions/chat_messages 表。
@@ -215,7 +229,8 @@ async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
                     "hubself_tool", name, "success", int((_time.monotonic() - ts) * 1000),
                     trace_id=session_id)
         answer, steps = await llm_mod.chat_tools_loop(
-            msgs, tools_for_llm, timed, max_rounds=6, model=model)
+            msgs, tools_for_llm, timed, max_rounds=6, model=model,
+            on_step=on_step)
         dur = int((_time.monotonic() - t0) * 1000)
         db.log_profile_event("hubself_chat", "hub-self", "success", dur,
                              trace_id=trace_id or session_id,
@@ -299,6 +314,48 @@ async def _chat_dispatch(agent_id: str, message: str,
                     json.dumps(result.get("usage"), ensure_ascii=False) if result.get("usage") else None, now))
         db.execute("UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, session_id))
     return result
+
+
+@app.post("/api/agents/hub-self/chat/stream")
+async def hubself_chat_stream(req: ChatRequest):
+    """hub-self 流式端点：每完成一个 step（thought/toolcall/toolresult/answer）SSE 推一次"""
+    session_id = req.session_id or uuid.uuid4().hex[:12]
+
+    async def event_gen():
+        yield f"data: {json.dumps({'event': 'start', 'session_id': session_id})}\n\n"
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_step(step):
+            await queue.put({"event": "step", "step": step})
+
+        async def runner():
+            try:
+                history = _load_history(req.session_id, limit=12)
+                res = await _chat_dispatch_hubself_tools(
+                    req.message, session_id, req.model, req.cwd, history,
+                    trace_id=req.session_id, repair_mode=bool(req.repair_mode),
+                    on_step=on_step)
+                await queue.put({"event": "final", **res})
+            except Exception as e:  # noqa: BLE001
+                await queue.put({"event": "error", "error": str(e)[:500]})
+            finally:
+                await queue.put({"event": "_done_"})
+
+        runner_task = asyncio.create_task(runner())
+        try:
+            while True:
+                item = await queue.get()
+                if item.get("event") == "_done_":
+                    break
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+        finally:
+            if not runner_task.done():
+                runner_task.cancel()
+                try: await runner_task
+                except Exception: pass
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream",
+                            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.post("/api/agents/{agent_id}/chat")

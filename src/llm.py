@@ -64,13 +64,17 @@ async def _create_message(system: Optional[str], messages: List[dict],
 
 async def chat_tools_loop(messages: List[dict], tools: List[dict],
                           dispatch_tool=None, max_rounds: int = 6,
-                          model: Optional[str] = None) -> Tuple[str, List[dict]]:
+                          model: Optional[str] = None,
+                          on_step=None) -> Tuple[str, List[dict]]:
     """使用指定 model（默认用全局 MODEL）
 
     多轮工具环（上游 mcp_agent.rs 收敛策略）：
     stop_reason=tool_use → 执行 → tool_result 回填 → 继续；end_turn 终止。
     messages 为 OpenAI 风格 {role,content}，内部转 Anthropic 结构。
     返回 (final_text, steps)。
+
+    v0.5 增量回调：on_step(step) 在每个 thought/toolcall/toolresult 完成后被调用一次，
+    用来支持 SSE 流式渲染（前端可看到思考过程，不显假死）。可选，不传 = 老行为。
     """
     active_model = model or MODEL
     system = None
@@ -90,12 +94,16 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
         thoughts = [b.get("thinking", "") for b in content_blocks if b.get("type") == "thinking"]
         for th in thoughts:
             if th.strip():
-                steps.append({"kind": "thought", "content": th[:800]})
+                s = {"kind": "thought", "content": th[:800]}
+                steps.append(s)
+                if on_step: await on_step(s)
         tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
         if not tool_uses:
             # FCC 上游把正文切成多个 text block（夹 thinking），直接拼接不加换行
             answer = "".join(texts).strip()
-            steps.append({"kind": "answer", "content": answer})
+            s = {"kind": "answer", "content": answer}
+            steps.append(s)
+            if on_step: await on_step(s)
             return answer, steps
         # 记录 assistant 块原样回填
         convo.append({"role": "assistant", "content": content_blocks})
@@ -103,14 +111,18 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
         for tu in tool_uses:
             name = tu.get("name", "")
             args = tu.get("input") or {}
-            steps.append({"kind": "toolcall", "tool": name, "tool_input": args,
-                          "content": f"调用 {name}"})
+            s = {"kind": "toolcall", "tool": name, "tool_input": args,
+                 "content": f"调用 {name}"}
+            steps.append(s)
+            if on_step: await on_step(s)
             try:
                 out = await dispatch_tool(name, args)
             except Exception as e:  # noqa: BLE001
                 out = {"error": repr(e)}
             payload = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
-            steps.append({"kind": "toolresult", "tool": name, "content": payload[:2000]})
+            s = {"kind": "toolresult", "tool": name, "content": payload[:2000]}
+            steps.append(s)
+            if on_step: await on_step(s)
             tool_results.append({"type": "tool_result", "tool_use_id": tu.get("id", ""),
                                  "content": payload[:8000]})
         convo.append({"role": "user", "content": tool_results})
@@ -119,5 +131,7 @@ async def chat_tools_loop(messages: List[dict], tools: List[dict],
     data = await _create_message(system, convo, None, model=active_model)
     answer = "".join(b.get("text", "") for b in (data.get("content") or [])
                      if b.get("type") == "text").strip() or "（达到最大工具调用轮数）"
-    steps.append({"kind": "answer", "content": answer})
+    s = {"kind": "answer", "content": answer}
+    steps.append(s)
+    if on_step: await on_step(s)
     return answer, steps
