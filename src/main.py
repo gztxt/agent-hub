@@ -110,6 +110,118 @@ def _load_history(session_id: Optional[str], limit: int = 12):
         return []
 
 
+def _build_task_summary(session_id: str, message: str, steps: list,
+                        answer: str, model: str, duration_ms: int,
+                        success: bool = True, error: str = "") -> dict:
+    """v0.5.2 任务完成总结报告：从步骤 + 答案 + 时长自动汇总。
+
+    返回结构同时给：① 落 chat_messages role=summary；② 推 SSE final.summary；
+    ③ 写入 telemetry（db.log_profile_event）。
+    """
+    # 工具调用统计
+    tool_calls = [s for s in steps if s.get("kind") == "toolcall"]
+    tool_results = [s for s in steps if s.get("kind") == "toolresult"]
+    thoughts = [s for s in steps if s.get("kind") == "thought"]
+    tool_names = [t.get("tool") for t in tool_calls]
+    tool_freq = {}
+    for n in tool_names:
+        tool_freq[n] = tool_freq.get(n, 0) + 1
+    tool_summary = ", ".join(f"{n}×{c}" for n, c in sorted(tool_freq.items(), key=lambda x: -x[1])) or "无"
+    # 工具失败统计
+    failed_tools = [r for r in tool_results if '"error"' in (r.get("content") or "")[:200]
+                    or "error" in (r.get("content") or "")[:200][:60].lower()]
+    # 任务判定（按用户问题关键词简单分类）
+    task_kind = "查询/分析"
+    msg_low = (message or "").lower()
+    if any(k in message for k in ("列", "找", "查", "读", "看", "list", "find", "read")):
+        task_kind = "信息查询"
+    if any(k in message for k in ("改", "写", "配置", "重启", "回滚", "写", "config", "restart", "rollback", "修复")):
+        task_kind = "配置/修复"
+    if any(k in message for k in ("删", "清理", "归档", "remove", "clean")):
+        task_kind = "清理/归档"
+    # 时长
+    if duration_ms < 1000:
+        dur_str = f"{duration_ms}ms"
+    elif duration_ms < 60000:
+        dur_str = f"{duration_ms/1000:.1f}s"
+    else:
+        dur_str = f"{duration_ms//60000}分{duration_ms%60000//1000}秒"
+    # 状态
+    if not success:
+        status = "❌ 失败"
+    elif failed_tools:
+        status = f"⚠️ 部分成功（{len(failed_tools)}/{len(tool_calls)} 工具失败）"
+    else:
+        status = "✅ 完成"
+    # answer 摘要（前 80 字；去首尾空白 + 多行折一）
+    ans_clean = " ".join((answer or "").split())
+    ans_preview = ans_clean[:80] + ("..." if len(ans_clean) > 80 else "")
+    # 报告 markdown（前端直接渲染）
+    summary_md = (
+        f"**任务总结** · {status}\n\n"
+        f"- **类型**: {task_kind}\n"
+        f"- **耗时**: {dur_str}\n"
+        f"- **步骤**: 思考 {len(thoughts)} 步 / 工具 {len(tool_calls)} 次 / 结果 {len(tool_results)} 条\n"
+        f"- **工具使用**: {tool_summary}\n"
+        f"- **模型**: `{model or '?'}`\n"
+        f"- **会话ID**: `{session_id[:12]}`\n"
+    )
+    if failed_tools:
+        summary_md += f"- **失败工具**: {[r.get('tool') for r in failed_tools]}\n"
+    if error:
+        summary_md += f"\n**错误**: {error[:200]}\n"
+    summary_md += f"\n**答案摘要**: {ans_preview}"
+    return {
+        "status": status,
+        "task_kind": task_kind,
+        "duration_ms": duration_ms,
+        "duration_str": dur_str,
+        "thoughts": len(thoughts),
+        "tool_calls": len(tool_calls),
+        "tool_results": len(tool_results),
+        "tool_freq": tool_freq,
+        "tool_summary": tool_summary,
+        "failed_tools": [r.get("tool") for r in failed_tools],
+        "model": model or "?",
+        "session_id": session_id,
+        "answer_preview": ans_preview,
+        "summary_md": summary_md,
+        "error": error,
+    }
+
+
+def _persist_summary_message(session_id: str, summary: dict):
+    """把任务总结落 chat_messages 表 role=summary + telemetry 落账。
+    三处调用点（流式 /chat/stream、非流式 /chat、_chat_dispatch）都过这一处 → 一致性。"""
+    if not session_id:
+        return
+    try:
+        now = _now()
+        meta = json.dumps({
+            "task_kind": summary.get("task_kind"),
+            "duration_ms": summary.get("duration_ms"),
+            "tool_freq": summary.get("tool_freq"),
+            "status": summary.get("status"),
+            "model": summary.get("model"),
+        }, ensure_ascii=False)
+        db.execute("INSERT INTO chat_messages(session_id,role,content,meta,created_at) "
+                   "VALUES(?,?,?,?,?)",
+                   (session_id, "summary", summary.get("summary_md", ""), meta, now))
+    except Exception as e:  # noqa: BLE001
+        # 总结落库失败不影响主对话
+        print(f"[summary persist] failed: {e}", flush=True)
+    # 写 telemetry
+    try:
+        db.log_profile_event("hubself_summary", "hub-self",
+                             "success" if "✅" in summary.get("status", "") else "fail",
+                             summary.get("duration_ms", 0),
+                             trace_id=session_id,
+                             detail={"task_kind": summary.get("task_kind"),
+                                     "tools": summary.get("tool_freq")})
+    except Exception:
+        pass
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port}
@@ -248,13 +360,35 @@ async def _chat_dispatch_hubself_tools(message, session_id, model, cwd, history,
                        (session_id, "assistant", answer,
                         json.dumps({"steps": steps}, ensure_ascii=False), now))
             db.execute("UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, session_id))
+            # v0.5.2 任务完成总结：落独立 summary 消息
+            summary = _build_task_summary(
+                session_id, message, steps, answer,
+                model or llm_mod.MODEL, dur, success=True)
+            _persist_summary_message(session_id, summary)
+        else:
+            summary = _build_task_summary(
+                session_id or "anon", message, steps, answer,
+                model or llm_mod.MODEL, dur, success=True)
         return {"success": True, "agent": "hub-self", "response": answer,
-                "model": model or llm_mod.MODEL, "steps": steps}
+                "model": model or llm_mod.MODEL, "steps": steps,
+                "summary": summary}
     except Exception as e:  # noqa: BLE001
         dur = int((_time.monotonic() - t0) * 1000)
         db.log_profile_event("hubself_chat", "hub-self", "fail", dur,
                              trace_id=trace_id or session_id,
                              detail={"error": str(e)[:200]})
+        # 失败时也尝试落 summary
+        try:
+            if session_id:
+                summary = _build_task_summary(
+                    session_id, message, [], str(e), model or "", dur,
+                    success=False, error=str(e)[:200])
+                _persist_summary_message(session_id, summary)
+                return {"success": False, "agent": "hub-self", "error": str(e)[:500],
+                        "hint": "检查 .env 的 MANAGER_LLM_API_KEY 与 FCC(:8082) 是否可达",
+                        "summary": summary}
+        except Exception:
+            pass
         return {"success": False, "agent": "hub-self", "error": str(e)[:500],
                 "hint": "检查 .env 的 MANAGER_LLM_API_KEY 与 FCC(:8082) 是否可达"}
 

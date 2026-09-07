@@ -213,6 +213,34 @@ function renderSteps(steps) {
   return wrap;
 }
 
+// v0.5.2 任务完成总结卡片：流式 final 事件 + 历史回放都调用
+function renderSummaryCard(s) {
+  if (!s) return null;
+  const card = document.createElement('div');
+  card.className = 'msg summary';
+  // 状态色（✅ 绿 / ⚠ 黄 / ❌ 红）
+  let color = '#34d399';
+  if ((s.status || '').includes('部分')) color = '#fbbf24';
+  if ((s.status || '').includes('失败')) color = '#f87171';
+  // 工具频率 pill
+  const tf = s.tool_freq || {};
+  const tfPills = Object.entries(tf).map(([n, c]) =>
+    `<span class="pill">${n}×${c}</span>`).join(' ') || '<span class="muted">无</span>';
+  // 答案预览
+  const preview = s.answer_preview || '';
+  card.innerHTML = `
+    <div class="sum-head" style="color:${color}">📋 任务总结 · ${s.status || '完成'}</div>
+    <div class="sum-row"><span class="k">类型</span><span class="v">${s.task_kind || '?'}</span></div>
+    <div class="sum-row"><span class="k">耗时</span><span class="v">${s.duration_str || '?'}</span></div>
+    <div class="sum-row"><span class="k">步骤</span><span class="v">思考 ${s.thoughts||0} / 工具 ${s.tool_calls||0} / 结果 ${s.tool_results||0}</span></div>
+    <div class="sum-row"><span class="k">工具</span><span class="v">${tfPills}</span></div>
+    <div class="sum-row"><span class="k">模型</span><span class="v"><code>${s.model || '?'}</code></span></div>
+    ${s.failed_tools && s.failed_tools.length ? `<div class="sum-row"><span class="k">失败</span><span class="v" style="color:#f87171">${s.failed_tools.join(', ')}</span></div>` : ''}
+    <div class="sum-preview">${preview}</div>
+  `;
+  return card;
+}
+
 async function mgrSend() {
   const input = $('mgrInput');
   const msg = input.value.trim();
@@ -500,6 +528,21 @@ async function openChatSession() {
 }
 
 function renderChatMsg(m) {
+  // v0.5.2 任务总结消息：role='summary' 走独立卡片（不回放成普通 assistant 文字）
+  if (m.role === 'summary') {
+    try {
+      const meta = m.meta ? JSON.parse(m.meta) : {};
+      const sum = renderSummaryCard({
+        status: meta.status, task_kind: meta.task_kind,
+        duration_str: meta.duration_ms ? (meta.duration_ms < 1000 ? meta.duration_ms+'ms' : (meta.duration_ms/1000).toFixed(1)+'s') : '?',
+        duration_ms: meta.duration_ms,
+        thoughts: 0, tool_calls: Object.values(meta.tool_freq || {}).reduce((a,b)=>a+b, 0),
+        tool_results: 0, tool_freq: meta.tool_freq || {},
+        model: meta.model, answer_preview: (m.content || '').replace(/^\*\*任务总结\*\*[^\n]*\n\n/, '').slice(0, 200)
+      });
+      return sum || document.createElement('div');
+    } catch (e) { /* fallthrough */ }
+  }
   const el = document.createElement('div');
   el.className = 'msg ' + (m.role === 'user' ? 'user' : m.role === 'error' ? 'err' : 'assistant');
   el.textContent = m.content || '';
@@ -586,6 +629,15 @@ function chatSendStream(busy, box, body, sid) {
 .stream-step.toolresult { border-left-color:#34d399; color:#34d399; }
 .stream-step.answer { border-left-color:#fbbf24; color:#fbbf24; font-weight:500; }
 .stream-step .badge { display:inline-block; width:1.5em; }
+.msg.summary { background:linear-gradient(135deg,#1f2937 0%,#0f172a 100%); border:1px solid #334155; border-radius:8px; padding:10px 12px; margin:8px 0; font-size:12px; color:var(--text-1); }
+.msg.summary .sum-head { font-size:13px; font-weight:600; margin-bottom:6px; padding-bottom:4px; border-bottom:1px dashed #475569; }
+.msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
+.msg.summary .sum-row .k { color:var(--text-2); min-width:48px; flex-shrink:0; }
+.msg.summary .sum-row .v { color:var(--text-1); }
+.msg.summary .sum-row .pill { display:inline-block; background:#1e293b; color:#93c5fd; padding:1px 6px; border-radius:8px; margin-right:3px; font-size:11px; }
+.msg.summary .sum-row .muted { color:#64748b; }
+.msg.summary .sum-row code { background:#0f172a; color:#fbbf24; padding:0 4px; border-radius:3px; }
+.msg.summary .sum-preview { margin-top:6px; padding-top:6px; border-top:1px dashed #475569; color:var(--text-2); font-style:italic; word-break:break-all; }
 `;
     document.head.appendChild(s);
   }
@@ -646,6 +698,11 @@ function chatSendStream(busy, box, body, sid) {
               busy.className = 'msg ' + (obj.success ? 'assistant' : 'err');
               busy.textContent = obj.response || obj.error || JSON.stringify(obj.hint || obj);
               if (obj.model) busy.textContent += '\n· model: ' + obj.model;
+              // v0.5.2 任务总结：把 summary 渲染为独立卡片（紧跟 assistant 答案之后）
+              if (obj.summary) {
+                const sumCard = renderSummaryCard(obj.summary);
+                if (sumCard) box.appendChild(sumCard);
+              }
               status.remove();
               chatSessLoad();
             } else if (obj.event === 'error') {
