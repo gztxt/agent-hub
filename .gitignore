@@ -2,3 +2,7 @@ venv/
 __pycache__/
 data/
 .env
+# 备份件与运行时产物不入库（.env.bak-* 含 token，绝不跟踪）
+*.bak
+*.bak-*
+*.log
