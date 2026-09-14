@@ -2,7 +2,7 @@
 
 kind 语义：
   agent    编码/对话智能体（claude/pi/jcode/hermes/qwenpaw/cloudcli/hub-self）
-  gateway  模型/消息网关（CCR/FCC/opensquilla/ccpocket）——非 Agent，无对话按钮
+  gateway  模型/消息网关（CCR/FCC/ccpocket）——非 Agent，无对话按钮
   service  系统服务（xray/proxy-panel/claude-mem/ai_manager/gotty...）——仅快捷方式
   memory   记忆后端（tdai）
   tool     工具容器（chromium/ollama）
@@ -128,10 +128,14 @@ PROFILES: List[dict] = [
      "cli": None, "port": 8082, "ui": None,
      "panel": "http://127.0.0.1:18083", "panel_auth": "basic",
      "desc": "free-claude-code 模型网关 :8082（Admin 面板走 :18083 中继，Basic 鉴权→仅新窗口）"},
-    {"id": "opensquilla-gw", "name": "OpenSquilla Gateway", "kind": "gateway",
+    {"id": "opensquilla", "name": "OpenSquilla", "kind": "agent",
      "detect": {"proc": [r"opensquilla gateway"], "systemd": ["opensquilla-gateway"]},
-     "cli": None, "port": 18791, "ui": None, "panel": None,
-     "desc": "OpenSquilla 消息网关 :18791"},
+     "cli": None, "port": 18791,
+     "ui": "http://127.0.0.1:18791/control/", "frame_deny": True,
+     "terminal": {"cmd": "opensquilla chat", "cwd": "/home/gztxt"},
+     "chat": None,
+     "desc": "OpenSquilla 助理本体（本 Agent）：网关 :18791 + Control 控制台"
+             "（X-Frame-Options: DENY→仅新窗口）；终端=opensquilla chat 交互会话"},
     {"id": "ccpocket", "name": "CCPocket Bridge", "kind": "gateway",
      "detect": {"systemd": ["ccpocket-bridge"]},
      "cli": None, "port": 8765, "ui": None, "panel": None,
@@ -303,7 +307,9 @@ def entries_for(p: dict, status: str) -> List[dict]:
     if kind == "agent":
         ui = p.get("ui")
         if isinstance(ui, str):
-            es.append({"type": "embed", "label": "嵌入会话", "url": ui})
+            # frame_deny = 控制台自设 X-Frame-Options: DENY，iframe 必被浏览器拒 → 仅新窗口
+            if not p.get("frame_deny"):
+                es.append({"type": "embed", "label": "嵌入会话", "url": ui})
             es.append({"type": "open", "label": "新窗口", "url": ui})
         if p.get("terminal") and status in ("running", "installed", "stopped"):
             es.append({"type": "term", "label": "终端", "agent": p["id"]})
