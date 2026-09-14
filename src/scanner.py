@@ -38,8 +38,12 @@ BUILTIN_PORTS, KNOWN_UNITS = _known_ports_units()
 # 网关/基础设施家族：由内置项或外部守护管理，不重复登记
 EXCLUDE_PATTERNS = re.compile(
     r"^(ccr|fcc|opensquilla|agent-hub|xray|tailscale|unattended|user@)", re.I)
-CLI_WATCHLIST = ["claude", "codex", "pi", "jcode", "openclaw", "hermes",
-                 "qoder", "opencode", "aider", "gemini", "kimi"]
+
+
+def _watchlist():
+    """CLI 名单单一真相源在 profiles（B 档动态补卡与本扫描共用）"""
+    import profiles
+    return profiles.CLI_WATCHLIST
 PORT_IN_TEXT = re.compile(r"(?:--port[= ]+|[:=])(\d{4,5})(?![\d])")
 
 
@@ -131,9 +135,9 @@ def scan_systemd() -> List[Dict]:
 
 
 def scan_cli_installed() -> List[Dict]:
-    """仅报告安装状态（不注册）：CLI 无常驻端口，进卡片列表是噪音"""
+    """仅报告安装状态（不注册）：卡片补发由 profiles._dynamic_cli_agents 负责（B 档）"""
     installed = []
-    for cli in CLI_WATCHLIST:
+    for cli in _watchlist():
         p = shutil.which(cli)
         if p:
             installed.append({"name": cli, "path": p})

@@ -50,7 +50,7 @@ import term as term_mod
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.3.0"
+VERSION = "0.6.0"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"],

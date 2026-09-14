@@ -97,16 +97,26 @@ function renderSeats() {
   // 基础设施区（②服务/工具只留快捷方式）
   $('infraCount').textContent = '（' + infra.length + ' 项）';
   $('infraGrid').innerHTML = infra.map(a => {
-    const btns = (a.entries || []).map(e => {
-      if (e.type === 'embed') return '<button class="btn sm" title="嵌入对话界面" onclick="gotoChat(\'' + a.id + '\',\'embed\')">◉嵌入</button>';
-      if (e.type === 'open') return '<button class="btn sm ghost" title="快捷方式：' + escapeHtml(e.url) + '" onclick="window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗</button>';
-      if (e.type === 'term') return '<button class="btn sm ghost" title="终端" onclick="gotoChat(\'' + a.id + '\',\'term\')">⌨</button>';
-      return '<button class="btn sm ghost" title="详情" onclick="showDetail(\'' + a.id + '\')">i</button>';
+    const es = a.entries || [];
+    const hasEmbed = es.some(e => e.type === 'embed');
+    const openUrl = (es.find(e => e.type === 'open') || {}).url;
+    const btns = es.map(e => {
+      if (e.type === 'embed') return '<button class="btn sm" title="嵌入统一对话" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')">◉嵌入</button>';
+      if (e.type === 'open') return '<button class="btn sm ghost" title="新窗口打开：' + escapeHtml(e.url) + '" onclick="event.stopPropagation();window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗</button>';
+      if (e.type === 'term') return '<button class="btn sm ghost" title="终端" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')">⌨</button>';
+      return '<button class="btn sm ghost" title="详情" onclick="event.stopPropagation();showDetail(\'' + a.id + '\')">i</button>';
     }).join('');
     const kt = { gateway: '🔀网关', service: '⚙️服务', memory: '🧠记忆', tool: '🧰工具' }[a.kind] || a.kind;
-    return '<div class="chip" title="' + escapeHtml(a.description) + (a.port ? ' :' + a.port : '') + '">' +
+    // 🔒 = Basic 鉴权面板：浏览器禁止跨源 iframe 内弹登录框，只能新窗口
+    const lock = a.auth_required ? '<span title="HTTP Basic 鉴权：浏览器禁止在 iframe 内弹出登录框，仅支持新窗口打开" style="cursor:help;font-size:11px">🔒</span>' : '';
+    // chip 点击 = 进统一对话嵌入（用户裁定 2026-09-14）；不可嵌入则退新窗口/详情
+    const click = hasEmbed ? 'gotoChat(\'' + a.id + '\',\'embed\')'
+      : (openUrl ? 'window.open(\'' + lanUrl(openUrl) + '\',\'_blank\')'
+      : 'showDetail(\'' + a.id + '\')');
+    const clickHint = hasEmbed ? '｜点击=嵌入统一对话' : (openUrl ? '｜点击=新窗口打开' : '');
+    return '<div class="chip" style="cursor:pointer" onclick="' + click + '" title="' + escapeHtml(a.description) + (a.port ? ' :' + a.port : '') + clickHint + '">' +
       '<span class="dot ' + (a.status === 'running' ? 'on' : 'off') + '"></span>' +
-      '<b>' + escapeHtml(a.name) + '</b><span class="kindtag">' + kt + '</span>' + btns + '</div>';
+      '<b>' + escapeHtml(a.name) + '</b>' + lock + '<span class="kindtag">' + kt + '</span>' + btns + '</div>';
   }).join('');
   if (!agents.length) { grid.innerHTML = '<div class="hint" style="flex:0 0 100%;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
   if (!grid.dataset.tapBound) {  // US-002：触屏无 hover，点击卡片展开/收起操作行（容器常驻，绑一次即可）

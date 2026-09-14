@@ -74,7 +74,8 @@ class AgentDiscovery:
             agents.append(AgentInfo(
                 id=p["id"], name=p["name"], kind=p["kind"], status=status,
                 endpoint=endpoint, port=p.get("port"),
-                auth_required=bool(p.get("panel") and re.search(r"18083|12700", str(p.get("panel")))),
+                auth_required=bool(p.get("panel_auth")) or
+                bool(p.get("panel") and re.search(r"18083|12700", str(p.get("panel")))),
                 description=p.get("desc", ""),
                 config_path=self._find_config_path(p["id"]),
                 last_seen=self._iso_now(), builtin=True,

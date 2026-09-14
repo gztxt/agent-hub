@@ -94,6 +94,12 @@ PROFILES: List[dict] = [
      "terminal": {"cmd": "jcode", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": {"adapter": "jcode"},
      "desc": "编码 Agent（CLI/TUI），可终端拉起或经 CCR 对话"},
+    {"id": "codex", "name": "Codex CLI", "kind": "agent",
+     "detect": {"proc": [r"(^|/)codex( |$)"]},
+     "cli": "codex", "port": None, "ui": None,
+     "terminal": {"cmd": "codex", "cwd": "/fs/1000/ftp/技术文档"},
+     "chat": None,
+     "desc": "OpenAI Codex CLI（TUI），经 CCR :3456（~/.codex/config.toml 托管 profile）→ 原生终端会话"},
     {"id": "hermes", "name": "Hermes", "kind": "agent",
      "detect": {"proc": [r"(^|/)hermes( |$)", "hermes"]},
      "cli": "hermes", "port": None, "ui": None,
@@ -119,8 +125,9 @@ PROFILES: List[dict] = [
      "desc": "Claude↔多模型路由网关 :3456/3457/3458（生命线，只观测）"},
     {"id": "fcc", "name": "FCC Gateway", "kind": "gateway",
      "detect": {"proc": [r"fcc-server"], "systemd": ["fcc"]},
-     "cli": None, "port": 8082, "ui": None, "panel": None,
-     "desc": "free-claude-code 模型网关 :8082（Admin 走 :18083 中继）"},
+     "cli": None, "port": 8082, "ui": None,
+     "panel": "http://127.0.0.1:18083", "panel_auth": "basic",
+     "desc": "free-claude-code 模型网关 :8082（Admin 面板走 :18083 中继，Basic 鉴权→仅新窗口）"},
     {"id": "opensquilla-gw", "name": "OpenSquilla Gateway", "kind": "gateway",
      "detect": {"proc": [r"opensquilla gateway"], "systemd": ["opensquilla-gateway"]},
      "cli": None, "port": 18791, "ui": None, "panel": None,
@@ -141,12 +148,13 @@ PROFILES: List[dict] = [
      "desc": "xray 订阅/配置面板 :8083"},
     {"id": "claude-mem", "name": "claude-mem", "kind": "service",
      "detect": {"systemd": ["claude-mem"], "proc": [r"claude-mem"]},
-     "cli": None, "port": 37700, "ui": None, "panel": None,
-     "desc": "Claude 记忆压缩 worker :37700"},
+     "cli": None, "port": 37700, "ui": None, "panel": "http://127.0.0.1:37700",
+     "desc": "Claude 记忆压缩 worker :37700（自带 Web viewer，可嵌入）"},
     {"id": "gotty", "name": "GoTTY Terminal", "kind": "tool",
      "detect": {"proc": [r"gotty"]},
-     "cli": None, "port": 12700, "ui": None, "panel": None,
-     "desc": "系统级 Web 终端 :12700（Basic 鉴权，独立入口）"},
+     "cli": None, "port": 12700, "ui": None,
+     "panel": "http://127.0.0.1:12700", "panel_auth": "basic",
+     "desc": "系统级 Web 终端 :12700（Basic 鉴权→iframe 弹不出登录框，仅新窗口）"},
     {"id": "tdai", "name": "TDAI Memory", "kind": "memory",
      "detect": {"docker": ["tdai-memory-core"], "proc": []},
      "cli": None, "port": 8420, "ui": None, "panel": None,
@@ -157,8 +165,9 @@ PROFILES: List[dict] = [
      "desc": "本地模型运行时 :11434"},
     {"id": "chromium", "name": "Chromium (容器)", "kind": "tool",
      "detect": {"docker": ["chromium"]},
-     "cli": None, "port": 3000, "ui": None, "panel": None,
-     "desc": "无头浏览器服务 :3000"},
+     "cli": None, "port": 3000, "ui": None,
+     "panel": "http://127.0.0.1:3000", "panel_auth": "basic",
+     "desc": "无头浏览器服务 :3000（nginx Basic 鉴权→仅新窗口）"},
     {"id": "ai_manager", "name": "AI Manager (Trim)", "kind": "service",
      "detect": {"proc": [r"/usr/trim/bin/ai_manager"]},
      "cli": None, "port": None, "ui": None, "panel": None,
@@ -174,8 +183,51 @@ SHELL_PROFILE = {"id": "shell", "name": "系统终端 (bash)", "kind": "tool",
                  "desc": "hub 原生 pty 终端（白名单=bash，可用 TERM_ALLOW_BASH=0 关闭）"}
 
 
+# ── B 档动态发现（2026-09-14）──────────────────────────────
+# CLI watchlist 单一真相源（scanner.py 引用此处）；已安装但未进 PROFILES
+# 的 CLI 自动补 agent 卡片（终端入口），未来新装 CLI 无需改代码。
+CLI_WATCHLIST = ["claude", "codex", "pi", "jcode", "openclaw", "hermes",
+                 "qoder", "opencode", "aider", "gemini", "kimi"]
+
+CLI_DISPLAY = {"codex": "Codex CLI", "openclaw": "OpenClaw", "opencode": "OpenCode",
+               "aider": "Aider", "gemini": "Gemini CLI", "kimi": "Kimi CLI",
+               "qoder": "Qoder", "hermes": "Hermes", "jcode": "JCode",
+               "claude": "Claude Code", "pi": "Pi Agent"}
+
+_cli_dyn_cache = {"ts": 0.0, "items": []}
+
+
+def _dynamic_cli_agents() -> List[dict]:
+    """watchlist 中实测已安装（which 可解析）且注册表未收录的 CLI → 动态 agent 画像。
+    结果缓存 30s，避免每次 discovery 都扫盘。"""
+    import time
+    now = time.monotonic()
+    if now - _cli_dyn_cache["ts"] < 30:
+        return _cli_dyn_cache["items"]
+    covered = {p["id"] for p in PROFILES}
+    covered |= {p.get("cli") for p in PROFILES if p.get("cli")}
+    out: List[dict] = []
+    for name in CLI_WATCHLIST:
+        if name in covered:
+            continue
+        path = which(name)
+        if not path:
+            continue
+        out.append({
+            "id": name, "name": CLI_DISPLAY.get(name, name.capitalize()),
+            "kind": "agent",
+            "detect": {"proc": [rf"(^|/){re.escape(name)}( |$)"]},
+            "cli": name, "port": None, "ui": None,
+            "terminal": {"cmd": name, "cwd": "/fs/1000/ftp/技术文档"},
+            "chat": None, "dynamic": True,
+            "desc": f"CLI Agent（watchlist 自动发现：{path}）→ 原生终端会话"})
+    _cli_dyn_cache["ts"] = now
+    _cli_dyn_cache["items"] = out
+    return out
+
+
 def all_profiles() -> List[dict]:
-    out = list(PROFILES)
+    out = list(PROFILES) + _dynamic_cli_agents()
     if os.getenv("TERM_ALLOW_BASH", "1") != "0":
         out.append(SHELL_PROFILE)
     return out
@@ -189,11 +241,12 @@ def get_profile(pid: str) -> Optional[dict]:
 
 
 def which(name: str) -> Optional[str]:
-    """which + 常见用户 bin 目录兜底（服务进程 PATH 可能不含 ~/.local/bin）"""
+    """which + 常见用户 bin 目录兜底（服务进程 PATH 可能不含 ~/.local/bin、~/.npm-global/bin）"""
     p = shutil.which(name)
     if p:
         return p
-    for d in (Path.home() / ".local/bin", Path("/usr/local/bin"), Path.home() / "bin"):
+    for d in (Path.home() / ".local/bin", Path.home() / ".npm-global/bin",
+              Path("/usr/local/bin"), Path.home() / "bin"):
         f = d / name
         if f.is_file() and os.access(f, os.X_OK):
             return str(f)
@@ -260,9 +313,10 @@ def entries_for(p: dict, status: str) -> List[dict]:
         if p.get("panel"):
             es.append({"type": "open", "label": "打开面板", "url": p["panel"],
                        "probe_port": panel_port(p)})
-            # 有面板的服务也生成 embed entry，允许嵌入对话界面（外部改动合并保留）
-            es.append({"type": "embed", "label": "嵌入会话", "url": p["panel"],
-                       "probe_port": panel_port(p)})
+            # Basic 鉴权面板不生成 embed：浏览器禁止跨源 iframe 内弹认证框，嵌入必然 401 白屏
+            if not p.get("panel_auth"):
+                es.append({"type": "embed", "label": "嵌入会话", "url": p["panel"],
+                           "probe_port": panel_port(p)})
         if p.get("terminal"):
             es.append({"type": "term", "label": "终端", "agent": p["id"]})
     es.append({"type": "detail", "label": "详情"})
