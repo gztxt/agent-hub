@@ -60,8 +60,9 @@
         .divider span { font-size: 12px; letter-spacing: .2em; color: var(--muted); text-transform: uppercase; }
 
         /* ── 座位：US-002 紧凑横卡（面积约为原竖卡 30%，点击/hover 展开操作行） ── */
-        .seats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-width: 100%; margin: 0 auto; }
-        .seat { position: relative; min-width: 0; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 8px 10px; min-height: 56px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; transition: .15s; cursor: pointer; user-select: none; }
+        /* 2026-09-14 卡片组按数量自动居中：原 grid auto-fill 会预留空轨（6 卡时右侧死白 175px、整组偏左），改 flex + justify-content:center，卡宽统一 */
+        .seats { display: flex; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 10px; max-width: 100%; margin: 0 auto; }
+        .seat { position: relative; flex: 0 1 190px; max-width: 100%; min-width: 0; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 8px 10px; min-height: 56px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; transition: .15s; cursor: pointer; user-select: none; }
         .seat.s-running { border-color: #22c55e88; background: #22c55e14; }
         .seat.s-stopped { opacity: .85; }
         .seat.s-error { border-color: #ef4444aa; background: #ef444414; }
@@ -201,7 +202,7 @@
             .podium b { font-size: 13px; }
             .podium span { font-size: 12px; }
             .seats { gap: 8px; }
-            .seat { padding: 7px 8px; gap: 6px; }
+            .seat { flex-basis: 150px; padding: 7px 8px; gap: 6px; }
             .avatar { width: 28px; height: 28px; font-size: 12px; }
             select { max-width: 100%; }
             .toolbar input, .toolbar select { min-width: 0; }
@@ -256,7 +257,7 @@
                 </div>
             </div>
             <div class="divider"><span>学生座位 · 仅 Agent</span></div>
-            <div class="seats" id="seats"><div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">加载中…</div></div>
+            <div class="seats" id="seats"><div class="hint" style="flex:0 0 100%;text-align:center;padding:30px">加载中…</div></div>
             <details class="infra-box" id="infraBox">
                 <summary>⚙️ 基础设施（网关 / 服务 / 记忆 / 工具 —— 非 Agent，仅快捷方式）<span class="hint" id="infraCount"></span></summary>
                 <div class="infra-grid" id="infraGrid"></div>

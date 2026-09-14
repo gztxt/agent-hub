@@ -108,7 +108,7 @@ function renderSeats() {
       '<span class="dot ' + (a.status === 'running' ? 'on' : 'off') + '"></span>' +
       '<b>' + escapeHtml(a.name) + '</b><span class="kindtag">' + kt + '</span>' + btns + '</div>';
   }).join('');
-  if (!agents.length) { grid.innerHTML = '<div class="hint" style="grid-column:1/-1;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
+  if (!agents.length) { grid.innerHTML = '<div class="hint" style="flex:0 0 100%;text-align:center;padding:30px">🏫 暂无 Agent — 注册一个吧</div>'; return; }
   if (!grid.dataset.tapBound) {  // US-002：触屏无 hover，点击卡片展开/收起操作行（容器常驻，绑一次即可）
     grid.dataset.tapBound = '1';
     grid.addEventListener('click', e => {
