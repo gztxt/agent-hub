@@ -50,7 +50,7 @@
         .hdot.r { background: var(--danger); }
 
         /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
-        .shell { display: flex; flex: 1; overflow: hidden; }
+        .shell { display: flex; flex: 1; overflow: hidden; flex-direction: column; }
         .sidebar { flex: 0 0 244px; width: 244px; background: var(--bg); border-right: 1px solid var(--border);
                    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
                    position: relative; align-self: stretch; overflow-y: auto;
@@ -132,7 +132,7 @@
                        color: var(--muted); border-radius: 8px; padding: 6px; font-size: 12px; width: 100%; }
         .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
 
-        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 0 16px; display: flex; flex-direction: column; }
+        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 0 16px; display: flex; flex-direction: column; overflow: hidden; }
         section.page { display: none; }
         section.page.on { display: block; }
         .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -183,14 +183,14 @@
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
         /* ── 聊天 ── */
-        .chat-grid { display: grid; grid-template-columns: 110px 1fr; gap: 16px; height: calc(100vh - 210px); min-height: 420px; }
+        .chat-grid { display: grid; grid-template-columns: 110px 1fr; gap: 16px; flex: 1; min-height: 420px; }
         .chat-side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px; overflow-y: auto; }
         .chat-side .item { padding: 10px; border-radius: 8px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
         .chat-side .item:hover, .chat-side .item.on { background: var(--surface-2); }
         .chips > summary { padding: 8px 10px; font-size: 13px; color: var(--info); cursor: pointer; list-style: none; user-select: none; border-radius: 8px; }
         .chips > summary::-webkit-details-marker { display: none; }
         .only-mob { display: none; }
-        .chat-main { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+        .chat-main { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex: 1; min-height: 0; }
         .msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
         .msg { max-width: 78%; padding: 10px 13px; border-radius: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
         .msg.user { align-self: flex-end; background: var(--btn); color: var(--on-accent); border-bottom-right-radius: 4px; }
