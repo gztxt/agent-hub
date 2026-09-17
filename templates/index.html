@@ -15,9 +15,17 @@
             --border: #cfcfcf; --divider: #e2e2e2; --line: #cfcfcf;
             --text-1: #111111; --text-2: #555555; --muted: #8a8a8a;
             --accent: #111111; --accent-2: #111111; --info: #333333;
-            --on-accent: #ffffff;            /* 反色块（黑底）上的字色：选中态必须用它 */
+            --on-accent: #ffffff;            /* 实心块（主按钮 / 用户气泡 / 徽标）上的字色 */
             --btn: #111111; --btn-hover: #3d3d3d;
             --hover: #f0f0f0; --row-hover: #00000008;
+            /* ── 选中 / 聚焦：一律半透明，不再用实黑反色块 ──
+               改前选中态是 #111111 实底 + 白字，在 268px 宽的侧栏里就是一整块纯黑，点一下非常扎眼；
+               改为 6% 黑底 + 20% 黑描边：靠「描边 + 字重」表达选中，层次保留但不砸出一团黑。
+               聚焦同理：输入框不再弹出纯黑 1px 描边，键盘焦点环也走半透明。 */
+            --sel-bg: #1111110f; --sel-bg-hover: #11111117;
+            --sel-border: #1111112e; --sel-border-hover: #11111145;
+            --focus-line: #11111173;   /* 输入框聚焦描边：45% 黑 */
+            --focus-ring: #11111112;   /* 键盘焦点光环：7% 黑 */
             --w1: #0000000f; --w2: #0000001a; --w3: #00000029;   /* 黑色透明度分级 */
             --shadow: #0000001f; --shadow-lg: #00000045; --mask: #00000059;
             /* ── v0.8.0 语义色：UI 骨架保持灰阶，色相只发给「成功 / 告警 / 危险」三种语义 ──
@@ -94,7 +102,11 @@
         .i-gap { display: inline-flex; align-items: center; gap: 6px; }
         input, textarea, select { font-family: inherit; background: var(--bg); border: 1px solid var(--border); color: var(--text-1); border-radius: 8px; padding: 9px 12px; font-size: var(--fs-base); line-height: var(--lh-base); }
         input::placeholder, textarea::placeholder { color: var(--muted); }
-        input:focus, textarea:focus { outline: none; border-color: var(--accent-2); }
+        input:focus, textarea:focus, select:focus { outline: none; border-color: var(--focus-line);
+                                                    box-shadow: 0 0 0 3px var(--focus-ring); }
+        /* 键盘焦点环（鼠标点击不触发，只服务 Tab 导航）。改前 button 完全没有焦点指示 */
+        button:focus-visible, a:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
+            outline: 2px solid var(--focus-line); outline-offset: 2px; }
         .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
                background: var(--btn); border: none; color: var(--on-accent); border-radius: 8px;
                padding: 9px 16px; font-size: var(--fs-base); line-height: 1.4; transition: .15s; }
@@ -130,9 +142,10 @@
                                      background: transparent; border: 1px solid transparent; color: var(--muted);
                                      padding: 10px 12px; font-size: var(--fs-md); line-height: 1.4; border-radius: 8px; transition: .12s; }
         .sidebar button[data-page]:hover { background: var(--hover); color: var(--text-1); }
-        /* 选中态 = 反色块（白底黑字）：黑白 UI 里对比最强，胜于任何灰阶高亮 */
-        .sidebar button[data-page].on { color: var(--on-accent); background: var(--text-1);
-                                        border-color: var(--text-1); font-weight: 600; }
+        /* 选中态 = 半透明块 + 深描边（v0.8.1 起不再用实黑反色块，见 :root --sel-*） */
+        .sidebar button[data-page].on { color: var(--text-1); background: var(--sel-bg);
+                                        border-color: var(--sel-border); font-weight: 600; }
+        .sidebar button[data-page].on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
         .sidebar button[data-page] svg.i { width: var(--ico-md); height: var(--ico-md); }
         .sidebar button[data-page] .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .badge { flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
@@ -160,8 +173,9 @@
                     background: transparent; border: 1px solid transparent; color: var(--text-2);
                     padding: 8px 10px; font-size: var(--fs-base); line-height: 1.4; border-radius: 7px; transition: .12s; }
         .nav-item:hover { background: var(--hover); color: var(--text-1); }
-        .nav-item.on { background: var(--text-1); color: var(--on-accent); font-weight: 600; }
-        .nav-item.on .nav-port, .nav-item.on .nav-st { color: var(--on-accent); }
+        .nav-item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
+        .nav-item.on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
+        .nav-item.on .nav-port, .nav-item.on .nav-st { color: var(--text-2); }
         .nav-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .nav-item .nav-port { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
         .nav-item .nav-st { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--text-2); letter-spacing: .02em; }
@@ -172,7 +186,7 @@
                    width: 22px; height: 22px; padding: 0; border-radius: 5px; cursor: pointer;
                    color: var(--text-2); line-height: 1; }
         .act-btn svg.i { width: var(--ico-sm); height: var(--ico-sm); stroke-width: 2; }
-        .act-btn:hover { background: var(--btn); color: var(--text-1); }
+        .act-btn:hover { background: var(--sel-bg-hover); color: var(--text-1); }
         .start-btn { color: var(--success-text); }
         .start-btn:hover { background: var(--success); color: #fff; }
         /* 搜索结果计数 */
@@ -213,7 +227,7 @@
         #crumb b { color: var(--text-1); font-weight: 600; }
         #crumb .sep { color: var(--muted); }
         #opTabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
-        #opTabs .btn.on { background: var(--text-1); color: var(--on-accent); border-color: var(--text-1); }
+        #opTabs .btn.on { background: var(--sel-bg); color: var(--text-1); border-color: var(--sel-border); font-weight: 600; }
         #sideMask { display: none; }
 
         /* ── 首页：说明区 + 智管对话（v0.7.1 取代原教室座位矩阵） ── */
@@ -389,7 +403,7 @@
             #chatAgents { display: flex; flex-direction: row; align-items: center; gap: 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 2px 0 4px; }
             #chatAgents::-webkit-scrollbar { display: none; }
             #chatAgents .item { flex: 0 0 auto; white-space: nowrap; background: var(--bg); border: 1px solid var(--border); border-radius: 99px; padding: 8px 12px; }
-            #chatAgents .item.on { background: var(--btn); border-color: var(--accent-2); color: var(--on-accent); }
+            #chatAgents .item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
             .chat-main { height: 62vh; min-height: 360px; }
             .mem-grid { grid-template-columns: 1fr !important; }
             .panel { padding: 12px; }

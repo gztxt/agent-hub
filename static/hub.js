@@ -559,6 +559,45 @@ function embedNewTab() { const a = entityById(chatPick); const e = (a.entries ||
 
 let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = null;
 
+/* ── 鼠标上报闸门（v0.8.1）───────────────────────────────────────────────
+   症状：挂上嵌入式终端后，鼠标在终端里划过就在屏幕上刷出一串 35;29;1m35;26;3m35;22;4m… 的乱码。
+   根因（实测，非推断）：WS 建立瞬间服务端会 send_bytes(sess.ring) 回放最近 64KB 输出
+   （term.py:238「回放最近输出（重连不白屏）」）。这段历史里若含某个 TUI 的 \x1b[?1003h
+   （any-event 鼠标跟踪），重挂后的新 xterm 实例会把它当成"当前状态"重新进入鼠标跟踪——
+   可那个 TUI 早退出了，pty 那头现在是 bash，于是每动一下鼠标就生成一条 SGR 上报
+   \x1b[<35;x;yM 灌进 pty，被回显/被 readline 打散成字面量，屏幕立刻刷成乱码。
+   实测证据：CDP 派发 5 次真实 mousemove → 该 WS 出站 12 帧，其中
+     {"data":"\u001b[<35;66;10M"} {"data":"\u001b[<35;67;11M"} {"data":"\u001b[<0;71;11m"}
+   （Cb=35 即"无按键按下时的移动"，正是 1003 模式的产物。）
+   对策：只认「实时输出」里的鼠标开关指令，回放帧一律不算；未开启时鼠标上报不发给 pty。
+   正在跑的 TUI 会自己重新发 \x1b[?1003h（连上时我们已发过 resize，它会重画）→ 届时照常放行。 */
+let termMouseLive = false;
+const TERM_MOUSE_MODES = new Set(['9', '1000', '1001', '1002', '1003', '1005', '1006', '1007', '1015', '1016']);
+const TERM_DECSET_RE = /\x1b\[\?([0-9;]+)([hl])/g;
+/* 三种鼠标编码：SGR(\x1b[<b;x;yM|m) / X10(\x1b[M + 3 字节) / 1015(\x1b[b;x;yM|m) */
+const TERM_MOUSE_REPORT_RE = /\x1b\[(?:<[0-9]+;[0-9]+;[0-9]+[Mm]|M[\s\S]{3}|[0-9]+;[0-9]+;[0-9]+[Mm])/g;
+/* 回放结束后就地复位鼠标跟踪：xterm 处于跟踪态时会吞掉拖拽选中，界面像是"选不中文字" */
+const TERM_MOUSE_OFF = '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l'
+                     + '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l';
+
+function termScanMouseMode(text) {
+  let m;
+  TERM_DECSET_RE.lastIndex = 0;
+  while ((m = TERM_DECSET_RE.exec(text))) {
+    if (m[1].split(';').some(n => TERM_MOUSE_MODES.has(n))) termMouseLive = (m[2] === 'h');
+  }
+}
+
+function termSend(data) {
+  if (!termWs || termWs.readyState !== 1) return;
+  let payload = data;
+  if (!termMouseLive) {
+    payload = data.replace(TERM_MOUSE_REPORT_RE, '');
+    if (!payload) return;   // 整帧都是鼠标上报 → 丢弃，别污染 pty
+  }
+  termWs.send(JSON.stringify({ data: payload }));
+}
+
 function ensureTerm() {
   if (term) return;
   // 字号 / 字族 / 配色全部取自 index.html 的 --term-* token（唯一真值源）。
@@ -583,7 +622,7 @@ function ensureTerm() {
   termFit = new window.FitAddon.FitAddon();
   term.loadAddon(termFit);
   term.open($('termEl'));
-  term.onData(d => { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ data: d })); });
+  term.onData(termSend);
   /* 面板隐藏时不 fit：隐藏态容器宽高为 0，fit 会算出行列怪值，显示后画布错位。
      依赖 ResizeObserver 在 pane 从 none→flex 时补一次（0 → 实际尺寸会触发） */
   const fit = () => {
@@ -628,10 +667,25 @@ function termConnect(sid, agent) {
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   termSid = sid;
   termSidAgent = agent || termSidAgent;
+  termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
   term.clear();
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
   ws.binaryType = 'arraybuffer';
-  ws.onmessage = ev => { if (termWs === ws) term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data)); };
+  /* 连接后的第一帧 = 服务端的历史回放（term.py 里 ring 是整块 send_bytes 出去的，一帧到底）：
+     只回显、不复位也不参与「当前是否需要鼠标」的判定——历史里的 TUI 开关是过期状态。
+     见文件上方「鼠标上报闸门」注释。 */
+  let replayFrame = true;
+  ws.onmessage = ev => {
+    if (termWs !== ws) return;
+    const raw = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
+    term.write(raw);
+    if (replayFrame) {
+      replayFrame = false;
+      term.write(TERM_MOUSE_OFF);
+      return;
+    }
+    termScanMouseMode(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
+  };
   ws.onopen = () => { term.focus(); if (termFit) termFit.fit(); if (termWs === ws) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
