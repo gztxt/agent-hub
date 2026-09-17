@@ -1602,7 +1602,7 @@ function renderPageCrumb(page) {
   if (page === 'chat') return;   // 实体工作台由 renderModeBar 接管，别互相覆盖
   if (tabs) tabs.innerHTML = '';
   const label = escapeHtml(PAGE_LABELS[page] || page);
-  const top = page === 'classroom' ? '' : '<span>系统</span><span class="sep">›</span>';
+  const top = '';
   crumb.innerHTML = top + '<b>' + label + '</b>';
 }
 /* 模式 tab 点击：embed/term/chat 走既有 switchMode，open/detail 各自直行 */
