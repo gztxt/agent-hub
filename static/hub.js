@@ -2,7 +2,31 @@
    v0.3 chat: 动态模型选择器 + 工作目录 + 会话管理 + hub-self 工具环 */
 'use strict';
 
+/* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────
+   sprite 定义在 index.html（24 网格 / stroke=currentColor / 粗细由 CSS 统一）。
+   尺寸只允许 xs|sm(默认)|md|lg|xl 五档，任何地方都不要再给图标写 font-size。
+   例：ico('server') / ico('plus','xs') / ico('chevron-down',null,'caret') */
+function ico(name, size, cls) {
+  return '<svg class="i' + (size ? ' ' + size : '') + (cls ? ' ' + cls : '') +
+         '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+}
+
+
 const $ = id => document.getElementById(id);
+
+/* ── v0.8.0 CSS token 读取：JS 侧不再写死任何颜色 / 字号 ─────────────
+   改配色只需动 index.html 的 :root，JS 自动跟随。
+   注意：只能读「具体值」的 token。getPropertyValue 返回的是未解析的原始声明，
+   读 var() 包装的别名会拿到字符串 "var(--ok)" 而不是颜色。 */
+function cssToken(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+function cssNum(name, fallback) {
+  const v = parseFloat(cssToken(name, ''));
+  return Number.isFinite(v) ? v : fallback;
+}
+
 let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
@@ -138,7 +162,7 @@ function showDetail(id) {
   const rows = [['endpoint', a.endpoint], ['config_path', a.config_path], ['working_dir', a.working_dir], ['description', a.description]];
   let html = rows.filter(([, v]) => v).map(([k, v]) =>
     '<div style="margin:6px 0"><div class="hint">' + k + '</div>' +
-    '<div style="font-family:monospace;font-size:12px;word-break:break-all;color:var(--text-1)">' + escapeHtml(v) + '</div></div>').join('');
+    '<div style="font-family:var(--font-mono);font-size:var(--fs-sm);word-break:break-all;color:var(--text-1)">' + escapeHtml(v) + '</div></div>').join('');
   const es = a.entries || [];
   html += '<div class="hint" style="margin:10px 0 4px">entries</div>' +
     (es.length ? es.map(e => '<span class="tag agent" style="display:inline-block;margin:2px 4px 2px 0;max-width:100%;overflow-wrap:anywhere">' +
@@ -148,7 +172,7 @@ function showDetail(id) {
 }
 function closeDetail() { $('detailDrawer').classList.remove('on'); }
 
-/* ── ⚙设置（口令保护的 TERM_TOKEN 查看/应用）── */
+/* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
   $('settingsDrawer').classList.add('on');
 }
@@ -245,11 +269,11 @@ function renderSteps(steps) {
     const el = document.createElement('div');
     el.className = 'step ' + s.kind;
     if (s.kind === 'thought') el.textContent = '◇ ' + s.content;
-    else if (s.kind === 'toolcall') el.textContent = '⚙ ' + (s.tool || '') + ' ' + JSON.stringify(s.tool_input || {});
+    else if (s.kind === 'toolcall') el.textContent = '工具 ' + (s.tool || '') + ' ' + JSON.stringify(s.tool_input || {});
     else if (s.kind === 'toolresult') {
       const det = document.createElement('details');
       const sum = document.createElement('summary');
-      sum.textContent = '▾ ' + (s.tool || '') + ' 结果';
+      sum.textContent = (s.tool || '') + ' 结果';
       // v0.5.3 验证错误高亮：tool_result JSON 里 error_type=='validation' 时单独醒目渲染
       try {
         const j = JSON.parse(s.content);
@@ -350,7 +374,7 @@ async function mgrSend(inputId, boxId) {
   me.className = 'msg user'; me.textContent = msg;
   box.appendChild(me);
   const busy = document.createElement('div');
-  busy.className = 'msg assistant'; busy.textContent = '⟳ 思考中（含工具调用，可能较久）…';
+  busy.className = 'msg assistant'; busy.textContent = '思考中（含工具调用，可能较久）…';
   box.appendChild(busy); box.scrollTop = box.scrollHeight;
   try {
     const body = { message: msg };
@@ -409,9 +433,9 @@ function renderChatSide() {
   side.innerHTML = list.map(a => {
     const hasEmbed = (a.entries || []).some(e => e.type === 'embed');
     const badge = a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : 'stopped');
-    const icon = hasEmbed ? '◉' : '';
+    const icon = hasEmbed ? ico('monitor', 'xs') : '';
     return '<div class="item' + (a.id === chatPick ? ' on' : '') + '" onclick="pickChatEntity(\'' + a.id + '\')">' +
-      '<span>' + escapeHtml(a.name) + '</span>' + (icon ? '<span class="kindtag" style="font-size:10px">' + icon + '</span>' : '') + '<span class="s-badge ' + badge + '" style="position:static"></span></div>';
+      '<span>' + escapeHtml(a.name) + '</span>' + (icon ? '<span class="kindtag">' + icon + '</span>' : '') + '<span class="s-badge ' + badge + '" style="position:static"></span></div>';
   }).join('');
   applyChatMode();
 }
@@ -519,7 +543,7 @@ async function probeEmbed(url) {
     dead = document.createElement('div');
     dead.className = 'embed-dead';
     dead.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:var(--mask);z-index:5';
-    dead.innerHTML = '<div style="font-size:14px;color:var(--danger-text)">⚠ 目标界面未响应（' + escapeHtml(url) + '）</div>' +
+    dead.innerHTML = '<div style="font-size:var(--fs-base);color:var(--danger-text)">目标界面未响应（' + escapeHtml(url) + '）</div>' +
       '<div style="display:flex;gap:8px"><button class="btn sm" onclick="switchMode(\'chat\')">改用对话模式</button>' +
       '<button class="btn sm ghost" onclick="switchMode(\'term\')">改用终端</button>' +
       '<button class="btn sm ghost" onclick="embedRefresh()">重试嵌入</button></div>';
@@ -537,20 +561,43 @@ let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = n
 
 function ensureTerm() {
   if (term) return;
-  // v0.7.1 白底：终端主题同步反转（否则它是整页唯一一块黑）
-  term = new window.Terminal({ fontSize: 13, fontFamily: 'Menlo,Consolas,monospace', theme: { background: '#ffffff', foreground: '#111111', cursor: '#111111', cursorAccent: '#ffffff',
-           selectionBackground: '#c5c5c5', black: '#111111', red: '#3a3a3a', green: '#111111', yellow: '#4a4a4a',
-           blue: '#5f5f5f', magenta: '#2b2b2b', cyan: '#262626', white: '#111111', brightBlack: '#8a8a8a',
-           brightRed: '#1f1f1f', brightGreen: '#000000', brightYellow: '#262626', brightBlue: '#4a4a4a',
-           brightMagenta: '#1c1c1c', brightCyan: '#1a1a1a', brightWhite: '#000000' }, cursorBlink: true });
+  // 字号 / 字族 / 配色全部取自 index.html 的 --term-* token（唯一真值源）。
+  // 改前是 fontSize:13 + 'Menlo,Consolas,monospace' + 全灰 ANSI：字号不落在站点音阶内、
+  // 缺 CJK 等宽导致中文掉字体、16 色全是灰阶导致 ls/git diff 的着色输出完全看不出区别。
+  const T = (k, fb) => cssToken('--term-' + k, fb);
+  term = new window.Terminal({
+    fontSize: cssNum('--term-fs', 14),
+    lineHeight: cssNum('--term-lh', 1.5),
+    fontFamily: T('font', 'monospace'),
+    cursorStyle: 'bar', cursorBlink: true, scrollback: 5000,
+    theme: {
+      background: T('bg', '#fbfbfa'), foreground: T('fg', '#24272b'),
+      cursor: T('cursor', '#24272b'), cursorAccent: T('bg', '#fbfbfa'),
+      selectionBackground: T('sel', '#11111122'),
+      black: T('black'), red: T('red'), green: T('green'), yellow: T('yellow'),
+      blue: T('blue'), magenta: T('magenta'), cyan: T('cyan'), white: T('white'),
+      brightBlack: T('bblack'), brightRed: T('bred'), brightGreen: T('bgreen'), brightYellow: T('byellow'),
+      brightBlue: T('bblue'), brightMagenta: T('bmagenta'), brightCyan: T('bcyan'), brightWhite: T('bwhite')
+    }
+  });
   termFit = new window.FitAddon.FitAddon();
   term.loadAddon(termFit);
   term.open($('termEl'));
   term.onData(d => { if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ data: d })); });
-  const fit = () => { try { termFit.fit(); if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch (e) {} };
+  /* 面板隐藏时不 fit：隐藏态容器宽高为 0，fit 会算出行列怪值，显示后画布错位。
+     依赖 ResizeObserver 在 pane 从 none→flex 时补一次（0 → 实际尺寸会触发） */
+  const fit = () => {
+    const el = $('termEl');
+    if (!el || !el.clientWidth || !el.clientHeight) return;
+    try {
+      termFit.fit();
+      if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    } catch (e) {}
+  };
   window.addEventListener('resize', fit);
   new ResizeObserver(fit).observe($('termEl'));
-  setTimeout(fit, 80);
+  requestAnimationFrame(fit);
+  setTimeout(fit, 150);
 }
 
 function termDetach() {
@@ -562,7 +609,7 @@ function termDetach() {
 function termToken() {
   let t = localStorage.getItem('hub.term.token');
   if (!t) {
-    t = prompt('请输入终端鉴权 TERM_TOKEN（也可在右上角 ⚙设置 查看后一键应用）') || '';
+    t = prompt('请输入终端鉴权 TERM_TOKEN（也可在右上角「设置」查看后一键应用）') || '';
     if (t) localStorage.setItem('hub.term.token', t);
   }
   return t;
@@ -589,7 +636,7 @@ function termConnect(sid, agent) {
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
     const gone = ev.code === 4404 || ev.code === 4410;  // 已退出/不存在 → 明确提示并刷新列表
-    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在，列表已刷新——可点「＋ 新会话」]' : '[连接断开——点「会话」重连或新建]') + '\x1b[0m');
+    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在，列表已刷新——可点「新会话」]' : '[连接断开——点「会话」重连或新建]') + '\x1b[0m');
     if (gone) { termDetach(); termRefreshList(); }
   };
   termWs = ws;
@@ -615,12 +662,12 @@ async function termRefreshList() {
       ? live.map(s =>
           '<span class="sess-item" data-sid="' + s.id + '"' + (s.id === termSid ? ' style="border-color:var(--accent-2)"' : '') + '>' +
           '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:var(--text-1)">' + escapeHtml(s.id.slice(0, 4)) + '</a>' +
-          '<button class="btn sm danger" title="销毁此会话" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('')
-      : '<span class="hint" style="font-size:12px;line-height:26px">暂无活会话</span>';
+          '<button class="btn sm danger" title="销毁此会话" onclick="termKillOne(\'' + s.id + '\')">' + ico('x') + '</button></span>').join('')
+      : '<span class="hint" style="line-height:26px">暂无活会话</span>';
     // 当前正看的会话已被服务端回收（进程退出/超时）→ 清绑并提示，避免对着幽灵 sid 重连
     if (termSid && !live.some(s => s.id === termSid)) {
       termDetach();
-      if (term) term.write('\r\n\x1b[90m[当前会话已结束——点「＋ 新会话」重新开始]\x1b[0m');
+      if (term) term.write('\r\n\x1b[90m[当前会话已结束——点「新会话」重新开始]\x1b[0m');
     }
     return live;
   } catch (e) { return []; }
@@ -639,7 +686,7 @@ function termAutoAttach() {
     term.clear();
     const a = entityById(chatPick);
     term.write('\x1b[90m' + chatPick + ' · ' + (a?.name || chatPick) + ' 终端\x1b[0m\r\n');
-    term.write('\x1b[90m提示：点「＋ 新会话」拉起 ' + (a?.name || chatPick) + ' 的原生终端\x1b[0m\r\n');
+    term.write('\x1b[90m提示：点「新会话」拉起 ' + (a?.name || chatPick) + ' 的原生终端\x1b[0m\r\n');
   });
 }
 
@@ -704,7 +751,7 @@ function renderChatMsg(m) {
       const meta = JSON.parse(m.meta);
       if (meta && Array.isArray(meta.steps) && meta.steps.length) {
         const det = document.createElement('details');
-        det.style.cssText = 'margin-top:6px;font-size:12px;color:var(--text-2)';
+        det.style.cssText = 'margin-top:6px;font-size:var(--fs-sm);color:var(--text-2)';
         const sum = document.createElement('summary');
         sum.textContent = '工具调用 (' + meta.steps.filter(s => s.kind === 'toolcall').length + ')';
         det.appendChild(sum);
@@ -732,7 +779,7 @@ async function chatSend() {
   let sid = localStorage.getItem(sessKey(chatPick));
   if (!sid) { sid = Math.random().toString(36).slice(2, 14); localStorage.setItem(sessKey(chatPick), sid); }
   const busy = document.createElement('div');
-  busy.className = 'msg assistant'; busy.textContent = '⟳ 回复中…';
+  busy.className = 'msg assistant'; busy.textContent = '回复中…';
   box.appendChild(busy);
   const body = { message: msg, session_id: sid, model: model, cwd: cwd || null };
   if (tools) body.tools = true;
@@ -753,7 +800,7 @@ async function chatSend() {
     // hub-self 工具环：step 流展示（折叠 details 在 busy 下方）
     if (Array.isArray(d.steps) && d.steps.length) {
       const det = document.createElement('details');
-      det.style.cssText = 'margin-top:6px;font-size:12px;color:var(--text-2)';
+      det.style.cssText = 'margin-top:6px;font-size:var(--fs-sm);color:var(--text-2)';
       det.open = true;
       const sum = document.createElement('summary');
       sum.textContent = '工具调用 (' + d.steps.filter(s => s.kind === 'toolcall').length + ' 步)';
@@ -773,42 +820,42 @@ function chatSendStream(busy, box, body, sid) {
     const s = document.createElement('style');
     s.id = 'stream-css';
     s.textContent = `
-.stream-status { font-size:12px; color:var(--text-2); padding:4px 0; font-family:monospace; }
-.stream-steps { margin-top:6px; font-size:12px; }
-.stream-step { padding:3px 0; border-left:2px solid var(--line); padding-left:8px; margin:2px 0; font-family:monospace; word-break:break-all; }
+.stream-status { font-size:var(--fs-sm); color:var(--text-2); padding:4px 0; font-family:var(--font-mono); }
+.stream-steps { margin-top:6px; font-size:var(--fs-sm); }
+.stream-step { padding:3px 0; border-left:2px solid var(--line); padding-left:8px; margin:2px 0; font-family:var(--font-mono); word-break:break-all; }
 .stream-step.thought { border-left-color:var(--muted); color:var(--muted); font-style:italic; }
 .stream-step.toolcall { border-left-color:var(--text-2); color:var(--text-1); }
 .stream-step.toolresult { border-left-color:var(--text-2); color:var(--text-2); }
 .stream-step.answer { border-left-color:var(--text-1); color:var(--text-1); border-left-width:3px; font-weight:500; }
 .stream-step .badge { display:inline-block; width:1.5em; }
-.msg.summary { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin:4px 0; font-size:12.5px; color:var(--text-1); line-height:1.45; }
-.msg.summary .sum-head { font-size:14px; font-weight:600; display:inline-block; margin:0; padding:0 8px 0 0; border-right:1px solid var(--border); }
-.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:12px; margin:0; padding:0; }
+.msg.summary { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin:4px 0; font-size:var(--fs-sm); color:var(--text-1); line-height:var(--lh-base); }
+.msg.summary .sum-head { font-size:var(--fs-base); font-weight:600; display:inline-block; margin:0; padding:0 8px 0 0; border-right:1px solid var(--border); }
+.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:var(--fs-sm); margin:0; padding:0; }
 .msg.summary .sum-meta b { color:var(--text-1); font-weight:500; }
-.msg.summary .sum-meta code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:11.5px; }
-.msg.summary .sum-tbl { display:table; border-collapse:collapse; margin:0 !important; padding:0; font-size:12.5px; line-height:1.5; table-layout:fixed; width:auto; min-width:240px; max-width:100%; border-spacing:0; }
+.msg.summary .sum-meta code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:var(--fs-xs); }
+.msg.summary .sum-tbl { display:table; border-collapse:collapse; margin:0 !important; padding:0; font-size:var(--fs-sm); line-height:var(--lh-base); table-layout:fixed; width:auto; min-width:240px; max-width:100%; border-spacing:0; }
 .msg.summary .sum-tbl + .sum-tbl { margin:2px 0 0 0 !important; }
 .msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:0 6px 0 0; text-align:left; width:48px; min-width:48px; white-space:nowrap; vertical-align:top; }
 .msg.summary .sum-tbl td { padding:0 0 0 6px; margin:0; color:var(--text-1); border-left:1px dotted var(--border); overflow-wrap:anywhere; word-break:break-word; vertical-align:top; }
-.msg.summary .sum-tbl td code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:11.5px; word-break:break-all; overflow-wrap:anywhere; }
+.msg.summary .sum-tbl td code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:var(--fs-xs); word-break:break-all; overflow-wrap:anywhere; }
 /* 窄屏：表格 100% 宽 */
 @media (max-width: 500px) {
   .msg.summary .sum-tbl { width:100%; }
 }
-.msg.summary .sum-tail { display:block; margin:6px 0 0 0; padding:6px 0 0 0; border-top:1px dashed var(--border); color:var(--text-2); font-size:12px; line-height:1.5; }
+.msg.summary .sum-tail { display:block; margin:6px 0 0 0; padding:6px 0 0 0; border-top:1px dashed var(--border); color:var(--text-2); font-size:var(--fs-sm); line-height:var(--lh-base); }
 .msg.summary .sum-tail b { color:var(--text-1); }
 .msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
 .msg.summary .sum-row .k { color:var(--text-2); min-width:48px; flex-shrink:0; }
 .msg.summary .sum-row .v { color:var(--text-1); }
-.msg.summary .sum-row .pill { display:inline-block; background:var(--surface-2); color:var(--text-1); padding:1px 6px; border-radius:8px; margin-right:3px; font-size:11px; }
+.msg.summary .sum-row .pill { display:inline-block; background:var(--surface-2); color:var(--text-1); padding:1px 6px; border-radius:8px; margin-right:3px; font-size:var(--fs-xs); }
 .msg.summary .sum-row .muted { color:var(--muted); }
 .msg.summary .sum-row code { background:var(--bg); color:var(--text-1); padding:0 4px; border-radius:3px; }
 .msg.summary .sum-preview { margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); color:var(--text-2); font-style:italic; word-break:break-all; }
 .msg.summary .sum-section { margin:6px 0 4px 0; padding-left:8px; border-left:2px solid var(--border); }
-.msg.summary .sum-section b { color:var(--text-1); display:block; margin-bottom:2px; font-size:12px; }
+.msg.summary .sum-section b { color:var(--text-1); display:block; margin-bottom:2px; font-size:var(--fs-sm); }
 .msg.summary .sum-section ul { margin:0; padding-left:18px; color:var(--text-1); }
 .msg.summary .sum-section li { padding:1px 0; }
-.msg.summary .sum-section code { background:var(--bg); color:var(--text-1); padding:0 4px; border-radius:3px; font-size:11px; }
+.msg.summary .sum-section code { background:var(--bg); color:var(--text-1); padding:0 4px; border-radius:3px; font-size:var(--fs-xs); }
 .msg.summary .sum-fail { border-left-color:var(--danger-text); }
 .msg.summary .sum-fail b { color:var(--danger-text); }
 .msg.summary .sum-fail li { color:var(--danger-text); }
@@ -834,7 +881,7 @@ function chatSendStream(busy, box, body, sid) {
       row.innerHTML = '<span class="badge">◇</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>';
     } else if (s.kind === 'toolcall') {
       const args = JSON.stringify(s.tool_input || {}, null, 0).slice(0,200);
-      row.innerHTML = '<span class="badge">⚙</span><span class="text">调用 <b>' + esc(s.tool) + '</b>(<code>' + esc(args) + '</code>)</span>';
+      row.innerHTML = '<span class="badge">' + ico('wrench', 'xs') + '</span><span class="text">调用 <b>' + esc(s.tool) + '</b>(<code>' + esc(args) + '</code>)</span>';
     } else if (s.kind === 'toolresult') {
       // v0.5.3 验证错误内联醒目（红框 + 字段/期望/实际）
       let valHtml = '';
@@ -847,9 +894,9 @@ function chatSendStream(busy, box, body, sid) {
           valHtml = '<div style="color:var(--warn);font-weight:600;background:var(--warn-bg);padding:3px 6px;border-radius:3px;margin:2px 0;">⚠ ' + esc(j.error_type) + ': ' + esc(j.error || '') + '</div>';
         }
       } catch (e) {}
-      row.innerHTML = '<span class="badge">▾</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>' + valHtml;
+      row.innerHTML = '<span class="badge">' + ico('chevron-down', 'xs') + '</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>' + valHtml;
     } else if (s.kind === 'answer') {
-      row.innerHTML = '<span class="badge">◆</span><span class="text">' + esc(s.content||'') + '</span>';
+      row.innerHTML = '<span class="badge">' + ico('check', 'xs') + '</span><span class="text">' + esc(s.content||'') + '</span>';
     } else {
       row.textContent = JSON.stringify(s).slice(0,200);
     }
@@ -878,7 +925,7 @@ function chatSendStream(busy, box, body, sid) {
             } else if (obj.event === 'step') {
               appendStep(obj.step);
               const tc = allSteps.filter(s => s.kind === 'toolcall').length;
-              status.textContent = '▸ 进度: 思考 ' + allSteps.filter(s=>s.kind==='thought').length + ' / 工具 ' + tc + ' / 结果 ' + allSteps.filter(s=>s.kind==='toolresult').length;
+              status.textContent = '进度: 思考 ' + allSteps.filter(s=>s.kind==='thought').length + ' / 工具 ' + tc + ' / 结果 ' + allSteps.filter(s=>s.kind==='toolresult').length;
             } else if (obj.event === 'final') {
               busy.className = 'msg ' + (obj.success ? 'assistant' : 'err');
               busy.textContent = obj.response || obj.error || JSON.stringify(obj.hint || obj);
@@ -1004,7 +1051,7 @@ async function chatSessLoad() {
     const d = await api('/api/sessions?agent_id=' + encodeURIComponent(chatPick) + '&limit=30');
     CHAT_SESSIONS = d.sessions || [];
     const opts = ['<option value="">当前会话</option>'];
-    opts.push('<option value="__new__">＋ 新会话</option>');
+    opts.push('<option value="__new__">新会话</option>');
     for (const s of CHAT_SESSIONS) {
       const title = (s.title || '未命名').slice(0, 24);
       const ts = (s.updated_at || '').slice(5, 16).replace('T', ' ');
@@ -1065,7 +1112,7 @@ async function loadMemories() {
     $('memList').innerHTML = (d.memories || []).map(m =>
       '<div class="mem-item"><span class="tag ' + m.category + '" style="align-self:flex-start">' + m.category + '</span>' +
       '<p>' + escapeHtml(m.content) + '<br><span class="hint">' + escapeHtml(m.source || '') + ' · ' + (m.created_at || '').slice(0, 10) + '</span></p>' +
-      '<button class="btn sm danger" onclick="delMemory(' + m.id + ')">×</button></div>').join('') ||
+      '<button class="btn sm danger" onclick="delMemory(' + m.id + ')">' + ico('x') + '</button></div>').join('') ||
       '<div class="hint">空空如也。可手动添加，或由指挥官/外部 Hook 写入。</div>';
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1119,7 +1166,7 @@ function renderPorts() {
   const f = ($('portFilter') ? $('portFilter').value.trim() : '').toLowerCase();
   const rows = PORTS.filter(r => !f || (r.port + ' ' + (r.process || '') + ' ' + r.address + ' ' + (r.agent || '')).toLowerCase().includes(f));
   $('portsBody').innerHTML = rows.map(r =>
-    '<tr><td>' + r.proto + '</td><td><b>' + r.port + '</b></td><td style="font-family:monospace;font-size:12px">' + escapeHtml(r.address) + '</td>' +
+    '<tr><td>' + r.proto + '</td><td><b>' + r.port + '</b></td><td style="font-family:var(--font-mono);font-size:var(--fs-sm)">' + escapeHtml(r.address) + '</td>' +
     '<td>' + (r.pid || '-') + '</td><td>' + escapeHtml(r.process || '-') + '</td>' +
     '<td>' + (r.agent ? '<span class="tag agent">' + escapeHtml(r.agent) + '</span>' : '') + '</td></tr>').join('');
 }
@@ -1145,12 +1192,12 @@ async function loadTelemetry() {
     $('profTable').innerHTML = prof.length ?
       '<table><thead><tr><th>来源</th><th>对象</th><th>次数</th><th>成功率</th><th>均耗时</th><th>峰值</th></tr></thead><tbody>' +
       prof.map(p => '<tr><td>' + p.source + '</td><td><b>' + escapeHtml(p.subject) + '</b></td><td>' + p.calls +
-        '</td><td>' + (p.success_rate >= 99 ? '●' : p.success_rate >= 80 ? '◐' : '▲') + ' ' + p.success_rate + '%</td>' +
+        '</td><td>' + (p.success_rate >= 99 ? ico('check-circle', 'xs') : p.success_rate >= 80 ? ico('circle', 'xs') : ico('alert', 'xs')) + ' ' + p.success_rate + '%</td>' +
         '<td>' + p.avg_ms + 'ms</td><td>' + (p.max_ms || '-') + 'ms</td></tr>').join('') + '</tbody></table>'
       : '<div class="hint">暂无画像数据（对话/指挥官/DAG/定时执行后自动生成）</div>';
     const e = await api('/telemetry/events?limit=20');
     $('eventTable').innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>会话</th><th>事件</th></tr></thead><tbody>' +
-      (e.events || []).map(x => '<tr><td>' + (x.created_at || '').slice(5, 16).replace('T', ' ') + '</td><td>' + x.source + '</td><td style="font-family:monospace;font-size:12px">' + escapeHtml((x.session_id || '').slice(0, 14)) + '</td><td>' + x.event + '</td></tr>').join('') +
+      (e.events || []).map(x => '<tr><td>' + (x.created_at || '').slice(5, 16).replace('T', ' ') + '</td><td>' + x.source + '</td><td style="font-family:var(--font-mono);font-size:var(--fs-sm)">' + escapeHtml((x.session_id || '').slice(0, 14)) + '</td><td>' + x.event + '</td></tr>').join('') +
       '</tbody></table>';
   } catch (err) { toast(err.message, 'err'); }
 }
@@ -1173,7 +1220,7 @@ let currentRun = null;
 async function decomposeRun() {
   const goal = $('taskGoal').value.trim();
   if (!goal) return toast('请输入目标', 'err');
-  const btn = $('btnDecompose'); btn.disabled = true; btn.textContent = '⟳ 拆解中…';
+  const btn = $('btnDecompose'); btn.disabled = true; btn.textContent = '拆解中…';
   try {
     const body = { goal: goal, auto_run: true };
     if ($('taskAgent').value) body.default_agent = $('taskAgent').value;
@@ -1189,9 +1236,9 @@ async function loadRuns() {
   try {
     const d = await api('/api/tasks/runs');
     $('runsBody').innerHTML = (d.runs || []).map(r =>
-      '<tr><td style="font-family:monospace">' + r.run_id + '</td>' +
+      '<tr><td style="font-family:var(--font-mono)">' + r.run_id + '</td>' +
       '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.goal || '') + '">' + escapeHtml((r.goal || '').slice(0, 40)) + '</td>' +
-      '<td>' + ({ running: '◉执行中', success: '●成功', failed: '▲失败', partial: '◐部分', pending: '○待跑' }[r.state] || r.state) + '</td>' +
+      '<td>' + ({ running: ico('play', 'xs') + '执行中', success: ico('check-circle', 'xs') + '成功', failed: ico('alert', 'xs') + '失败', partial: ico('circle', 'xs') + '部分', pending: ico('clock', 'xs') + '待跑' }[r.state] || r.state) + '</td>' +
       '<td>' + r.success + '/' + r.total + '</td><td class="hint">' + (r.created_at || '').slice(5, 16).replace('T', ' ') + '</td>' +
       '<td><button class="btn sm ghost" onclick="openRun(\'' + r.run_id + '\')">查看</button></td></tr>').join('') ||
       '<tr><td colspan="6" class="hint">尚无协同任务</td></tr>';
@@ -1209,15 +1256,21 @@ async function openRun(runId) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-// v0.7.1 白底：节点描边用深灰，fill 由该色 +22 透明度派生
-const TASK_COLORS = { pending: '#767676', running: '#333333', success: '#111111', failed: '#000000', blocked: '#909090' };
+// 色值必须是具体十六进制：下面 fill = 描边色 + '22' 透明度派生，拿到 "var(--x)" 会变成非法色值
+const TASK_COLORS = {
+  pending:  cssToken('--muted', '#8a8a8a'),
+  running:  cssToken('--busy', '#2c5f8a'),
+  success:  cssToken('--ok', '#2f7a4f'),
+  failed:   cssToken('--danger', '#a3342c'),
+  blocked:  cssToken('--warn', '#8a5a00')
+};
 
 function renderTaskTable(tasks) {
   $('taskBody').innerHTML = tasks.map(t =>
     '<tr><td><b>' + t.task_id + '</b></td><td>' + (t.agent_id || '-') + '</td>' +
     '<td>' + (t.deps || []).join(',') + '</td><td>' + t.status + '</td>' +
     '<td>' + (t.duration_ms != null ? t.duration_ms + 'ms' : '-') + '</td>' +
-    '<td><details><summary class="hint">' + escapeHtml((t.output || t.error || '').slice(0, 50)) + '</summary><pre style="white-space:pre-wrap;font-size:12px;max-height:220px;overflow:auto">' + escapeHtml(t.output || t.error || '') + '</pre></details></td></tr>').join('');
+    '<td><details><summary class="hint">' + escapeHtml((t.output || t.error || '').slice(0, 50)) + '</summary><pre style="white-space:pre-wrap;font-size:var(--fs-sm);max-height:220px;overflow:auto">' + escapeHtml(t.output || t.error || '') + '</pre></details></td></tr>').join('');
 }
 
 function renderDag(tasks) {
@@ -1243,17 +1296,19 @@ function renderDag(tasks) {
   const pos = {};
   Object.entries(layers).forEach(([L, list]) => list.forEach((t, i) => { pos[t.task_id] = { x: 30 + L * GX, y: 20 + i * GY }; }));
   let svg = '<svg width="' + W + '" height="' + H + '" style="min-width:' + W + 'px">';
-  svg += '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" fill="#808080"/></marker></defs>';
+  const DAG_LINE = cssToken('--muted', '#8a8a8a');
+  const DAG_ST = n => cssNum(n, 13);
+  svg += '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" fill="' + DAG_LINE + '"/></marker></defs>';
   tasks.forEach(t => (t.deps || []).forEach(dp => {
     const a = pos[dp], b = pos[t.task_id];
-    if (a && b) svg += '<line x1="' + (a.x + NW) + '" y1="' + (a.y + NH / 2) + '" x2="' + b.x + '" y2="' + (b.y + NH / 2) + '" stroke="#808080" stroke-width="1.5" marker-end="url(#arw)"/>';
+    if (a && b) svg += '<line x1="' + (a.x + NW) + '" y1="' + (a.y + NH / 2) + '" x2="' + b.x + '" y2="' + (b.y + NH / 2) + '" stroke="' + DAG_LINE + '" stroke-width="1.5" marker-end="url(#arw)"/>';
   }));
   tasks.forEach(t => {
     const p = pos[t.task_id];
-    svg += '<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + (TASK_COLORS[t.status] || 'var(--border)') + '22" stroke="' + (TASK_COLORS[t.status] || 'var(--border)') + '" stroke-width="1.5"/>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" fill="#111111" font-size="12" font-weight="bold">' + t.task_id + ' · ' + (t.agent_id || '') + '</text>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 34) + '" fill="#555555" font-size="12">' + escapeHtml((t.prompt || '').slice(0, 18)) + '</text>' +
-      '<text x="' + (p.x + 8) + '" y="' + (p.y + 48) + '" fill="#333333" font-size="12">' + t.status + (t.duration_ms != null ? ' · ' + Math.round(t.duration_ms / 100) / 10 + 's' : '') + '</text></g>';
+    svg += '<g><rect x="' + p.x + '" y="' + p.y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + (TASK_COLORS[t.status] || cssToken('--border')) + '22" stroke="' + (TASK_COLORS[t.status] || cssToken('--border')) + '" stroke-width="1.5"/>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 18) + '" fill="' + cssToken('--text-1') + '" font-size="' + DAG_ST('--fs-xs') + '" font-weight="bold">' + t.task_id + ' · ' + (t.agent_id || '') + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 34) + '" fill="' + cssToken('--text-2') + '" font-size="' + DAG_ST('--fs-xs') + '">' + escapeHtml((t.prompt || '').slice(0, 18)) + '</text>' +
+      '<text x="' + (p.x + 8) + '" y="' + (p.y + 48) + '" fill="' + cssToken('--info') + '" font-size="' + DAG_ST('--fs-xs') + '">' + t.status + (t.duration_ms != null ? ' · ' + Math.round(t.duration_ms / 100) / 10 + 's' : '') + '</text></g>';
   });
   svg += '</svg>';
   $('dagSvg').innerHTML = svg;
@@ -1286,13 +1341,13 @@ async function loadJobs() {
     $('jobAllow').textContent = 'shell 白名单: ' + (d.shell_allow || []).join(', ');
     $('jobsBody').innerHTML = (d.jobs || []).map(j =>
       '<tr><td><b>' + escapeHtml(j.name) + '</b><br><span class="hint">' + j.id + '</span></td>' +
-      '<td style="font-family:monospace">' + j.cron + '</td><td>' + j.kind + '</td>' +
+      '<td style="font-family:var(--font-mono)">' + j.cron + '</td><td>' + j.kind + '</td>' +
       '<td><button class="btn sm ' + (j.enabled ? '' : 'ghost') + '" onclick="toggleJob(\'' + j.id + '\',' + (j.enabled ? 0 : 1) + ')">' + (j.enabled ? '✔ 启用' : '‖ 停用') + '</button></td>' +
       '<td class="hint">' + (j.last_run || '').slice(5, 16).replace('T', ' ') + '</td>' +
-      '<td>' + (j.last_status === 'success' ? '●' : j.last_status === 'fail' ? '▲' : '-') + '</td>' +
-      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:12px;white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
-      '<td style="white-space:nowrap"><button class="btn sm ghost" onclick="runJobNow(\'' + j.id + '\')">▸ 立即</button> ' +
-      '<button class="btn sm danger" onclick="delJob(\'' + j.id + '\')">×</button></td></tr>').join('') ||
+      '<td>' + (j.last_status === 'success' ? ico('check-circle', 'xs') : j.last_status === 'fail' ? ico('alert', 'xs') : '-') + '</td>' +
+      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:var(--fs-sm);white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
+      '<td style="white-space:nowrap"><button class="btn sm ghost" onclick="runJobNow(\'' + j.id + '\')">' + ico('play', 'xs') + '立即</button> ' +
+      '<button class="btn sm danger" onclick="delJob(\'' + j.id + '\')">' + ico('x') + '</button></td></tr>').join('') ||
       '<tr><td colspan="8" class="hint">暂无任务</td></tr>';
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1321,7 +1376,7 @@ async function addServer() {
 async function probeServer() {
   const cmd = $('mcCmd').value.trim();
   if (!cmd) return toast('先填 command', 'err');
-  $('mcProbe').style.display = 'block'; $('mcProbe').textContent = '⟳ 连接探测…';
+  $('mcProbe').style.display = 'block'; $('mcProbe').textContent = '连接探测…';
   try {
     const d = await api('/mcp/servers/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: cmd, args: $('mcArgs').value.trim() ? $('mcArgs').value.trim().split(/\s+/) : [] }) });
     $('mcProbe').textContent = JSON.stringify(d.tools, null, 1);
@@ -1336,10 +1391,10 @@ async function loadMcp() {
     const s = await api('/mcp/servers');
     $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
       (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
-        '<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
-        '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">×</button></td></tr>').join('') +
+        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">' + ico('x') + '</button></td></tr>').join('') +
       '</tbody></table>';
-    $('mcTools').innerHTML = '⟳ 聚合工具中（stdio 会临时拉起进程）…';
+    $('mcTools').innerHTML = '聚合工具中（stdio 会临时拉起进程）…';
     const t = await api('/mcp/tools');
     const errs = Object.entries(t.errors || {});
     $('mcTools').innerHTML = (t.tools || []).map(x =>
@@ -1365,7 +1420,7 @@ async function loadAcl() {
       '<div class="mem-item"><span class="tag ' + (r.allow ? 'fact' : 'constraint') + '">' + (r.allow ? 'allow' : 'deny') + '</span>' +
       '<p><b>' + escapeHtml(r.agent_id) + '</b> · <code>' + escapeHtml(r.tool_pattern) + '</code>' +
       (r.server_id ? ' · server=' + escapeHtml(r.server_id) : ' · 任意server') + '</p>' +
-      '<button class="btn sm danger" aria-label="删除规则 ' + r.id + '" onclick="delAcl(' + r.id + ')">×</button></div>').join('') ||
+      '<button class="btn sm danger" aria-label="删除规则 ' + r.id + '" onclick="delAcl(' + r.id + ')">' + ico('x') + '</button></div>').join('') ||
       '<div class="hint">暂无规则——无规则 = 所有 agent 默认放行（首次接入零摩擦）</div>';
   } catch (e) { el.innerHTML = '<span style="color:var(--danger-text)">' + escapeHtml(e.message) + '</span>'; }
 }
@@ -1394,7 +1449,7 @@ async function callToolSel() {
   let args = {};
   const raw = $('mcCallArgs').value.trim();
   if (raw) { try { args = JSON.parse(raw); } catch (e) { return toast('args 需为 JSON', 'err'); } }
-  $('mcCallOut').style.display = 'block'; $('mcCallOut').textContent = '⟳ 调用中…';
+  $('mcCallOut').style.display = 'block'; $('mcCallOut').textContent = '调用中…';
   try {
     const d = await api('/mcp/call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server: mcpToolSel.server, tool: mcpToolSel.tool, args: args, agent_id: 'manager' }) });
     $('mcCallOut').textContent = JSON.stringify(d, null, 1);
@@ -1438,12 +1493,12 @@ function cmdListDir(path) {
 /* ── v0.7 左侧手风琴导航：单开模式 + 搜索 + 展开态持久化 ──
    20 个实体全部收拢进左栏（AGENTS 8 / 基础设施 12），系统功能仍走 go(page) ── */
 const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统' };
-const NAV_ICONS = { agents: '◈', infra: '▦', system: '⊞' };   // 收起成图标条时仍可辨认
+const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders' };   // 收起成图标条时仍可辨认（sprite id）
 const NAV_ORDER = ['agents', 'infra', 'system'];
 const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
-const SYS_PAGES = [['ports', '端口', '≡'], ['telemetry', '遥测', '◉'], ['memory', '记忆中心', '▤'],
-                   ['mcp', '工具', '⚙'], ['jobs', '定时', '⟳'], ['tasks', '协同', '⇄']];
-const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '↗ 新窗口' };
+const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
+                   ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow']];
+const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
 const navOpenStored = localStorage.getItem('hub.nav.open');
@@ -1483,12 +1538,12 @@ function navItemHtml(a) {
   // 操作按钮：按 entries 类型渲染（最多3个）
   const es = a.entries || [];
   const actBtns = [];
-  if (es.some(e => e.type === 'embed')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')" title="嵌入会话">◉</span>');
-  if (es.some(e => e.type === 'term')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')" title="终端">⌨</span>');
-  if (es.some(e => e.type === 'chat')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')" title="对话">💬</span>');
+  if (es.some(e => e.type === 'embed')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')" title="嵌入会话">' + ico('monitor') + '</span>');
+  if (es.some(e => e.type === 'term')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')" title="终端">' + ico('terminal') + '</span>');
+  if (es.some(e => e.type === 'chat')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')" title="对话">' + ico('message') + '</span>');
   // 启动按钮：installed/stopped 状态的 agent
   if (a.kind === 'agent' && (st === 'installed' || st === 'stopped') && es.some(e => e.type === 'term')) {
-    actBtns.push('<span class="act-btn start-btn" onclick="event.stopPropagation();startAgent(\'' + a.id + '\')" title="启动">▶</span>');
+    actBtns.push('<span class="act-btn start-btn" onclick="event.stopPropagation();startAgent(\'' + a.id + '\')" title="启动">' + ico('play') + '</span>');
   }
   const actsHtml = actBtns.length ? '<span class="nav-acts">' + actBtns.join('') + '</span>' : '';
   return '<button class="nav-item' + on + '" data-entity="' + escapeHtml(a.id) + '"' +
@@ -1537,17 +1592,17 @@ function renderNav() {
       const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
       if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navItemHtml).join('');
     } else if (g === 'system') {
-      body = list.map(([p, label, ico]) =>
+      body = list.map(([p, label, ic]) =>
         '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
-        '<span class="ico">' + ico + '</span><span class="lbl">' + label + '</span></button>').join('');
+        ico(ic) + '<span class="lbl">' + label + '</span></button>').join('');
     } else {
       body = list.map(navItemHtml).join('');
     }
     if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
     return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
       '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
-      '<span class="caret">' + (open ? '▾' : '▸') + '</span>' +
-      '<span class="ico">' + NAV_ICONS[g] + '</span>' +
+      ico(open ? 'chevron-down' : 'chevron-right', null, 'caret') +
+      ico(NAV_ICONS[g], 'md') +
       '<span class="lbl">' + NAV_GROUPS[g] + '</span>' +
       '<span class="badge">' + list.length + '</span></button>' +
       '<div class="nav-acc-body">' + body + '</div></div>';
@@ -1604,7 +1659,7 @@ function initSidebar() {
   const narrow = () => window.innerWidth < 768;
   const apply = c => {
     sb.classList.toggle('collapsed', c);
-    btn.textContent = c ? '»' : '« 收起';
+    btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
     localStorage.setItem('hub.sidebar', c ? '1' : '0');
     const m = document.getElementById('sideMask');
     if (m) m.classList.toggle('on', !c && narrow());   // 窄屏展开时才有遮罩
