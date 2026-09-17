@@ -501,13 +501,13 @@ function repairModeWire() {
   sync();
 }
 
-/* 模式切换栏 v0.7：上移到右侧操作区顶栏（仅实体名，模式 tab 已移除） */
+/* 模式切换栏 v0.7：右侧顶栏仅显示实体名，无分割线 */
 function renderModeBar(a) {
   const bar = $('chatModeBar'), tabs = $('opTabs'), crumb = $('crumb');
   if (bar) bar.style.display = 'none';
   if (!a) { if (tabs) tabs.innerHTML = ''; if (crumb) crumb.innerHTML = ''; return; }
-  if (crumb) crumb.innerHTML = '<b>' + escapeHtml(a.name) + '</b>';
-  if (tabs) tabs.innerHTML = '';  // 清空模式 tab
+  // 实体页不显示名称行，保持顶部干净
+  if (tabs) tabs.innerHTML = '';
 }
 function switchMode(m) {
   chatMode = m;
