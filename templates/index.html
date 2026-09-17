@@ -37,13 +37,40 @@
         .hstats { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--text-2); flex-wrap: wrap; }
         .hdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
         .hdot.g { background: var(--success); animation: pulse 2s infinite; }
+        .hdot.y { background: var(--amber); }
         .hdot.r { background: var(--danger); }
 
-        nav.tabs { display: flex; gap: 4px; padding: 10px 32px 0; border-bottom: 1px solid var(--surface); background: var(--bg); flex-wrap: wrap; }
-        nav.tabs button { background: transparent; border: none; color: var(--muted); padding: 10px 16px; font-size: 14px; border-bottom: 2px solid transparent; }
-        nav.tabs button.on { color: var(--text-1); border-bottom-color: var(--accent-2); background: #22334d40; border-radius: 8px 8px 0 0; }
+        /* ── 左侧功能导航 + 右侧实施区（替代原顶部 9 个平铺标签）── */
+        .shell { display: flex; flex: 1; min-height: 0; }
+        .sidebar { flex: 0 0 208px; width: 208px; background: var(--bg); border-right: 1px solid var(--border);
+                   padding: 14px 10px; display: flex; flex-direction: column; gap: 16px;
+                   position: sticky; top: 0; align-self: flex-start; max-height: 100vh; overflow-y: auto;
+                   transition: flex-basis .18s ease, width .18s ease; }
+        .sidebar.collapsed { flex-basis: 58px; width: 58px; padding-left: 6px; padding-right: 6px; }
+        .nav-group { display: flex; flex-direction: column; gap: 2px; }
+        .nav-group-title { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .06em;
+                           color: var(--muted); padding: 0 8px 6px; white-space: nowrap; overflow: hidden; }
+        .nav-group-title::after { content: ''; flex: 1; border-top: 1px dashed var(--divider); margin-left: 2px; }
+        .sidebar button[data-page] { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+                                     background: transparent; border: 1px solid transparent; color: var(--muted);
+                                     padding: 9px 10px; font-size: 14px; border-radius: 8px; transition: .12s; }
+        .sidebar button[data-page]:hover { background: #22334d40; color: var(--text-2); }
+        .sidebar button[data-page].on { color: var(--text-1); background: #22334d80; border-color: var(--accent);
+                                        box-shadow: inset 3px 0 0 var(--accent-2); }
+        .sidebar button[data-page] .ico { flex: 0 0 auto; font-size: 15px; }
+        .sidebar button[data-page] .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge { flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+                 background: var(--surface-2); color: var(--text-2); font-size: 11px;
+                 display: inline-flex; align-items: center; justify-content: center; }
+        .badge:empty { display: none; }
+        .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after { display: none; }
+        .sidebar.collapsed .nav-group-title { justify-content: center; padding: 0 0 4px; font-size: 10px; }
+        .sidebar.collapsed button[data-page] { justify-content: center; padding: 9px 0; }
+        .side-toggle { margin-top: auto; flex: 0 0 auto; background: transparent; border: 1px solid var(--border);
+                       color: var(--muted); border-radius: 8px; padding: 6px; font-size: 12px; width: 100%; }
+        .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
 
-        main { flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; padding: 24px 32px; }
+        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 24px 32px; }
         section.page { display: none; }
         section.page.on { display: block; }
         .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -155,6 +182,15 @@
         .modal .row { display: flex; gap: 8px; margin-bottom: 10px; }
         .modal .row input { flex: 1; }
 
+        /* ── 实体详情/设置抽屉（右侧滑出）── */
+        #detailDrawer, #settingsDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px #0008; transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
+        #detailDrawer.on, #settingsDrawer.on { right: 0; }
+        .token-box { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
+
+        /* ── 命令面板（⌘K）── */
+        .cmd-item { padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .cmd-item:hover, .cmd-item.sel { background: var(--surface-2); }
+
         #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 99; display: flex; flex-direction: column; gap: 8px; align-items: center; }
         #toast div { background: var(--bg); border: 1px solid var(--border); padding: 10px 18px; border-radius: 10px; font-size: 13px; animation: pulse 3s forwards; box-shadow: 0 8px 24px #000a; }
         #toast div.err { border-color: var(--danger); color: #fca5a5; }
@@ -192,9 +228,13 @@
             .header { padding: 10px 12px; gap: 8px; }
             .header h1 { font-size: 17px; }
             .hstats { gap: 10px; }
-            nav.tabs { padding: 8px 12px 0; gap: 2px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-            nav.tabs::-webkit-scrollbar { display: none; }
-            nav.tabs button { flex: 0 0 auto; min-height: 40px; white-space: nowrap; padding: 10px 12px; font-size: 13px; }
+            /* 窄屏：侧栏退化为图标条，把横向空间让给工作区 */
+            .sidebar { flex-basis: 52px; width: 52px; padding: 10px 5px; gap: 10px; }
+            .sidebar .lbl, .sidebar .badge, .sidebar .nav-group-title::after { display: none; }
+            .sidebar .nav-group-title { justify-content: center; padding: 0 0 4px; font-size: 10px; }
+            .sidebar button[data-page] { justify-content: center; padding: 9px 0; min-height: 40px; }
+            .sidebar .side-toggle { font-size: 0; padding: 6px 0; }
+            .sidebar .side-toggle::before { content: '«»'; font-size: 12px; }
             main { max-width: 100%; margin: 0; padding: 12px; }
             .podium-wrap { margin: 4px 0 16px; }
             .podium { flex-direction: row; flex-wrap: wrap; max-width: 100%; gap: 8px 10px; padding: 10px 14px; border-radius: 14px; }
@@ -227,24 +267,35 @@
     <div class="header">
         <h1>🏫 Agent Hub · 智管</h1>
         <div class="hstats">
-            <span><span class="hdot g"></span>Hub 在岗</span>
+            <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span>Hub 在岗</span>
             <span id="hAgents">Agents: -</span>
             <span id="hErrors"></span>
-            
+            <button class="btn ghost sm" id="btnSettings" role="button" tabindex="0" aria-label="打开设置" onclick="openSettings()" title="设置：终端 token 查看与应用">⚙ 设置</button>
         </div>
     </div>
 
-    <nav class="tabs" id="tabs">
-        <button data-page="classroom" class="on">🏫 教室</button>
-        <button data-page="manager">👑 指挥官</button>
-        <button data-page="chat">💬 统一对话</button>
-        <button data-page="memory">🧠 记忆中心</button>
-        <button data-page="tasks">⚡ 协同</button>
-        <button data-page="jobs">⏰ 定时</button>
-        <button data-page="mcp">🧰 工具</button>
-        <button data-page="ports">🔌 端口</button>
-        <button data-page="telemetry">📡 遥测</button>
-    </nav>
+    <div class="shell">
+    <aside class="sidebar" id="sidebar" role="tablist" aria-label="功能导航">
+        <div class="nav-group">
+            <div class="nav-group-title">观察</div>
+            <button data-page="classroom" class="on" role="tab" aria-selected="true"><span class="ico">🏫</span><span class="lbl">教室</span><span class="badge" id="badge-classroom"></span></button>
+            <button data-page="ports" role="tab" aria-selected="false"><span class="ico">🔌</span><span class="lbl">端口</span><span class="badge" id="badge-ports"></span></button>
+            <button data-page="telemetry" role="tab" aria-selected="false"><span class="ico">📡</span><span class="lbl">遥测</span><span class="badge" id="badge-telemetry"></span></button>
+        </div>
+        <div class="nav-group">
+            <div class="nav-group-title">操作</div>
+            <button data-page="manager" role="tab" aria-selected="false"><span class="ico">👑</span><span class="lbl">指挥官</span><span class="badge" id="badge-manager"></span></button>
+            <button data-page="chat" role="tab" aria-selected="false"><span class="ico">💬</span><span class="lbl">统一对话</span><span class="badge" id="badge-chat"></span></button>
+            <button data-page="tasks" role="tab" aria-selected="false"><span class="ico">⚡</span><span class="lbl">协同</span><span class="badge" id="badge-tasks"></span></button>
+            <button data-page="jobs" role="tab" aria-selected="false"><span class="ico">⏰</span><span class="lbl">定时</span><span class="badge" id="badge-jobs"></span></button>
+        </div>
+        <div class="nav-group">
+            <div class="nav-group-title">治理</div>
+            <button data-page="memory" role="tab" aria-selected="false"><span class="ico">🧠</span><span class="lbl">记忆中心</span><span class="badge" id="badge-memory"></span></button>
+            <button data-page="mcp" role="tab" aria-selected="false"><span class="ico">🧰</span><span class="lbl">工具</span><span class="badge" id="badge-mcp"></span></button>
+        </div>
+        <button class="side-toggle" id="btnSideToggle" title="收起 / 展开侧栏">« 收起</button>
+    </aside>
 
     <main>
         <!-- 教室 -->
@@ -336,10 +387,11 @@
                                 </select>
                                 <button class="btn ghost sm" title="新建会话" onclick="chatSessNew()">＋</button>
                                 <button class="btn ghost sm" title="重命名" onclick="chatSessRename()">✎</button>
+                                <button class="btn ghost sm" title="删除当前会话" onclick="chatSessDel()">🗑</button>
                                 <button class="btn ghost sm" title="刷新列表" onclick="chatSessLoad()">↻</button>
                             </span>
                             <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px" id="chatToolsRow" title="hub-self 启用指挥官工具环（带工具调用展示）">
-                                <input type="checkbox" id="chatToolsOn" style="width:auto;margin:0 4px 0 0">
+                                <input type="checkbox" id="chatToolsOn" checked style="width:auto;margin:0 4px 0 0">
                                 <label for="chatToolsOn" style="font-size:12px;color:var(--text-2);cursor:pointer">🛠 工具</label>
                             </span>
                             <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px" id="chatRepairRow" title="v0.4 修复模式：开启后多 5 个修复工具（白名单 restart / 配置写 / 回滚 / 双次确认）。改完记得关。" hidden>
@@ -463,6 +515,18 @@
                 </div>
                 <pre class="code" id="mcProbe" style="display:none"></pre>
             </div>
+            <div class="panel">
+                <h3>工具调用 ACL（agent 一旦有 allow 规则即白名单语义：默认拒；无规则默认放行）</h3>
+                <div class="toolbar">
+                    <input id="aclAgent" placeholder="agent_id（manager / jcode / *）" style="max-width:190px">
+                    <input id="aclPattern" placeholder="工具模式，如 read_* 或 *" style="max-width:170px">
+                    <input id="aclServer" placeholder="server 名/id（可空=任意）" style="max-width:190px">
+                    <select id="aclAllow"><option value="1">allow</option><option value="0">deny</option></select>
+                    <button class="btn sm" onclick="addAcl()">新增规则</button>
+                    <button class="btn ghost sm" onclick="loadAcl()">刷新</button>
+                </div>
+                <div id="aclList" class="hint tscroll">加载中…</div>
+            </div>
             <div class="mem-grid" style="grid-template-columns:1fr 1.3fr">
                 <div class="panel"><h3>Servers</h3><div id="mcServers" class="hint tscroll">加载中…</div></div>
                 <div class="panel"><h3>聚合工具（60s 缓存）</h3><div id="mcTools" class="hint">加载中…</div>
@@ -498,6 +562,7 @@
             <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
         </section>
     </main>
+    </div>
 
     <!-- 注册弹窗 -->
     <div class="modal-mask" id="regMask">
@@ -513,10 +578,48 @@
         </div>
     </div>
 
+    <!-- 实体详情抽屉 -->
+    <aside id="detailDrawer" role="dialog" aria-label="实体详情">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b id="detailTitle" style="font-size:15px"></b>
+            <button class="btn ghost sm" aria-label="关闭详情" onclick="closeDetail()">×</button>
+        </div>
+        <div id="detailBody" class="hint"></div>
+    </aside>
+
+    <!-- ⚙设置抽屉 -->
+    <aside id="settingsDrawer" role="dialog" aria-label="设置">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b style="font-size:15px">⚙ 设置</b>
+            <button class="btn ghost sm" aria-label="关闭设置" onclick="closeSettings()">×</button>
+        </div>
+        <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+            <button class="btn sm" id="btnViewToken" onclick="settingsViewToken()">查看终端 TERM_TOKEN</button>
+            <button class="btn ghost sm" onclick="settingsClearPasscode()">清除本机口令</button>
+        </div>
+        <div id="settingsTokenBox" style="display:none">
+            <div class="token-box" id="settingsTokenVal"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn sm" onclick="settingsCopyToken()">复制</button>
+                <button class="btn sm" onclick="settingsApplyToken()">应用到终端（本浏览器不再弹框）</button>
+                <button class="btn ghost sm" id="settingsToggleShow" onclick="settingsToggleShow()">隐藏</button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 命令面板（⌘K / Ctrl+K） -->
+    <div class="modal-mask" id="cmdMask" onclick="if(event.target===this)closeCmd()">
+        <div class="modal" style="padding:12px">
+            <input id="cmdInput" placeholder="搜索实体直达对话；输入 / 开头路径则对 hub-self 执行 list_dir" style="width:100%" autocomplete="off" aria-label="命令面板搜索">
+            <div id="cmdList" style="margin-top:8px;max-height:50vh;overflow-y:auto"></div>
+        </div>
+    </div>
+
     <div class="footer">Agent Hub v{{ version }} · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260907g"></script>
+    <script src="/static/hub.js?v=20260917a"></script>
 </body>
 </html>

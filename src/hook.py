@@ -31,6 +31,15 @@ class TelemetryEvent(BaseModel):
     data: Optional[Dict[str, Any]] = None              # 其它负载原样入档
 
 
+def _effective_client_ip(request: Request) -> str:
+    """TRUST_PROXY=1 时信任反代，取 X-Forwarded-For 的最后一跳；默认行为与旧版完全一致。"""
+    if os.getenv("TRUST_PROXY", "0") == "1":
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[-1].strip()
+    return request.client.host if request.client else ""
+
+
 def _check_auth(request: Request) -> None:
     token = os.getenv("HOOK_AUTH_TOKEN", "")
     if token:
@@ -38,8 +47,9 @@ def _check_auth(request: Request) -> None:
         if got != f"Bearer {token}":
             raise HTTPException(status_code=401, detail="invalid hook token")
         return
-    client = request.client.host if request.client else ""
+    client = _effective_client_ip(request)
     if client not in ("127.0.0.1", "::1", "localhost"):
+        print(f"[hook] 拒绝：未设 HOOK_AUTH_TOKEN 且来源非回环（{client}）")
         raise HTTPException(status_code=403, detail="hook writes allowed from loopback only")
 
 

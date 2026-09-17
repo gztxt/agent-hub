@@ -89,8 +89,10 @@ def _acl_check(agent_id: Optional[str], server_id: str, tool: str) -> None:
 async def _session_for(server: dict) -> Tuple[AsyncExitStack, ClientSession]:
     stack = AsyncExitStack()
     if server["transport"] == "http":
-        read, write, _ = await stack.enter_async_context(
+        # mcp SDK 各版本返回 2 或 3 元组，取前两个即可（旧代码按 3 元组解包，在 2.x 下会 ValueError）
+        _tup = await stack.enter_async_context(
             streamable_http_client(server["url"]))
+        read, write = _tup[0], _tup[1]
     else:
         params = StdioServerParameters(
             command=server["command"],

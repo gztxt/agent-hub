@@ -8,10 +8,14 @@
 - 项目类型自动识别（agent_sources.rs → src/sources.py）
 """
 import asyncio
+import hmac
 import json
+import os
 import re
 import sys
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,7 +30,7 @@ if env_path.exists():
 import aiohttp
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -53,8 +57,55 @@ print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 VERSION = "0.6.0"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+
+
+def _parse_cors_origins() -> list:
+    """CORS_ORIGINS 逗号分隔解析；异常/为空时退化为仅回环来源（不放松默认安全）"""
+    raw = os.getenv(
+        "CORS_ORIGINS",
+        "http://192.168.5.102:3102,http://127.0.0.1:3102,http://100.117.232.62:3102")
+    try:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        for o in origins:
+            if not (o.startswith("http://") or o.startswith("https://")):
+                raise ValueError(f"invalid origin scheme: {o}")
+        if not origins:
+            raise ValueError("empty CORS_ORIGINS")
+        return origins
+    except Exception as e:  # noqa: BLE001
+        print(f"[Agent Hub] CORS_ORIGINS 解析失败（{e}），退化为仅回环来源")
+        return ["http://127.0.0.1:3102", "http://localhost:3102", "http://[::1]:3102"]
+
+
+app.add_middleware(CORSMiddleware, allow_origins=_parse_cors_origins(),
+                   allow_methods=["*"], allow_headers=["*"], allow_credentials=False)
+
+# ── 非 MCP 写路径按 IP 滑动窗口限流（风格对齐 mcpgw._check_rate）──────
+API_RATE_PER_MIN = int(os.getenv("API_RATE_PER_MIN", "60"))
+# ⚙设置口令：查看 TERM_TOKEN 等敏感配置时要求提供（为空则设置页不可用）
+HUB_PASSCODE = os.getenv("HUB_PASSCODE", "")
+_api_rate: Dict[str, deque] = defaultdict(deque)
+_RATE_EXCLUDED_PREFIXES = ("/telemetry/events/", "/health", "/mcp")
+_RATE_WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+@app.middleware("http")
+async def api_rate_limit(request: Request, call_next):
+    # 只拦写方法；GET（前端 30s 轮询）与外部推送/健康检查/MCP（自带限流）不拦
+    if request.method in _RATE_WRITE_METHODS:
+        path = request.url.path
+        if not any(path.startswith(p) for p in _RATE_EXCLUDED_PREFIXES):
+            ip = request.client.host if request.client else "unknown"
+            window = _api_rate[ip]
+            cut = time.monotonic() - 60
+            while window and window[0] < cut:
+                window.popleft()
+            if len(window) >= API_RATE_PER_MIN:
+                print(f"[rate] 429：{ip} 超过 {API_RATE_PER_MIN}/min（{request.method} {path}）")
+                return JSONResponse(
+                    {"detail": f"API 限流：超过 {API_RATE_PER_MIN}/min"}, status_code=429)
+            window.append(time.monotonic())
+    return await call_next(request)
 
 templates_dir = Path(__file__).parent.parent / "templates"
 static_path = Path(__file__).parent.parent / "static"
@@ -93,6 +144,34 @@ app.include_router(tasks_mod.router)
 app.include_router(mcpgw_mod.router)
 app.include_router(cronjobs_mod.router)
 app.include_router(term_mod.router)
+
+# D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
+# 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。
+# 用 try 包裹：挂载失败不得影响主服务启动。
+try:
+    import contextlib
+
+    import hubmcp
+
+    # session_manager 是懒创建的：必须先 build_app() 再取。
+    _mcp_app = hubmcp.build_app()
+    _mcp_sm = hubmcp.server.session_manager
+
+    # Starlette 不会自动运行 mount 子应用的 lifespan，需手动并入主应用 lifespan，
+    # 否则报 "Task group is not initialized. Make sure to use run()."
+    _orig_lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def _hub_lifespan(app_):
+        async with _mcp_sm.run():
+            async with _orig_lifespan(app_):
+                yield
+
+    app.router.lifespan_context = _hub_lifespan
+    app.mount("/hub-mcp", _mcp_app)
+    print("[Agent Hub] Hub MCP server 已挂载：/hub-mcp/mcp（lifespan 已并入）")
+except Exception as e:  # noqa: BLE001
+    print(f"[Agent Hub] Hub MCP server 挂载失败（主服务不受影响）：{type(e).__name__}: {e}")
 
 discovery: Optional[AgentDiscovery] = None
 
@@ -733,6 +812,29 @@ async def delete_session(session_id: str):
     if not n2:
         raise HTTPException(404, "session not found")
     return {"status": "deleted", "id": session_id, "messages": n1}
+
+
+# ── ⚙设置（口令保护的敏感配置查看）────────────────────────
+
+class PasscodeRequest(BaseModel):
+    passcode: str = ""
+
+
+@app.post("/api/settings/term-token")
+async def settings_term_token(request: Request, req: PasscodeRequest):
+    """口令正确时返回 TERM_TOKEN。
+
+    有意用 POST 而非 GET：现有 api_rate_limit 只拦写方法，
+    口令爆破会被 429 限流拦住（60 次/分钟/IP）。
+    """
+    if not HUB_PASSCODE:
+        raise HTTPException(503, "未设置 HUB_PASSCODE，请先在 .env 配置后再使用设置页")
+    if not hmac.compare_digest(req.passcode, HUB_PASSCODE):
+        ip = request.client.host if request.client else "?"
+        print(f"[settings] 口令错误：{ip}")
+        raise HTTPException(401, "口令错误")
+    tok = os.getenv("TERM_TOKEN", "")
+    return {"term_token": tok, "set": bool(tok)}
 
 
 # ── 模型代理（前端动态加载：CCR/jcode 等 OpenAI 兼容 /v1/models）────

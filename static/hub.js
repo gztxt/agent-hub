@@ -32,15 +32,20 @@ function escapeHtml(s) {
 }
 
 function go(page) {
-  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.page === page));
+  document.querySelectorAll('.sidebar button[data-page]').forEach(b => {
+    const on = b.dataset.page === page;
+    b.classList.toggle('on', on);
+    if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
   document.querySelectorAll('section.page').forEach(s => s.classList.toggle('on', s.id === 'page-' + page));
+  localStorage.setItem('hub.page', page);  // T9：记忆上次所在页，刷新后回落
   if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'chat') renderChatSide();
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
   if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
-  if (page === 'mcp') loadMcp();
+  if (page === 'mcp') { loadMcp(); loadAcl(); }
 }
 
 function fillAgentSelect(sel, withAuto) {
@@ -78,16 +83,39 @@ function initials(name) {
   return String(name).split(/[\s_\-·]+/).slice(0, 2).map(w => w[0] ? w[0].toUpperCase() : '').join('') || '?';
 }
 
+let agentFailStreak = 0;
 async function loadAgents() {
   try {
     const d = await api('/api/agents');
     AGENTS = d.agents || [];
+    agentFailStreak = 0;
     renderSeats();
     const ag = AGENTS.filter(a => a.kind === 'agent');
     $('hAgents').textContent = 'Agents: ' + ag.length + '（在线 ' + ag.filter(a => a.status === 'running').length + '）';
     const errs = AGENTS.filter(a => a.status === 'error').length;
     $('hErrors').innerHTML = errs ? '<span class="hdot r"></span>异常 ' + errs : '';
-  } catch (e) { /* 服务重启窗口容忍瞬时失败 */ }
+  } catch (e) {
+    // 服务重启窗口容忍瞬时失败；连续 ≥2 次才亮红灯（避免误报）
+    agentFailStreak++;
+    if (agentFailStreak === 2) {
+      setHealthDot('r', 'agent 列表连续拉取失败：' + e.message);
+      toast('Hub 数据连续 ' + agentFailStreak + ' 次拉取失败：' + e.message, 'err');
+    }
+  }
+}
+
+/* ── T5 真实健康灯：定时拉 /health 驱动头部灯色（ok=绿 不可达=红 其它=黄）── */
+function setHealthDot(cls, title) {
+  const d = $('hHealth');
+  if (!d) return;
+  d.className = 'hdot ' + cls;
+  if (title) d.title = title;
+}
+async function pollHealth() {
+  try {
+    const d = await api('/health');
+    setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));
+  } catch (e) { setHealthDot('r', 'Hub 不可达：' + e.message); }
 }
 
 function renderSeats() {
@@ -114,7 +142,7 @@ function renderSeats() {
       : (openUrl ? 'window.open(\'' + lanUrl(openUrl) + '\',\'_blank\')'
       : 'showDetail(\'' + a.id + '\')');
     const clickHint = hasEmbed ? '｜点击=嵌入统一对话' : (openUrl ? '｜点击=新窗口打开' : '');
-    return '<div class="chip" style="cursor:pointer" onclick="' + click + '" title="' + escapeHtml(a.description) + (a.port ? ' :' + a.port : '') + clickHint + '">' +
+    return '<div class="chip" style="cursor:pointer" onclick="' + click + '" tabindex="0" role="button" aria-label="' + escapeHtml(a.name) + '" title="' + escapeHtml(a.description) + (a.port ? ' :' + a.port : '') + clickHint + '">' +
       '<span class="dot ' + (a.status === 'running' ? 'on' : 'off') + '"></span>' +
       '<b>' + escapeHtml(a.name) + '</b>' + lock + '<span class="kindtag">' + kt + '</span>' + btns + '</div>';
   }).join('');
@@ -129,35 +157,161 @@ function renderSeats() {
       grid.querySelectorAll('.seat.open').forEach(s => s.classList.remove('open'));
       if (!wasOpen) card.classList.add('open');
     });
+    // T8：键盘可达——Enter/Space 等价点击展开
+    grid.addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('seat')) {
+        e.preventDefault(); e.target.click();
+      }
+    });
   }
-  grid.innerHTML = agents.map(a => {
-    const st = a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : (a.status === 'error' ? 'error' : 'stopped'));
-    const label = { running: '⚡在线', installed: '🟡可启动', stopped: '💤离线', error: '⚠️异常' }[st];
-    const btns = (a.entries || []).map(e => {
-      if (e.type === 'embed') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')">原生会话</button>';
-      if (e.type === 'open') return '<button class="btn sm ghost" onclick="event.stopPropagation();window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗UI</button>';
-      if (e.type === 'term') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')">终端</button>';
-      if (e.type === 'chat') return '<button class="btn sm ghost" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')">对话</button>';
-      if (e.type === 'detail') return '<button class="btn sm ghost" onclick="event.stopPropagation();showDetail(\'' + a.id + '\')">详情</button>';
-      return '';
-    }).join('') +
-      (a.builtin ? '' : '<button class="btn sm danger" onclick="event.stopPropagation();delAgent(\'' + a.id + '\')">删除</button>');
-    return '<div class="seat s-' + st + '" data-id="' + escapeHtml(a.id) + '" title="' + escapeHtml(a.description) + '">' +
-      '<span class="s-badge ' + st + '"></span>' +
-      '<div class="avatar ' + st + '" style="background:' + hashColor(a.id) + '">' + escapeHtml(initials(a.name)) +
-      (st === 'stopped' ? '<span class="zsleep">💤</span>' : '') + '</div>' +
-      '<div class="s-info">' +
-      '<div class="s-name">' + escapeHtml(a.name) + (a.builtin ? '' : ' 📌') + '</div>' +
-      '<div class="s-meta">' +
-      (a.port ? '<span class="s-port">:' + a.port + '</span>' : '') +
-      '<span class="s-status ' + st + '">' + label + '</span></div></div>' +
-      '<div class="s-tools">' + btns + '</div></div>';
-  }).join('');
+  // T4：按 data-id 增量更新（触屏展开态 class="open" 不再被全量重建抹掉）
+  const existing = new Map();
+  grid.querySelectorAll('.seat[data-id]').forEach(el => existing.set(el.dataset.id, el));
+  if (!existing.size) grid.innerHTML = '';  // 从"暂无 Agent"占位切回正式列表
+  const seen = new Set();
+  for (const a of agents) {
+    seen.add(a.id);
+    const el = existing.get(a.id);
+    if (el) updateSeat(el, a);
+    else grid.insertAdjacentHTML('beforeend', seatHtml(a));
+  }
+  existing.forEach((el, id) => { if (!seen.has(id)) el.remove(); });
+}
+
+function seatStateOf(a) {
+  return a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : (a.status === 'error' ? 'error' : 'stopped'));
+}
+const SEAT_LABELS = { running: '⚡在线', installed: '🟡可启动', stopped: '💤离线', error: '⚠️异常' };
+
+function seatToolsHtml(a) {
+  return (a.entries || []).map(e => {
+    if (e.type === 'embed') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')">原生会话</button>';
+    if (e.type === 'open') return '<button class="btn sm ghost" onclick="event.stopPropagation();window.open(\'' + lanUrl(e.url) + '\',\'_blank\')">↗UI</button>';
+    if (e.type === 'term') return '<button class="btn sm" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')">终端</button>';
+    if (e.type === 'chat') return '<button class="btn sm ghost" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')">对话</button>';
+    if (e.type === 'detail') return '<button class="btn sm ghost" onclick="event.stopPropagation();showDetail(\'' + a.id + '\')">详情</button>';
+    return '';
+  }).join('') +
+    (a.builtin ? '' : '<button class="btn sm danger" onclick="event.stopPropagation();delAgent(\'' + a.id + '\')">删除</button>');
+}
+
+function seatHtml(a) {
+  const st = seatStateOf(a);
+  return '<div class="seat s-' + st + '" data-id="' + escapeHtml(a.id) + '" title="' + escapeHtml(a.description) + '"' +
+    ' tabindex="0" role="button" aria-label="' + escapeHtml(a.name + ' ' + SEAT_LABELS[st]) + '">' +
+    '<span class="s-badge ' + st + '"></span>' +
+    '<div class="avatar ' + st + '" style="background:' + hashColor(a.id) + '">' + escapeHtml(initials(a.name)) +
+    (st === 'stopped' ? '<span class="zsleep">💤</span>' : '') + '</div>' +
+    '<div class="s-info">' +
+    '<div class="s-name">' + escapeHtml(a.name) + (a.builtin ? '' : ' 📌') + '</div>' +
+    '<div class="s-meta">' +
+    (a.port ? '<span class="s-port">:' + a.port + '</span>' : '') +
+    '<span class="s-status ' + st + '">' + SEAT_LABELS[st] + '</span></div></div>' +
+    '<div class="s-tools">' + seatToolsHtml(a) + '</div></div>';
+}
+
+function updateSeat(el, a) {
+  const st = seatStateOf(a);
+  el.classList.remove('s-running', 's-installed', 's-stopped', 's-error');
+  el.classList.add('s-' + st);
+  el.title = a.description || '';
+  el.setAttribute('aria-label', a.name + ' ' + SEAT_LABELS[st]);
+  const badge = el.querySelector('.s-badge');
+  if (badge) badge.className = 's-badge ' + st;
+  const av = el.querySelector('.avatar');
+  if (av) {
+    av.className = 'avatar ' + st;
+    av.style.background = hashColor(a.id);
+    let zs = av.querySelector('.zsleep');
+    if (st === 'stopped' && !zs) { zs = document.createElement('span'); zs.className = 'zsleep'; zs.textContent = '💤'; av.appendChild(zs); }
+    if (st !== 'stopped' && zs) zs.remove();
+  }
+  const port = el.querySelector('.s-port');
+  if (a.port) {
+    if (port) port.textContent = ':' + a.port;
+    else { const meta = el.querySelector('.s-meta'); if (meta) meta.insertAdjacentHTML('afterbegin', '<span class="s-port">:' + a.port + '</span>'); }
+  } else if (port) port.remove();
+  const stat = el.querySelector('.s-status');
+  if (stat) { stat.className = 's-status ' + st; stat.textContent = SEAT_LABELS[st]; }
+  const tools = el.querySelector('.s-tools');
+  if (tools) tools.innerHTML = seatToolsHtml(a);  // entries 变化时同步按钮（不影响卡片 open 态）
 }
 
 function showDetail(id) {
   const a = AGENTS.find(x => x.id === id);
-  if (a) toast(a.name + ' · ' + a.type + ' · ' + a.status + ' · ' + (a.endpoint || '-') + (a.working_dir ? ' · ' + a.working_dir : ''));
+  if (!a) return;
+  $('detailTitle').textContent = a.name + '（' + (a.type || a.kind || '-') + ' · ' + a.status + '）';
+  const rows = [['endpoint', a.endpoint], ['config_path', a.config_path], ['working_dir', a.working_dir], ['description', a.description]];
+  let html = rows.filter(([, v]) => v).map(([k, v]) =>
+    '<div style="margin:6px 0"><div class="hint">' + k + '</div>' +
+    '<div style="font-family:monospace;font-size:12px;word-break:break-all;color:var(--text-1)">' + escapeHtml(v) + '</div></div>').join('');
+  const es = a.entries || [];
+  html += '<div class="hint" style="margin:10px 0 4px">entries</div>' +
+    (es.length ? es.map(e => '<span class="tag agent" style="display:inline-block;margin:2px 4px 2px 0;max-width:100%;overflow-wrap:anywhere">' +
+      escapeHtml(e.type) + (e.url ? ': ' + escapeHtml(e.url) : '') + '</span>').join('') : '<span class="hint">无</span>');
+  $('detailBody').innerHTML = html || '<span class="hint">无附加信息</span>';
+  $('detailDrawer').classList.add('on');
+}
+function closeDetail() { $('detailDrawer').classList.remove('on'); }
+
+/* ── ⚙设置（口令保护的 TERM_TOKEN 查看/应用）── */
+function openSettings() {
+  $('settingsDrawer').classList.add('on');
+}
+function closeSettings() { $('settingsDrawer').classList.remove('on'); }
+function settingsPasscode() { return localStorage.getItem('hub.passcode') || ''; }
+
+async function settingsViewToken() {
+  let pc = settingsPasscode();
+  if (!pc) {
+    pc = prompt('请输入设置口令（HUB_PASSCODE，向 hub 索要；仅存本浏览器）') || '';
+    if (!pc) return;
+  }
+  try {
+    const d = await api('/api/settings/term-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-HUB-PASSCODE': pc },
+      body: JSON.stringify({ passcode: pc })
+    });
+    localStorage.setItem('hub.passcode', pc);  // 验证通过才缓存
+    const box = $('settingsTokenBox');
+    box.style.display = 'block';
+    $('settingsTokenVal').dataset.token = d.term_token || '';
+    $('settingsTokenVal').textContent = d.set ? (d.term_token || '（空）') : '服务端未配置 TERM_TOKEN（终端鉴权走启动时自动生成的临时 token）';
+    $('settingsToggleShow').textContent = '隐藏';
+    if (!d.set) toast('服务端未显式配置 TERM_TOKEN', 'err');
+  } catch (e) {
+    localStorage.removeItem('hub.passcode');  // 口令错/失效则不缓存
+    $('settingsTokenBox').style.display = 'none';
+    toast(e.message, 'err');
+  }
+}
+
+function settingsToggleShow() {
+  const el = $('settingsTokenVal'), btn = $('settingsToggleShow');
+  if (el.textContent.indexOf('••') === 0) { el.textContent = el.dataset.token || ''; btn.textContent = '隐藏'; }
+  else { el.textContent = '••••••••••••••••••••'; btn.textContent = '显示'; }
+}
+
+function settingsCopyToken() {
+  const t = $('settingsTokenVal').dataset.token || '';
+  if (!t) return toast('无 token 可复制', 'err');
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+    .then(() => toast('已复制到剪贴板', 'ok'))
+    .catch(() => { prompt('请手动复制：', t); });
+}
+
+function settingsApplyToken() {
+  const t = $('settingsTokenVal').dataset.token || '';
+  if (!t) return toast('无 token 可应用', 'err');
+  localStorage.setItem('hub.term.token', t);
+  toast('已应用到终端（本浏览器后续自动携带）', 'ok');
+}
+
+function settingsClearPasscode() {
+  localStorage.removeItem('hub.passcode');
+  $('settingsTokenBox').style.display = 'none';
+  toast('已清除本机缓存口令，下次查看需重新输入', 'ok');
 }
 async function delAgent(id) {
   if (!confirm('删除自定义 Agent: ' + id + '？（仅注销视图，不停止其自身服务）')) return;
@@ -319,7 +473,7 @@ async function mgrSend() {
 
 /* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
-let chatPick = 'hub-self', chatMode = 'chat';
+let chatPick = localStorage.getItem('hub.chat.pick') || 'hub-self', chatMode = 'chat';
 function sessKey(id) { return 'hub.sess.' + id; }
 
 function entityById(id) { return AGENTS.find(a => a.id === id); }
@@ -331,8 +485,10 @@ function defaultModeOf(a) {
 }
 function gotoChat(id, mode) {
   chatPick = id;
+  localStorage.setItem('hub.chat.pick', id);  // T9：记忆上次实体
   const a = entityById(id);
-  chatMode = mode || defaultModeOf(a) || 'chat';
+  chatMode = mode || localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
+  localStorage.setItem('hub.chatmode.' + id, chatMode);
   go('chat');
   renderChatSide();
 }
@@ -354,7 +510,9 @@ function renderChatSide() {
 
 function pickChatEntity(id) {
   chatPick = id;
-  chatMode = defaultModeOf(entityById(id));
+  localStorage.setItem('hub.chat.pick', id);
+  // T9：模式记忆优先——每实体上次用过的形态，无记录才回落默认
+  chatMode = localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(entityById(id));
   renderChatSide();
 }
 
@@ -432,7 +590,11 @@ function renderModeBar(a) {
   bar.innerHTML = modes.map(([m, label]) =>
     '<button class="btn sm ' + (m === chatMode ? '' : 'ghost') + '" onclick="switchMode(\'' + m + '\')">' + label + '</button>').join('');
 }
-function switchMode(m) { chatMode = m; applyChatMode(); }
+function switchMode(m) {
+  chatMode = m;
+  localStorage.setItem('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
+  applyChatMode();
+}
 
 /* 嵌入存活探测：no-cors fetch 失败=目标端口无响应 → 覆盖层引导切换 */
 async function probeEmbed(url) {
@@ -482,7 +644,24 @@ function termDetach() {
   termSid = null; termSidAgent = null;
 }
 
-function wsUrl(path) { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path; }
+/* TERM_TOKEN 鉴权（后端强制校验）：首次用终端时 prompt 一次存 localStorage，之后 header+query 双带 */
+function termToken() {
+  let t = localStorage.getItem('hub.term.token');
+  if (!t) {
+    t = prompt('请输入终端鉴权 TERM_TOKEN（也可在右上角 ⚙设置 查看后一键应用）') || '';
+    if (t) localStorage.setItem('hub.term.token', t);
+  }
+  return t;
+}
+function termHeaders(extra) {
+  return Object.assign({ 'X-TERM-TOKEN': termToken() }, extra || {});
+}
+
+function wsUrl(path) {
+  const t = localStorage.getItem('hub.term.token');
+  const sep = path.includes('?') ? '&' : '?';
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path + (t ? sep + 'token=' + encodeURIComponent(t) : '');
+}
 
 function termConnect(sid, agent) {
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
@@ -504,7 +683,7 @@ function termConnect(sid, agent) {
 
 async function termNew() {
   try {
-    const d = await api('/api/term/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: chatPick }) });
+    const d = await api('/api/term/sessions', { method: 'POST', headers: termHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ agent_id: chatPick }) });
     toast('已拉起 ' + chatPick + ' 终端会话', 'ok');
     termConnect(d.session.id, chatPick);
     termRefreshList();
@@ -513,7 +692,7 @@ async function termNew() {
 
 async function termRefreshList() {
   try {
-    const d = await api('/api/term/sessions');
+    const d = await api('/api/term/sessions', { headers: termHeaders() });
     const live = (d.sessions || []).filter(s => s.alive);  // 只展示活会话，死记录不再滞留
     const el = $('termSessList');
     if (!el) return live;
@@ -534,7 +713,7 @@ async function termRefreshList() {
 
 function termAutoAttach() {
   // 只接本实体的活会话；没有就清屏给提示（修复：不再残留上一实体画面）
-  api('/api/term/sessions').then(d => {
+  api('/api/term/sessions', { headers: termHeaders() }).then(d => {
     const mine = (d.sessions || []).filter(s => s.agent_id === chatPick && s.alive);
     if (mine.length) { termConnect(mine[mine.length - 1].id, chatPick); return; }
     if (termSidAgent === chatPick && termSid) return; // 刚手动连过本实体
@@ -550,7 +729,7 @@ async function termKillOne(sid) {
   const chip = el && el.querySelector('.sess-item[data-sid="' + sid + '"]');
   if (chip) chip.remove();
   try {
-    await api('/api/term/sessions/' + sid, { method: 'DELETE' });
+    await api('/api/term/sessions/' + sid, { method: 'DELETE', headers: termHeaders() });
     toast('会话已销毁', 'ok');
     if (sid === termSid) termDetach();
     termRefreshList();
@@ -939,6 +1118,18 @@ $('chatSessList')?.addEventListener?.('change', async e => {
   localStorage.setItem(sessKey(chatPick), v);
   openChatSession();
 });
+// T7：删除当前会话（后端 DELETE /api/sessions/{id} 连同消息一并清理）
+async function chatSessDel() {
+  const sid = localStorage.getItem(sessKey(chatPick));
+  if (!sid) return toast('当前无会话', 'err');
+  if (!confirm('删除当前会话 ' + sid.slice(0, 8) + ' 及其全部消息？不可恢复。')) return;
+  try {
+    await api('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
+    localStorage.removeItem(sessKey(chatPick));
+    openChatSession();
+    toast('会话已删除', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+}
 
 /* applyChatMode 已内置：切换到 chat 模式时三联动刷新 */
 
@@ -966,6 +1157,7 @@ async function addMemory() {
   } catch (e) { toast(e.message, 'err'); }
 }
 async function delMemory(id) {
+  if (!confirm('删除这条记忆？')) return;
   try { await api('/api/memory/l1/' + id, { method: 'DELETE' }); loadMemories(); } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -1213,7 +1405,10 @@ async function probeServer() {
     $('mcProbe').textContent = JSON.stringify(d.tools, null, 1);
   } catch (e) { $('mcProbe').textContent = '探测失败: ' + e.message; }
 }
-async function delServer(id) { try { await api('/mcp/servers/' + id, { method: 'DELETE' }); loadMcp(); } catch (e) { toast(e.message, 'err'); } }
+async function delServer(id) {
+  if (!confirm('删除 MCP server: ' + id + '？（聚合工具列表将随之刷新）')) return;
+  try { await api('/mcp/servers/' + id, { method: 'DELETE' }); loadMcp(); } catch (e) { toast(e.message, 'err'); }
+}
 async function loadMcp() {
   try {
     const s = await api('/mcp/servers');
@@ -1237,6 +1432,41 @@ function pickTool(server, tool) {
   const el = document.getElementById('mt_' + server + '_' + tool);
   if (el) el.style.background = '#1d4ed844';
 }
+
+/* ── T3 MCP ACL 管理（契约见 src/mcpgw.py：POST {agent_id, tool_pattern, server_id?, allow}；GET {rules:[{id,agent_id,server_id,tool_pattern,allow}]}；DELETE /mcp/acl/{id}）── */
+async function loadAcl() {
+  const el = $('aclList');
+  if (!el) return;
+  try {
+    const d = await api('/mcp/acl');
+    el.innerHTML = (d.rules || []).map(r =>
+      '<div class="mem-item"><span class="tag ' + (r.allow ? 'fact' : 'constraint') + '">' + (r.allow ? 'allow' : 'deny') + '</span>' +
+      '<p><b>' + escapeHtml(r.agent_id) + '</b> · <code>' + escapeHtml(r.tool_pattern) + '</code>' +
+      (r.server_id ? ' · server=' + escapeHtml(r.server_id) : ' · 任意server') + '</p>' +
+      '<button class="btn sm danger" aria-label="删除规则 ' + r.id + '" onclick="delAcl(' + r.id + ')">×</button></div>').join('') ||
+      '<div class="hint">暂无规则——无规则 = 所有 agent 默认放行（首次接入零摩擦）</div>';
+  } catch (e) { el.innerHTML = '<span style="color:#fca5a5">' + escapeHtml(e.message) + '</span>'; }
+}
+async function addAcl() {
+  const body = {
+    agent_id: $('aclAgent').value.trim(),
+    tool_pattern: $('aclPattern').value.trim(),
+    allow: $('aclAllow').value === '1'
+  };
+  const sid = $('aclServer').value.trim();
+  if (sid) body.server_id = sid;  // 后端按 id 或 name 解析（mcpgw.add_acl）
+  if (!body.agent_id || !body.tool_pattern) return toast('agent_id 与工具模式必填', 'err');
+  try {
+    await api('/mcp/acl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    toast('ACL 规则已添加', 'ok');
+    $('aclAgent').value = $('aclPattern').value = $('aclServer').value = '';
+    loadAcl();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function delAcl(id) {
+  try { await api('/mcp/acl/' + id, { method: 'DELETE' }); toast('规则已删除', 'ok'); loadAcl(); }
+  catch (e) { toast(e.message, 'err'); }
+}
 async function callToolSel() {
   if (!mcpToolSel) return toast('先点击选择一个工具', 'err');
   let args = {};
@@ -1249,10 +1479,105 @@ async function callToolSel() {
   } catch (e) { $('mcCallOut').textContent = '失败: ' + e.message; }
 }
 
+/* ── T8 命令面板（⌘K/Ctrl+K）：搜实体直达对话；/路径 对 hub-self 发 list_dir ── */
+function openCmd() {
+  $('cmdMask').classList.add('on');
+  const i = $('cmdInput');
+  i.value = '';
+  renderCmdList('');
+  i.focus();
+}
+function closeCmd() { $('cmdMask').classList.remove('on'); }
+function renderCmdList(q) {
+  const box = $('cmdList');
+  if (q.startsWith('/')) {
+    box.innerHTML = '<div class="cmd-item" onclick="cmdListDir(' + JSON.stringify(q).replace(/"/g, '&quot;') + ')">' +
+      '<span>📂 对 hub-self 执行 list_dir</span><span class="hint">' + escapeHtml(q) + '</span></div>';
+    return;
+  }
+  const ql = q.toLowerCase();
+  const items = AGENTS.filter(a => !ql || a.id.toLowerCase().includes(ql) || (a.name || '').toLowerCase().includes(ql)).slice(0, 12);
+  box.innerHTML = items.map(a =>
+    '<div class="cmd-item" onclick="cmdGo(\'' + a.id + '\')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
+    '<div class="hint" style="padding:8px">无匹配实体</div>';
+}
+function cmdGo(id) { closeCmd(); gotoChat(id); }
+function cmdListDir(path) {
+  closeCmd();
+  gotoChat('hub-self', 'chat');  // 走已有对话通道，tools=true，不新造后端
+  const cb = $('chatToolsOn');
+  if (cb) cb.checked = true;
+  $('chatInput').value = 'list_dir ' + path;
+  chatSend();
+}
+
 /* ── 启动 ─────────────────────────────────────────── */
 
-document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => go(b.dataset.page));
+/* ── 侧栏：分组导航绑定 + 折叠记忆 + 状态徽章 ───────── */
+document.querySelectorAll('.sidebar button[data-page]').forEach(b => b.onclick = () => go(b.dataset.page));
+
+function initSidebar() {
+  const sb = document.getElementById('sidebar'), btn = document.getElementById('btnSideToggle');
+  if (!sb || !btn) return;
+  const apply = c => {
+    sb.classList.toggle('collapsed', c);
+    btn.textContent = c ? '»' : '« 收起';
+    localStorage.setItem('hub.sidebar', c ? '1' : '0');
+  };
+  apply(localStorage.getItem('hub.sidebar') === '1');
+  btn.onclick = () => apply(!sb.classList.contains('collapsed'));
+}
+
+function setBadge(page, n) {
+  const el = document.getElementById('badge-' + page);
+  if (el) el.textContent = (n > 0 ? String(n) : '');
+}
+/* 徽章只取现有接口的现成数据，不新增后端 */
+async function updateBadges() {
+  try {
+    const d = await (await fetch('/api/agents')).json();
+    const all = d.agents || [];
+    setBadge('classroom', all.filter(a => a.kind === 'agent').length);
+    setBadge('chat', all.length);
+  } catch (e) { /* 静默：徽章是增强，失败不影响主流程 */ }
+  try {
+    const d = await (await fetch('/mcp/servers')).json();
+    setBadge('mcp', (d.servers || []).length);
+  } catch (e) {}
+  try {
+    const d = await (await fetch('/api/jobs')).json();
+    setBadge('jobs', (d.jobs || []).filter(j => j.enabled).length);
+  } catch (e) {}
+}
+initSidebar();
+updateBadges();
+setInterval(updateBadges, 60000);
 $('regMask').addEventListener('click', ev => { if (ev.target === $('regMask')) closeRegister(); });
+// T8：chip 键盘可达（Enter/Space 等价点击）
+$('infraGrid').addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('chip')) {
+    e.preventDefault(); e.target.click();
+  }
+});
+// T8：命令面板输入/键盘
+$('cmdInput').addEventListener('input', e => renderCmdList(e.target.value.trim()));
+$('cmdInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const q = e.target.value.trim();
+    if (q.startsWith('/')) cmdListDir(q);
+    else { const first = $('cmdList').querySelector('.cmd-item'); if (first && !q) closeCmd(); else if (first) first.click(); }
+  } else if (e.key === 'Escape') closeCmd();
+});
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    $('cmdMask').classList.contains('on') ? closeCmd() : openCmd();
+  } else if (e.key === 'Escape') {
+    closeDetail();
+    closeSettings();
+  }
+});
 
 function tick() {
   const t = new Date().toLocaleString('zh-CN', { hour12: false });
@@ -1260,7 +1585,8 @@ function tick() {
   $('ftTime').textContent = t;
 }
 setInterval(tick, 1000); tick();
-setInterval(loadAgents, 8000);
+setInterval(loadAgents, 30000);  // T4：8s→30s（renderSeats 已增量更新，无需高频）
+pollHealth(); setInterval(pollHealth, 15000);  // T5：健康灯独立于 agent 列表轮询
 setInterval(() => {
   if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
   if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();
@@ -1268,3 +1594,4 @@ setInterval(() => {
   if (document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
+go(localStorage.getItem('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）

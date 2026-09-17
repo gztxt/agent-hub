@@ -7,9 +7,11 @@
 """
 import asyncio
 import errno
+import hmac
 import json
 import os
 import pty
+import secrets
 import shlex
 import signal
 import struct
@@ -19,7 +21,7 @@ import uuid
 import fcntl
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 import profiles
@@ -27,8 +29,19 @@ import profiles
 router = APIRouter()
 
 TERM_TOKEN = os.getenv("TERM_TOKEN", "")
+if not TERM_TOKEN:
+    # 兜底：未配置 token 时自动生成，避免"空 token=不鉴权"的裸奔状态
+    TERM_TOKEN = secrets.token_urlsafe(32)
+    print(f"[term] TERM_TOKEN 未配置，已自动生成随机 token（前4位={TERM_TOKEN[:4]}，len={len(TERM_TOKEN)}）")
 IDLE_TTL_S = int(os.getenv("TERM_IDLE_TTL", "2700"))
 MAX_SESSIONS = 8
+
+
+def _check_term_token(provided: str, source: str) -> None:
+    """缺 token 即拒：校验失败记一行拒绝原因（绝不记录 token 值）"""
+    if not provided or not hmac.compare_digest(provided, TERM_TOKEN):
+        print(f"[term] 拒绝：token 校验失败（{source}）")
+        raise HTTPException(status_code=401, detail="term token required or invalid")
 
 
 class Session:
@@ -126,7 +139,9 @@ class CreateIn(BaseModel):
 
 
 @router.post("/api/term/sessions")
-async def create_session(body: CreateIn):
+async def create_session(body: CreateIn, request: Request):
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "POST /api/term/sessions")
     prof = profiles.get_profile(body.agent_id)
     if not prof or not prof.get("terminal"):
         raise HTTPException(400, f"{body.agent_id} 无终端入口（仅画像白名单可拉起）")
@@ -202,8 +217,13 @@ def _attach_reader(sess: Session):
 
 @router.websocket("/ws/term/{sid}")
 async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
-    if TERM_TOKEN and token != TERM_TOKEN:
-        raise HTTPException(401, "bad token")
+    # 缺 token 即拒：query ?token= 与 header X-TERM-TOKEN 两种都接受
+    provided = token or ws.headers.get("x-term-token", "")
+    if not provided or not hmac.compare_digest(provided, TERM_TOKEN):
+        print("[term] 拒绝：ws 握手 token 校验失败（/ws/term）")
+        # WS 握手阶段不能用 HTTPException（Starlette 在 ws 上下文不可靠），显式关闭 4401=未授权
+        await ws.close(code=4401)
+        return
     sess = _sessions.get(sid)
     if not sess:
         await ws.close(code=4404)
