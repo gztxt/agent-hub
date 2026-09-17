@@ -28,7 +28,7 @@
             --st-running-bg: #0000000d; --st-installed-bg: #00000008; --st-error-bg: #0000000d;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans CJK SC', sans-serif; background: var(--bg); color: var(--text-1); min-height: 100vh; display: flex; flex-direction: column; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans CJK SC', sans-serif; background: var(--bg); color: var(--text-1); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         a { color: var(--accent-2); }
         button { cursor: pointer; font-family: inherit; }
         input, textarea, select { font-family: inherit; background: var(--bg); border: 1px solid var(--border); color: var(--text-1); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
@@ -50,7 +50,7 @@
         .hdot.r { background: var(--danger); }
 
         /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
-        .shell { display: flex; flex: 1; height: calc(100vh - 56px); overflow: hidden; flex-direction: column; }
+        .shell { display: flex; flex: 1; overflow: hidden; }
         .sidebar { flex: 0 0 244px; width: 244px; background: var(--bg); border-right: 1px solid var(--border);
                    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
                    position: relative; align-self: stretch; overflow-y: auto;
@@ -264,7 +264,7 @@
         #toast div.err { border-color: var(--danger-border); color: var(--danger-text); }
         #toast div.ok { border-color: var(--text-2); color: var(--text-1); }
 
-        .footer { text-align: center; padding: 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); flex: none; }
+        .footer { text-align: center; padding: 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
 
         .chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--bg); border-radius: 10px; padding: 8px 10px; min-width: 0; }
         .chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -648,7 +648,6 @@
             <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
         </section>
     </main>
-    <div class="footer">Agent Hub v{{ version }} · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     </div>
 
     <!-- 注册弹窗 -->
@@ -703,6 +702,7 @@
         </div>
     </div>
 
+    <div class="footer">Agent Hub v{{ version }} · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
