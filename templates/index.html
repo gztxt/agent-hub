@@ -134,7 +134,7 @@
 
         main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 0 16px; display: flex; flex-direction: column; overflow: hidden; }
         section.page { display: none; }
-        section.page.on { display: block; }
+        section.page.on { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
         .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
 
         /* ── 右侧操作区顶栏：面包屑 + 模式 tab（模式 tab 的唯一来源，聊天内嵌的旧栏已停用）── */
