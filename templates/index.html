@@ -28,7 +28,7 @@
             --st-running-bg: #0000000d; --st-installed-bg: #00000008; --st-error-bg: #0000000d;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans CJK SC', sans-serif; background: var(--bg); color: var(--text-1); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        body { font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text-1); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         a { color: var(--accent-2); }
         button { cursor: pointer; font-family: inherit; }
         input, textarea, select { font-family: inherit; background: var(--bg); border: 1px solid var(--border); color: var(--text-1); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
@@ -106,9 +106,6 @@
         .act-btn:hover { background: var(--btn); color: var(--text-1); }
         .start-btn { color: var(--success-text); }
         .start-btn:hover { background: var(--success); color: #fff; }
-        /* 排序按钮 */
-        .nav-sort { font-size: 10px; cursor: pointer; padding: 1px 4px; border-radius: 3px; color: var(--text-2); margin-left: 6px; }
-        .nav-sort:hover { background: var(--btn); color: var(--text-1); }
         /* 搜索结果计数 */
         .search-count { font-size: 11px; color: var(--text-2); margin-left: 6px; }
         /* 搜索高亮 */
@@ -116,7 +113,7 @@
         .nav-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
         .sidebar.collapsed .nav-search, .sidebar.collapsed .nav-acc-body { display: none; }
         .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after,
-        .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port, .sidebar.collapsed .nav-st, .sidebar.collapsed .nav-sort { display: none; }
+        .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port, .sidebar.collapsed .nav-st { display: none; }
         .sidebar.collapsed .nav-group-title { justify-content: center; padding: 0 0 4px; font-size: 10px; }
         .sidebar.collapsed button[data-page], .sidebar.collapsed .nav-acc-head, .sidebar.collapsed .nav-item {
           justify-content: center;

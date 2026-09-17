@@ -607,13 +607,14 @@ async function termNew() {
 async function termRefreshList() {
   try {
     const d = await api('/api/term/sessions', { headers: termHeaders() });
-    const live = (d.sessions || []).filter(s => s.alive);  // 只展示活会话，死记录不再滞留
+    // 只显示当前选中 agent 的会话，避免显示其他 agent 的终端
+    const live = (d.sessions || []).filter(s => s.alive && s.agent_id === chatPick);
     const el = $('termSessList');
     if (!el) return live;
     el.innerHTML = live.length
       ? live.map(s =>
           '<span class="sess-item" data-sid="' + s.id + '"' + (s.id === termSid ? ' style="border-color:var(--accent-2)"' : '') + '>' +
-          '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:var(--text-1)">' + escapeHtml(s.agent_id) + ':' + s.id.slice(0, 4) + '</a>' +
+          '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:var(--text-1)">' + escapeHtml(s.id.slice(0, 4)) + '</a>' +
           '<button class="btn sm danger" title="销毁此会话" onclick="termKillOne(\'' + s.id + '\')">×</button></span>').join('')
       : '<span class="hint" style="font-size:12px;line-height:26px">暂无活会话</span>';
     // 当前正看的会话已被服务端回收（进程退出/超时）→ 清绑并提示，避免对着幽灵 sid 重连
@@ -1448,17 +1449,6 @@ const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同'
 const navOpenStored = localStorage.getItem('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
-// 排序偏好：{ group: 'rank'|'name'|'port' }
-const NAV_SORT_STOR = localStorage.getItem('hub.nav.sort') ? JSON.parse(localStorage.getItem('hub.nav.sort')) : {};
-function getNavSort(group) { return NAV_SORT_STOR[group] || 'rank'; }
-function setNavSort(group, v) { NAV_SORT_STOR[group] = v; localStorage.setItem('hub.nav.sort', JSON.stringify(NAV_SORT_STOR)); }
-function navSortFn(a, b, group) {
-  const sort = getNavSort(group);
-  if (sort === 'name') return String(a.name || '').localeCompare(String(b.name || ''), 'zh');
-  if (sort === 'port') return (a.port || 0) - (b.port || 0);
-  return navRank(a) - navRank(b) || String(a.name || '').localeCompare(String(b.name || ''), 'zh');
-}
-
 /* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
 const NAV_RANK = { error: 0, running: 1, installed: 2, stopped: 3 };
 function navRank(a) { return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status]; }
@@ -1525,8 +1515,8 @@ function renderNav() {
   const all = AGENTS.filter(a => a.kind === 'agent');
   const infra = AGENTS.filter(a => a.kind !== 'agent');
   const lists = {
-    agents: q ? all.filter(a => navMatch(a, q)) : all.slice().sort((x, y) => navSortFn(x, y, 'agents')),
-    infra: q ? infra.filter(a => navMatch(a, q)) : infra.slice().sort((x, y) => navSortFn(x, y, 'infra')),
+    agents: q ? all.filter(a => navMatch(a, q)) : all.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
+    infra: q ? infra.filter(a => navMatch(a, q)) : infra.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
     system: q ? [] : SYS_PAGES,
   };
   // 搜索结果计数
@@ -1554,27 +1544,17 @@ function renderNav() {
       body = list.map(navItemHtml).join('');
     }
     if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
-    // 排序按钮
-    const sortBtn = g === 'agents' || g === 'infra' ? '<span class="nav-sort" onclick="event.stopPropagation();cycleSort(\'' + g + '\')" title="切换排序">' + (getNavSort(g) === 'rank' ? '▾序' : getNavSort(g) === 'name' ? 'A-Z' : '↕口') + '</span>' : '';
     return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
       '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
       '<span class="caret">' + (open ? '▾' : '▸') + '</span>' +
       '<span class="ico">' + NAV_ICONS[g] + '</span>' +
       '<span class="lbl">' + NAV_GROUPS[g] + '</span>' +
-      sortBtn +
       '<span class="badge">' + list.length + '</span></button>' +
       '<div class="nav-acc-body">' + body + '</div></div>';
   }).join('');
   // 搜索结果计数提示
   const countEl = $('navSearchCount');
   if (countEl) countEl.textContent = q ? ' 共 ' + totalMatch + ' 项' : '';
-}
-function cycleSort(group) {
-  const modes = ['rank', 'name', 'port'];
-  const cur = getNavSort(group);
-  const next = modes[(modes.indexOf(cur) + 1) % modes.length];
-  setNavSort(group, next);
-  renderNav();
 }
 function toggleGroup(g) {
   navOpen = (navOpen === g) ? '' : g;   // 单开：展开一个自动收起其他
