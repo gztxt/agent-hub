@@ -50,7 +50,7 @@
         .hdot.r { background: var(--danger); }
 
         /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
-        .shell { display: flex; flex: 1; min-height: 0; }
+        .shell { display: flex; flex: 1; min-height: calc(100vh - 56px - 36px); }
         .sidebar { flex: 0 0 244px; width: 244px; background: var(--bg); border-right: 1px solid var(--border);
                    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
                    position: sticky; top: 0; align-self: flex-start; max-height: 100vh; overflow-y: auto;
@@ -123,7 +123,7 @@
                        color: var(--muted); border-radius: 8px; padding: 6px; font-size: 12px; width: 100%; }
         .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
 
-        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 8px 16px; }
+        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 0 16px; }
         section.page { display: none; }
         section.page.on { display: block; }
         .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
