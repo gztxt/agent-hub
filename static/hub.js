@@ -236,17 +236,7 @@ async function registerAgent() {
   } catch (e) { toast(JSON.stringify(e.message), 'err'); }
 }
 
-/* ── Manager 指挥官 ───────────────────────────────── */
-
-function mgrSession() { return localStorage.getItem('hub.mgr.session') || ''; }
-// 首页与指挥官页共用同一个会话（localStorage hub.mgr.session），故清空时要两边一起复位
-function clearMgr() {
-  localStorage.removeItem('hub.mgr.session');
-  const m = $('mgrMsgs');
-  if (m) m.innerHTML = '<div class="hint" style="margin:auto">向指挥官下达指令</div>';
-  const h = $('homeMsgs');
-  if (h) h.innerHTML = '<div class="hint" style="margin:auto">可以直接问：现在哪些 Agent 在运行？</div>';
-}
+/* ── 智管对话（原指挥官功能合并）──────────────────────── */
 
 function renderSteps(steps) {
   const wrap = document.createElement('div');
@@ -345,27 +335,27 @@ function renderSummaryCard(s) {
   return card;
 }
 
-// 可指定输入框 / 消息容器：指挥官页用默认的（mgrInput/mgrMsgs），首页传自己的容器
-// 两者共用 hub.mgr.session，所以在哪个页面接着聊都一样
+// 可指定输入框 / 消息容器
 async function mgrSend(inputId, boxId) {
-  const input = $(inputId || 'mgrInput');
+  const input = $(inputId || 'homeInput');
   if (!input) return;
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
-  const box = $(boxId || 'mgrMsgs');
+  const box = $(boxId || 'homeMsgs');
   if (!box) return;
   const hintEl = box.querySelector('.hint');
-  if (hintEl) hintEl.remove();   // 清掉首屏占位提示
+  if (hintEl) hintEl.remove();
   const me = document.createElement('div');
   me.className = 'msg user'; me.textContent = msg;
   box.appendChild(me);
   const busy = document.createElement('div');
-  busy.className = 'msg assistant'; busy.textContent = '⟳ 指挥官思考中（含工具调用，可能较久）…';
+  busy.className = 'msg assistant'; busy.textContent = '⟳ 思考中（含工具调用，可能较久）…';
   box.appendChild(busy); box.scrollTop = box.scrollHeight;
   try {
     const body = { message: msg };
-    if (mgrSession()) body.session_id = mgrSession();
+    const sid = localStorage.getItem('hub.mgr.session');
+    if (sid) body.session_id = sid;
     const d = await api('/api/manager/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     busy.remove();
     if (d.session_id) localStorage.setItem('hub.mgr.session', d.session_id);
@@ -1453,7 +1443,7 @@ const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '�
 const SYS_PAGES = [['ports', '端口', '≡'], ['telemetry', '遥测', '◉'], ['memory', '记忆中心', '▤'],
                    ['mcp', '工具', '⚙'], ['jobs', '定时', '⟳'], ['tasks', '协同', '⇄']];
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '↗ 新窗口' };
-const PAGE_LABELS = { classroom: '总览', manager: '指挥官', chat: '统一对话', tasks: '协同', jobs: '定时',
+const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
 const navOpenStored = localStorage.getItem('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
@@ -1612,7 +1602,7 @@ function renderPageCrumb(page) {
   if (page === 'chat') return;   // 实体工作台由 renderModeBar 接管，别互相覆盖
   if (tabs) tabs.innerHTML = '';
   const label = escapeHtml(PAGE_LABELS[page] || page);
-  const top = (page === 'classroom' || page === 'manager') ? '' : '<span>系统</span><span class="sep">›</span>';
+  const top = page === 'classroom' ? '' : '<span>系统</span><span class="sep">›</span>';
   crumb.innerHTML = top + '<b>' + label + '</b>';
 }
 /* 模式 tab 点击：embed/term/chat 走既有 switchMode，open/detail 各自直行 */
