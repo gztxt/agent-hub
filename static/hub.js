@@ -501,20 +501,13 @@ function repairModeWire() {
   sync();
 }
 
-/* 模式切换栏 v0.7：上移到右侧操作区顶栏（仅模式 tab，面包屑已移除）
-   tab 严格按该实体的 entries 动态渲染——没有 embed 就不出现「嵌入」。 */
+/* 模式切换栏 v0.7：上移到右侧操作区顶栏（仅实体名，模式 tab 已移除） */
 function renderModeBar(a) {
   const bar = $('chatModeBar'), tabs = $('opTabs'), crumb = $('crumb');
   if (bar) bar.style.display = 'none';
   if (!a) { if (tabs) tabs.innerHTML = ''; if (crumb) crumb.innerHTML = ''; return; }
-  const es = a.entries || [];
-  const modes = ['embed', 'term', 'chat', 'open', 'detail']
-    .filter(t => es.some(e => e.type === t))
-    .map(t => [t, MODE_LABEL[t]]);
   if (crumb) crumb.innerHTML = '<b>' + escapeHtml(a.name) + '</b>';
-  if (!tabs) return;
-  tabs.innerHTML = modes.map(([m, l]) =>
-    '<button class="btn sm ' + (m === chatMode ? 'on' : 'ghost') + '" onclick="navMode(\'' + m + '\')">' + l + '</button>').join('');
+  if (tabs) tabs.innerHTML = '';  // 清空模式 tab
 }
 function switchMode(m) {
   chatMode = m;
