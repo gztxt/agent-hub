@@ -54,7 +54,7 @@ import term as term_mod
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 

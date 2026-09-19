@@ -610,9 +610,9 @@ function ensureTerm() {
     fontFamily: T('font', 'monospace'),
     cursorStyle: 'bar', cursorBlink: true, scrollback: 5000,
     theme: {
-      background: T('bg', '#fbfbfa'), foreground: T('fg', '#24272b'),
-      cursor: T('cursor', '#24272b'), cursorAccent: T('bg', '#fbfbfa'),
-      selectionBackground: T('sel', '#11111122'),
+      background: T('bg', '#fcfcfd'), foreground: T('fg', '#24272b'),
+      cursor: T('cursor', '#24272b'), cursorAccent: T('bg', '#fcfcfd'),
+      selectionBackground: T('sel', '#11111126'),
       black: T('black'), red: T('red'), green: T('green'), yellow: T('yellow'),
       blue: T('blue'), magenta: T('magenta'), cyan: T('cyan'), white: T('white'),
       brightBlack: T('bblack'), brightRed: T('bred'), brightGreen: T('bgreen'), brightYellow: T('byellow'),
@@ -1312,7 +1312,7 @@ async function openRun(runId) {
 
 // 色值必须是具体十六进制：下面 fill = 描边色 + '22' 透明度派生，拿到 "var(--x)" 会变成非法色值
 const TASK_COLORS = {
-  pending:  cssToken('--muted', '#8a8a8a'),
+  pending:  cssToken('--muted', '#6b6b6b'),
   running:  cssToken('--busy', '#2c5f8a'),
   success:  cssToken('--ok', '#2f7a4f'),
   failed:   cssToken('--danger', '#a3342c'),
@@ -1350,7 +1350,7 @@ function renderDag(tasks) {
   const pos = {};
   Object.entries(layers).forEach(([L, list]) => list.forEach((t, i) => { pos[t.task_id] = { x: 30 + L * GX, y: 20 + i * GY }; }));
   let svg = '<svg width="' + W + '" height="' + H + '" style="min-width:' + W + 'px">';
-  const DAG_LINE = cssToken('--muted', '#8a8a8a');
+  const DAG_LINE = cssToken('--muted', '#6b6b6b');
   const DAG_ST = n => cssNum(n, 13);
   svg += '<defs><marker id="arw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" fill="' + DAG_LINE + '"/></marker></defs>';
   tasks.forEach(t => (t.deps || []).forEach(dp => {
