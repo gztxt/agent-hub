@@ -577,15 +577,17 @@
 
     <div class="shell">
     <aside class="sidebar" id="sidebar" role="tablist" aria-label="功能导航">
-        <!-- 常驻项（用户 09-20：把「总览」搬进左侧菜单最顶部）。用 data-sys 不用 data-page：
-             侧栏事件委托本来就认 data-sys（点击即 go()，窄屏顺带收抽屉），而 data-page 会被刚删掉的
-             遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
-        <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
-                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
+        <!-- 搜索框置于最顶部（用户 09-20：搜索框应在总览上面）。收起态 .nav-search 是 display:none，
+             所以图标栏里第一项仍是「总览」，两态各自成立。 -->
         <div class="nav-search">
             <input id="navSearch" type="search" placeholder="搜索名称 / id / 端口…" aria-label="搜索实体" autocomplete="off">
             <span id="navSearchCount" class="search-count"></span>
         </div>
+        <!-- 常驻项（用户 09-20：把「总览」搬进左侧菜单）。用 data-sys 不用 data-page：
+             侧栏事件委托本来就认 data-sys（点击即 go()，窄屏顺带收抽屉），而 data-page 会被刚删掉的
+             遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
+        <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
+                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
         <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
         <div id="navTree"></div>
         <button class="side-item" id="btnSettings" aria-label="打开设置" onclick="openSettings()" title="设置：终端 token 查看与应用"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">设置</span></button>
@@ -916,6 +918,6 @@
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260920d"></script>
+    <script src="/static/hub.js?v=20260920e"></script>
 </body>
 </html>

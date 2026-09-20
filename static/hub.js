@@ -58,7 +58,7 @@ function escapeHtml(s) {
 function go(page) {
   curPage = page;
   document.querySelectorAll('.sidebar button[data-page], .sidebar .side-item[data-sys]').forEach(b => {
-    const on = b.dataset.page === page;
+    const on = (b.dataset.page || b.dataset.sys) === page;   // 常驻顶栏项用 data-sys，取值要看两个属性
     b.classList.toggle('on', on);
     if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false');
   });
