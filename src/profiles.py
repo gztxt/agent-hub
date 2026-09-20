@@ -1,7 +1,7 @@
 """实体画像注册表（P1：按本机实际运行情况判定，端口只作端点发现不作存在性判据）
 
 kind 语义：
-  agent    编码/对话智能体（claude/pi/jcode/hermes/qwenpaw/cloudcli/hub-self）
+  agent    编码/对话智能体（claude/pi/jcode/hermes/qwenpaw/cloudcli）
   gateway  模型/消息网关（CCR/FCC/ccpocket）——非 Agent，无对话按钮
   service  系统服务（xray/proxy-panel/claude-mem/ai_manager/gotty...）——仅快捷方式
   memory   记忆后端（tdai）
@@ -111,11 +111,6 @@ PROFILES: List[dict] = [
      "cli": None, "port": 8088, "ui": "http://127.0.0.1:8088",
      "terminal": None, "chat": None,
      "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088"},
-    {"id": "hub-self", "name": "智管对话", "kind": "agent",
-     "detect": {"always_running": True},
-     "cli": None, "port": 3102, "ui": None,
-     "terminal": None, "chat": {"adapter": "hub-self"},
-     "desc": "Agent Hub 自身对话框（CCR qwen3.8-flash）——保留现有形态"},
 
     # ── Gateways（非 Agent，仅快捷方式）──────────────────────
     {"id": "ccr", "name": "CCR Gateway", "kind": "gateway",
@@ -128,14 +123,6 @@ PROFILES: List[dict] = [
      "cli": None, "port": 8082, "ui": None,
      "panel": "http://127.0.0.1:18083", "panel_auth": "basic",
      "desc": "free-claude-code 模型网关 :8082（Admin 面板走 :18083 中继，Basic 鉴权→仅新窗口）"},
-    {"id": "opensquilla", "name": "OpenSquilla", "kind": "agent",
-     "detect": {"proc": [r"opensquilla gateway"], "systemd": ["opensquilla-gateway"]},
-     "cli": None, "port": 18791,
-     "ui": "http://127.0.0.1:18791/control/", "frame_deny": True,
-     "terminal": {"cmd": "opensquilla chat", "cwd": "/home/gztxt"},
-     "chat": None,
-     "desc": "OpenSquilla 助理本体（本 Agent）：网关 :18791 + Control 控制台"
-             "（X-Frame-Options: DENY→仅新窗口）；终端=opensquilla chat 交互会话"},
     {"id": "ccpocket", "name": "CCPocket Bridge", "kind": "gateway",
      "detect": {"systemd": ["ccpocket-bridge"]},
      "cli": None, "port": 8765, "ui": None, "panel": None,

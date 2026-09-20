@@ -1,0 +1,33 @@
+{
+  "name": "Agent Hub · 本机多 Agent 统一管理中心",
+  "short_name": "AgentHub",
+  "description": "本机多 Agent 统一管理中心：会话、终端、服务纳管与任务面板。",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ededed",
+  "theme_color": "#ededed",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "default"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "default"
+    },
+    {
+      "src": "/static/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

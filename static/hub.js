@@ -1,5 +1,5 @@
 /* Agent Hub v0.3.0 教室视图 — 复刻 Agent_Manager(Dashboard/Manager/Memory/Ports) 交互语义
-   v0.3 chat: 动态模型选择器 + 工作目录 + 会话管理 + hub-self 工具环 */
+   v0.10 chat: 动态模型选择器 + 工作目录 + 会话管理（服务 claude/jcode）*/
 'use strict';
 
 /* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────
@@ -57,7 +57,7 @@ function escapeHtml(s) {
 
 function go(page) {
   curPage = page;
-  document.querySelectorAll('.sidebar button[data-page]').forEach(b => {
+  document.querySelectorAll('.sidebar button[data-page], .sidebar .side-item[data-sys]').forEach(b => {
     const on = b.dataset.page === page;
     b.classList.toggle('on', on);
     if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -260,150 +260,9 @@ async function registerAgent() {
   } catch (e) { toast(JSON.stringify(e.message), 'err'); }
 }
 
-/* ── 智管对话（原指挥官功能合并）──────────────────────── */
-
-function renderSteps(steps) {
-  const wrap = document.createElement('div');
-  wrap.className = 'steps';
-  for (const s of (steps || [])) {
-    const el = document.createElement('div');
-    el.className = 'step ' + s.kind;
-    if (s.kind === 'thought') el.textContent = '◇ ' + s.content;
-    else if (s.kind === 'toolcall') el.textContent = '工具 ' + (s.tool || '') + ' ' + JSON.stringify(s.tool_input || {});
-    else if (s.kind === 'toolresult') {
-      const det = document.createElement('details');
-      const sum = document.createElement('summary');
-      sum.textContent = (s.tool || '') + ' 结果';
-      // v0.5.3 验证错误高亮：tool_result JSON 里 error_type=='validation' 时单独醒目渲染
-      try {
-        const j = JSON.parse(s.content);
-        if (j && j.error_type === 'validation') {
-          const v = document.createElement('div');
-          v.style.cssText = 'color:var(--danger-text);font-weight:600;margin:4px 0;padding:4px 8px;background:var(--danger-bg);border-radius:4px;';
-          const gotStr = (j.got !== null && j.got !== undefined && j.got !== '') ? `，实际 ${esc(j.got)}` : '';
-          v.textContent = `❌ 参数错误: 字段 ${esc(j.field||'?')} 期望 ${esc(j.expected||'?')}${gotStr}（tool=${esc(j.tool||'?')}）`;
-          det.appendChild(v);
-        } else if (j && (j.error_type === 'not_found' || j.error_type === 'rate_limit' || j.error_type === 'acl' || j.error_type === 'timeout')) {
-          const v = document.createElement('div');
-          v.style.cssText = 'color:var(--warn);font-weight:600;margin:4px 0;padding:4px 8px;background:var(--warn-bg);border-radius:4px;';
-          v.textContent = `⚠ ${esc(j.error_type)}: ${esc(j.error || '')}`;
-          det.appendChild(v);
-        }
-      } catch (e) {}
-      const pre = document.createElement('pre');
-      pre.textContent = s.content;
-      det.appendChild(sum); det.appendChild(pre);
-      let act = null;
-      try { const j = JSON.parse(s.content); if (j && j.action === 'open_url' && j.url) act = j.url; } catch (e) {}
-      if (act) {
-        const b = document.createElement('button');
-        b.className = 'btn sm'; b.style.marginTop = '6px'; b.textContent = '打开界面';
-        b.onclick = () => window.open(lanUrl(act), '_blank');
-        det.appendChild(b);
-      }
-      el.appendChild(det);
-    } else el.textContent = s.content;
-    wrap.appendChild(el);
-  }
-  return wrap;
-}
-
-// v0.5.2.3 表格化 + 紧凑化（用户反馈：段落太松散，要紧凑）
-// 设计：两段表格（一段元信息、一段产物）+ 一行下一步/未完成
-function renderSummaryCard(s) {
-  if (!s) return null;
-  const card = document.createElement('div');
-  card.className = 'msg summary';
-  // 状态色
-  let color = 'var(--text-1)';
-  if ((s.status || '').includes('部分')) color = 'var(--warn)';
-  if ((s.status || '').includes('失败')) color = 'var(--danger-text)';
-  const products = s.products || [];
-  const actions = s.actions || [];
-  const commits = s.commits || [];
-  const nextSteps = s.next_steps || [];
-  const unfinished = s.unfinished || [];
-  // 表 1：元信息（5 行固定）
-  const metaRows = [
-    ['状态', `<b style="color:${color}">${escapeHtml(s.status || '完成')}</b>`],
-    ['耗时', escapeHtml(s.duration_str || '?')],
-    ['类型', escapeHtml(s.task_kind || '?')],
-    ['模型', `<code>${escapeHtml(s.model || '?')}</code>`],
-    ['会话', `<code>${escapeHtml((s.session_id||'').slice(0,12))}</code>`],
-  ];
-  const metaTable = `<table class="sum-tbl"><tbody>${metaRows.map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</tbody></table>`;
-  // 表 2：产物（路径 + commit + 动作）
-  const productRows = [];
-  products.forEach(p => productRows.push(['文件', `<code>${escapeHtml(p)}</code>`]));
-  actions.forEach(a => productRows.push(['动作', escapeHtml(a)]));
-  commits.forEach(c => {
-    if (c.startsWith('commit ')) productRows.push(['提交', c]);
-    else productRows.push(['产物', escapeHtml(c)]);
-  });
-  const prodTable = productRows.length
-    ? `<table class="sum-tbl"><tbody>${productRows.slice(0, 8).map(([k,v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</tbody></table>`
-    : '';
-  // 紧凑下一步/未完成
-  const tail = [];
-  if (nextSteps.length) {
-    tail.push(`<b>下一步:</b> ${nextSteps.map(n => escapeHtml(n)).join(' → ')}`);
-  }
-  if (unfinished.length) {
-    tail.push(`<b style="color:var(--danger-text)">未完成:</b> ${unfinished.map(u => escapeHtml(u)).join('; ')}`);
-  }
-  card.innerHTML = `
-    <div style="margin:0 0 6px 0;padding:0;line-height:1.4"><span class="sum-head" style="color:${color}">任务总结</span><span class="sum-meta" style="margin-left:8px">会话 <code>${escapeHtml((s.session_id||'').slice(0,12))}</code></span></div>
-    <div style="margin:0;padding:0;line-height:1.5">${metaTable}${prodTable}</div>
-    ${tail.length ? `<div class="sum-tail">${tail.join(' · ')}</div>` : ''}
-  `;
-  return card;
-}
-
-// 可指定输入框 / 消息容器
-async function mgrSend(inputId, boxId) {
-  const input = $(inputId || 'homeInput');
-  if (!input) return;
-  const msg = input.value.trim();
-  if (!msg) return;
-  input.value = '';
-  const box = $(boxId || 'homeMsgs');
-  if (!box) return;
-  const hintEl = box.querySelector('.hint');
-  if (hintEl) hintEl.remove();
-  const me = document.createElement('div');
-  me.className = 'msg user'; me.textContent = msg;
-  box.appendChild(me);
-  const busy = document.createElement('div');
-  busy.className = 'msg assistant'; busy.textContent = '思考中（含工具调用，可能较久）…';
-  box.appendChild(busy); box.scrollTop = box.scrollHeight;
-  try {
-    const body = { message: msg };
-    const sid = localStorage.getItem('hub.mgr.session');
-    if (sid) body.session_id = sid;
-    const d = await api('/api/manager/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    busy.remove();
-    if (d.session_id) localStorage.setItem('hub.mgr.session', d.session_id);
-    if (d.steps) box.appendChild(renderSteps(d.steps.filter(s => s.kind !== 'answer')));
-    const ans = document.createElement('div');
-    ans.className = 'msg ' + (d.answer ? 'assistant' : 'err');
-    ans.textContent = d.answer || ('[错误] ' + (d.error || '未知') + (d.hint ? '\n提示: ' + d.hint : ''));
-    box.appendChild(ans);
-  } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
-  box.scrollTop = box.scrollHeight;
-}
-
-/* 首页「智管对话」：复用 mgrSend 全套（同一会话 / 同一套 steps 渲染），只换目标容器 */
-function homeSend() { mgrSend('homeInput', 'homeMsgs'); }
-function homeAsk(q) {
-  const i = $('homeInput');
-  if (!i) return;
-  i.value = q;
-  homeSend();
-}
-
 /* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
-let chatPick = localStorage.getItem('hub.chat.pick') || 'hub-self';
+let chatPick = localStorage.getItem('hub.chat.pick') || 'claude';
 // 刷新后回落「该实体上次所用形态」（与 pickChatEntity/gotoChat 同一套记忆键），否则会退成对话面板
 let chatMode = localStorage.getItem('hub.chatmode.' + chatPick) || 'chat';
 function sessKey(id) { return 'hub.sess.' + id; }
@@ -451,6 +310,8 @@ function pickChatEntity(id) {
 function applyChatMode() {
   const a = entityById(chatPick);
   renderModeBar(a);
+  const en = $('chatEntName');
+  if (en) en.textContent = a ? a.name : '';
   if (!a) return;   // 实体已被删除（localStorage 里留着旧 pick）：保持默认面板，不再往下猜模式
   // 记忆的模式对该实体已失效（entry 被删/改）：回落到默认形态，否则三个 pane 会全 off → 右侧空白
   if (!(a.entries || []).some(e => e.type === chatMode)) {
@@ -464,64 +325,38 @@ function applyChatMode() {
     const e = (a.entries || []).find(x => x.type === 'embed');
     const url = e ? lanUrl(e.url) : '';
     $('embedTitle').textContent = a.name + ' · 原生界面';
-    $('embedUrlHint').textContent = url;
+    // 地址行：#embedUrlHint 现为 <button><span>URL</span><svg/></button>，直接写 textContent 会把图标抹掉
+    const hintEl = $('embedUrlHint');
+    const hintTxt = hintEl ? hintEl.querySelector('span') : null;
+    if (hintTxt) hintTxt.textContent = url; else if (hintEl) hintEl.textContent = url;
+    const ps = $('embedProbeState');
+    if (ps) { ps.textContent = '探测中…'; ps.className = 'ebar-state'; }
     const f = $('embedFrame');
     if (f.dataset.src !== url) { f.src = url; f.dataset.src = url; }
     probeEmbed(url);
   } else if (chatMode === 'term') {
-    $('termTitle').textContent = (a.name || chatPick) + ' · 终端会话';
+    $('termTitle').textContent = (a.name || chatPick);   // 用户 09-20：行首只留实体名，不加“· 终端会话”后缀，给芯片腾位
     ensureTerm();
     // ★ 修复核心：切换实体时解绑异主会话，画面不再残留上一个 Agent
     if (termSid && termSidAgent && termSidAgent !== chatPick) termDetach();
     termRefreshList().then(() => termAutoAttach());
   } else {
     openChatSession();
-    // v0.3 对话工具栏三联动：模型/工作目录/会话列表 + hub-self 工具开关显隐
+    // 对话工具栏三联动：模型 / 工作目录 / 会话列表
     loadChatModels(false);
     chatCwdLoad();
     chatSessLoad();
-    const tr = $('chatToolsRow');
-    if (tr) tr.style.display = chatPick === 'hub-self' ? 'inline-flex' : 'none';
-    // v0.4 修复模式：仅 hub-self + 工具开时显示，默认从 localStorage 恢复
-    const rr = $('chatRepairRow');
-    if (rr) {
-      const showRepair = chatPick === 'hub-self' && $('chatToolsOn')?.checked;
-      rr.style.display = showRepair ? 'inline-flex' : 'none';
-      const cb = $('chatRepairOn');
-      if (cb) cb.checked = localStorage.getItem('hub.repair.' + chatPick) === '1';
-    }
-    repairModeWire();
   }
 }
-// v0.4 修复模式开关联动：改主色、落 localStorage；chatToolsOn 变化时同步显隐
-function repairModeWire() {
-  const toolsCb = $('chatToolsOn');
-  const repairCb = $('chatRepairOn');
-  const repairRow = $('chatRepairRow');
-  if (!toolsCb || !repairCb || !repairRow) return;
-  if (repairCb.dataset.wired === '1') return; // 幂等
-  repairCb.dataset.wired = '1';
-  const sync = () => {
-    const on = toolsCb.checked;
-    repairRow.style.display = (chatPick === 'hub-self' && on) ? 'inline-flex' : 'none';
-    repairRow.style.color = repairCb.checked ? 'var(--danger-text)' : '';
-  };
-  toolsCb.addEventListener('change', sync);
-  repairCb.addEventListener('change', () => {
-    localStorage.setItem('hub.repair.' + chatPick, repairCb.checked ? '1' : '0');
-    sync();
-    if (repairCb.checked) toast('⚠ 修复模式开启——LLM 可见白名单 restart / 配置写 / 回滚工具；改完请关闭', 'warn');
-  });
-  sync();
-}
-
 /* 模式切换栏 v0.7：右侧顶栏仅显示实体名，无分割线 */
 function renderModeBar(a) {
   const bar = $('chatModeBar'), tabs = $('opTabs'), crumb = $('crumb');
   if (bar) bar.style.display = 'none';
-  if (!a) { if (tabs) tabs.innerHTML = ''; if (crumb) crumb.innerHTML = ''; return; }
-  // 实体页不显示名称行，保持顶部干净
+  // 聊天页顶栏本来就是空的（模式 tab 已停用，实体名走 #chatEntName）：
+  // 旧代码只在 !a 时清空，导致从其他页切进来时面包屑残留上一页标题（实测残留「总览」）。
   if (tabs) tabs.innerHTML = '';
+  if (crumb) crumb.innerHTML = '';
+  syncOpBar();
 }
 function switchMode(m) {
   chatMode = m;
@@ -532,6 +367,8 @@ function switchMode(m) {
 /* 嵌入存活探测：no-cors fetch 失败=目标端口无响应 → 覆盖层引导切换 */
 async function probeEmbed(url) {
   const pane = $('embedPane');
+  const st = $('embedProbeState');
+  const setState = (txt, cls) => { if (st) { st.textContent = txt; st.className = 'ebar-state ' + cls; } };
   let dead = pane.querySelector('.embed-dead');
   if (dead) dead.remove();
   try {
@@ -539,7 +376,9 @@ async function probeEmbed(url) {
       fetch(url, { mode: 'no-cors', cache: 'no-store' }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
     ]);
+    setState('可达', 'ok');
   } catch (e) {
+    setState('未响应', 'dead');
     dead = document.createElement('div');
     dead.className = 'embed-dead';
     dead.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:var(--mask);z-index:5';
@@ -554,6 +393,28 @@ async function probeEmbed(url) {
 
 async function embedRefresh() { const f = $('embedFrame'); f.src = f.src; probeEmbed(f.dataset.src || ''); }
 function embedNewTab() { const a = entityById(chatPick); const e = (a.entries || []).find(x => x.type === 'embed'); if (e) window.open(lanUrl(e.url), '_blank'); }
+/* 地址行点击复制（非安全上下文无 navigator.clipboard，降级用 execCommand）*/
+function embedCopyUrl() {
+  const raw = $('embedFrame').dataset.src || $('embedUrlHint').textContent || '';
+  const uu = raw.trim();
+  if (!uu) return;
+  const ok = () => toast('已复制：' + uu);
+  const fb = () => {
+    const ta = document.createElement('textarea');
+    ta.value = uu; ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    document.body.appendChild(ta); ta.select();
+    let done = false;
+    try { done = document.execCommand('copy'); } catch (err) { done = false; }
+    ta.remove();
+    if (done) { ok(); return; }
+    // 降级失败就不假装成功：把地址显式选中，提示手动复制
+    const el = $('embedUrlHint');
+    try { const rg = document.createRange(); rg.selectNodeContents(el);
+          const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg); } catch (err) {}
+    toast('未能自动复制，地址已选中，请手动复制', 'err');
+  };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(uu).then(ok, fb); else fb();
+}
 
 /* ── pty 终端（xterm.js + WebSocket）── 修复：会话按实体隔离，切换即换绑 ── */
 
@@ -667,6 +528,10 @@ function termConnect(sid, agent) {
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   termSid = sid;
   termSidAgent = agent || termSidAgent;
+  /* 行1 芯片的「当前」标记跟着走：点芯片回看另一路时 termConnect 不重绘列表，
+     不手动改 class 的话 .cur 会停在旧芯片上（实测缺陷：点 first 后 cur 仍在 second）。 */
+  const row = $('termSessList');
+  if (row) row.querySelectorAll('.sess-item').forEach(x => x.classList.toggle('cur', x.dataset.sid === sid));
   termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
   term.clear();
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
@@ -690,7 +555,7 @@ function termConnect(sid, agent) {
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
     const gone = ev.code === 4404 || ev.code === 4410;  // 已退出/不存在 → 明确提示并刷新列表
-    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在，列表已刷新——可点「新会话」]' : '[连接断开——点「会话」重连或新建]') + '\x1b[0m');
+    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在——点行1 芯片重连，或按「新会话」]' : '[连接断开——点行1 芯片重连或新建]') + '\x1b[0m');
     if (gone) { termDetach(); termRefreshList(); }
   };
   termWs = ws;
@@ -701,8 +566,21 @@ async function termNew() {
     const d = await api('/api/term/sessions', { method: 'POST', headers: termHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ agent_id: chatPick }) });
     toast('已拉起 ' + chatPick + ' 终端会话', 'ok');
     termConnect(d.session.id, chatPick);
-    termRefreshList();
+    // 即时可见：不等服务端回写，先把新芯片本地插进去（termConnect 已设 termSid，所以自带 .cur）
+    const el = $('termSessList');
+    if (el && !el.querySelector('.sess-item[data-sid="' + d.session.id + '"]'))
+      el.insertAdjacentHTML('beforeend', termChipHtml(Object.assign({ alive: true }, d.session)));
+    termRefreshList();   // 再拿服务端清单覆写，DOM 不骗人
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* 芯片模板：行1 内联会话项。本体 = 回看，.sess-x = 只销毁这一个。
+   新会话走 termNew() 先本地插一个（即时可见），termRefreshList() 再拿服务端清单覆写。 */
+function termChipHtml(s) {
+  const sid4 = escapeHtml(String(s.id).slice(0, 4));
+  return '<span class="sess-item' + (s.id === termSid ? ' cur' : '') + '" data-sid="' + s.id + '">' +
+         '<a href="javascript:void(0)" title="回看会话 ' + sid4 + '" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')">' + sid4 + '</a>' +
+         '<button class="sess-x" title="关闭此会话" aria-label="关闭会话 ' + sid4 + '" onclick="termKillOne(\'' + s.id + '\')">' + ico('x', 'xs') + '</button></span>';
 }
 
 async function termRefreshList() {
@@ -712,12 +590,8 @@ async function termRefreshList() {
     const live = (d.sessions || []).filter(s => s.alive && s.agent_id === chatPick);
     const el = $('termSessList');
     if (!el) return live;
-    el.innerHTML = live.length
-      ? live.map(s =>
-          '<span class="sess-item" data-sid="' + s.id + '"' + (s.id === termSid ? ' style="border-color:var(--accent-2)"' : '') + '>' +
-          '<a href="javascript:void(0)" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')" style="color:var(--text-1)">' + escapeHtml(s.id.slice(0, 4)) + '</a>' +
-          '<button class="btn sm danger" title="销毁此会话" onclick="termKillOne(\'' + s.id + '\')">' + ico('x') + '</button></span>').join('')
-      : '<span class="hint" style="line-height:26px">暂无活会话</span>';
+    // 空清单就什么都不画（用户 09-20：拿掉「暂无活会话」占位字）
+    el.innerHTML = live.map(termChipHtml).join('');
     // 当前正看的会话已被服务端回收（进程退出/超时）→ 清绑并提示，避免对着幽灵 sid 重连
     if (termSid && !live.some(s => s.id === termSid)) {
       termDetach();
@@ -744,7 +618,7 @@ function termAutoAttach() {
   });
 }
 
-async function termKill() { if (termSid) await termKillOne(termSid); }
+/* termKill()（「销毁当前」整块按钮）已随 v0.10.1 外框统一拿掉；销毁只保留芯片上的 × = termKillOne。 */
 async function termKillOne(sid) {
   // 乐观移除：先摘 DOM 芯片，用户即时看到"删掉了"，再与后端对账
   const el = $('termSessList');
@@ -778,42 +652,9 @@ async function openChatSession() {
 }
 
 function renderChatMsg(m) {
-  // v0.5.2 任务总结消息：role='summary' 走独立卡片（不回放成普通 assistant 文字）
-  if (m.role === 'summary') {
-    // 后端 summary.content 已是结构化 markdown（**做了什么** / **下一步** / 元信息行）
-    // 这里做最小化渲染：转 <br/> + 把 **加粗** 转 <b>，不去碰其他字符
-    const card = document.createElement('div');
-    card.className = 'msg summary';
-    let color = 'var(--text-1)';
-    const text = m.content || '';
-    if (text.includes('部分')) color = 'var(--warn)';
-    if (text.includes('失败')) color = 'var(--danger-text)';
-    // 极简 markdown → html
-    let html = escapeHtml(text)
-      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\n/g, '<br/>');
-    card.innerHTML = `<div class="sum-head" style="color:${color}">${html.split('<br/>')[0]}</div><div class="sum-body">${html.split('<br/>').slice(1).join('<br/>')}</div>`;
-    return card;
-  }
   const el = document.createElement('div');
   el.className = 'msg ' + (m.role === 'user' ? 'user' : m.role === 'error' ? 'err' : 'assistant');
   el.textContent = m.content || '';
-  // hub-self 工具环：meta.steps 内嵌时一并展示（折叠的 step 流）
-  if (m.meta) {
-    try {
-      const meta = JSON.parse(m.meta);
-      if (meta && Array.isArray(meta.steps) && meta.steps.length) {
-        const det = document.createElement('details');
-        det.style.cssText = 'margin-top:6px;font-size:var(--fs-sm);color:var(--text-2)';
-        const sum = document.createElement('summary');
-        sum.textContent = '工具调用 (' + meta.steps.filter(s => s.kind === 'toolcall').length + ')';
-        det.appendChild(sum);
-        det.appendChild(renderSteps(meta.steps.filter(s => s.kind !== 'answer')));
-        el.appendChild(det);
-      }
-    } catch (e) { /* ignore */ }
-  }
   return el;
 }
 
@@ -821,8 +662,6 @@ async function chatSend() {
   const input = $('chatInput');
   const model = $('chatModel')?.value || '';
   const cwd = $('chatCwd')?.value || '';
-  const tools = chatPick === 'hub-self' && $('chatToolsOn')?.checked;
-  const repair = chatPick === 'hub-self' && $('chatRepairOn')?.checked;
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
@@ -836,13 +675,7 @@ async function chatSend() {
   busy.className = 'msg assistant'; busy.textContent = '回复中…';
   box.appendChild(busy);
   const body = { message: msg, session_id: sid, model: model, cwd: cwd || null };
-  if (tools) body.tools = true;
-  if (repair) body.repair_mode = true;
-  // v0.5 流式：hub-self 走 /chat/stream SSE 实时显示思考/工具/答案（修"假死"）
-  if (chatPick === 'hub-self') {
-    return chatSendStream(busy, box, body, sid);
-  }
-  // 其他 Agent：仍走老 /chat
+  // 统一走 /api/agents/{id}/chat
   try {
     const d = await api('/api/agents/' + encodeURIComponent(chatPick) + '/chat',
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -851,165 +684,8 @@ async function chatSend() {
     if (d.model) txt += '\n· model: ' + d.model;
     if (d.usage) txt += '\n· tokens: in ' + (d.usage.prompt_tokens || d.usage.input_tokens || '-') + ' / out ' + (d.usage.completion_tokens || d.usage.output_tokens || '-');
     busy.textContent = txt;
-    // hub-self 工具环：step 流展示（折叠 details 在 busy 下方）
-    if (Array.isArray(d.steps) && d.steps.length) {
-      const det = document.createElement('details');
-      det.style.cssText = 'margin-top:6px;font-size:var(--fs-sm);color:var(--text-2)';
-      det.open = true;
-      const sum = document.createElement('summary');
-      sum.textContent = '工具调用 (' + d.steps.filter(s => s.kind === 'toolcall').length + ' 步)';
-      det.appendChild(sum);
-      det.appendChild(renderSteps(d.steps.filter(s => s.kind !== 'answer')));
-      busy.appendChild(det);
-    }
     chatSessLoad();  // 刷新会话列表（title 等信息更新）
   } catch (e) { busy.className = 'msg err'; busy.textContent = '[错误] ' + e.message; }
-  box.scrollTop = box.scrollHeight;
-}
-
-// v0.5 SSE 流式版本：SSE 拿到 step 事件就 append 到 busy 内，实时渲染思考/工具/答案
-function chatSendStream(busy, box, body, sid) {
-  // 一次性注入流式样式
-  if (!document.getElementById('stream-css')) {
-    const s = document.createElement('style');
-    s.id = 'stream-css';
-    s.textContent = `
-.stream-status { font-size:var(--fs-sm); color:var(--text-2); padding:4px 0; font-family:var(--font-mono); }
-.stream-steps { margin-top:6px; font-size:var(--fs-sm); }
-.stream-step { padding:3px 0; border-left:2px solid var(--line); padding-left:8px; margin:2px 0; font-family:var(--font-mono); word-break:break-all; }
-.stream-step.thought { border-left-color:var(--muted); color:var(--muted); font-style:italic; }
-.stream-step.toolcall { border-left-color:var(--text-2); color:var(--text-1); }
-.stream-step.toolresult { border-left-color:var(--text-2); color:var(--text-2); }
-.stream-step.answer { border-left-color:var(--text-1); color:var(--text-1); border-left-width:3px; font-weight:500; }
-.stream-step .badge { display:inline-block; width:1.5em; }
-.msg.summary { background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin:4px 0; font-size:var(--fs-sm); color:var(--text-1); line-height:var(--lh-base); }
-.msg.summary .sum-head { font-size:var(--fs-base); font-weight:600; display:inline-block; margin:0; padding:0 8px 0 0; border-right:1px solid var(--border); }
-.msg.summary .sum-meta { display:inline-block; color:var(--text-2); font-size:var(--fs-sm); margin:0; padding:0; }
-.msg.summary .sum-meta b { color:var(--text-1); font-weight:500; }
-.msg.summary .sum-meta code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:var(--fs-xs); }
-.msg.summary .sum-tbl { display:table; border-collapse:collapse; margin:0 !important; padding:0; font-size:var(--fs-sm); line-height:var(--lh-base); table-layout:fixed; width:auto; min-width:240px; max-width:100%; border-spacing:0; }
-.msg.summary .sum-tbl + .sum-tbl { margin:2px 0 0 0 !important; }
-.msg.summary .sum-tbl th { color:var(--text-2); font-weight:400; padding:0 6px 0 0; text-align:left; width:48px; min-width:48px; white-space:nowrap; vertical-align:top; }
-.msg.summary .sum-tbl td { padding:0 0 0 6px; margin:0; color:var(--text-1); border-left:1px dotted var(--border); overflow-wrap:anywhere; word-break:break-word; vertical-align:top; }
-.msg.summary .sum-tbl td code { background:var(--bg); color:var(--text-1); padding:0 3px; border-radius:2px; font-size:var(--fs-xs); word-break:break-all; overflow-wrap:anywhere; }
-/* 窄屏：表格 100% 宽 */
-@media (max-width: 500px) {
-  .msg.summary .sum-tbl { width:100%; }
-}
-.msg.summary .sum-tail { display:block; margin:6px 0 0 0; padding:6px 0 0 0; border-top:1px dashed var(--border); color:var(--text-2); font-size:var(--fs-sm); line-height:var(--lh-base); }
-.msg.summary .sum-tail b { color:var(--text-1); }
-.msg.summary .sum-row { display:flex; gap:8px; padding:2px 0; }
-.msg.summary .sum-row .k { color:var(--text-2); min-width:48px; flex-shrink:0; }
-.msg.summary .sum-row .v { color:var(--text-1); }
-.msg.summary .sum-row .pill { display:inline-block; background:var(--surface-2); color:var(--text-1); padding:1px 6px; border-radius:8px; margin-right:3px; font-size:var(--fs-xs); }
-.msg.summary .sum-row .muted { color:var(--muted); }
-.msg.summary .sum-row code { background:var(--bg); color:var(--text-1); padding:0 4px; border-radius:3px; }
-.msg.summary .sum-preview { margin-top:6px; padding-top:6px; border-top:1px dashed var(--border); color:var(--text-2); font-style:italic; word-break:break-all; }
-.msg.summary .sum-section { margin:6px 0 4px 0; padding-left:8px; border-left:2px solid var(--border); }
-.msg.summary .sum-section b { color:var(--text-1); display:block; margin-bottom:2px; font-size:var(--fs-sm); }
-.msg.summary .sum-section ul { margin:0; padding-left:18px; color:var(--text-1); }
-.msg.summary .sum-section li { padding:1px 0; }
-.msg.summary .sum-section code { background:var(--bg); color:var(--text-1); padding:0 4px; border-radius:3px; font-size:var(--fs-xs); }
-.msg.summary .sum-fail { border-left-color:var(--danger-text); }
-.msg.summary .sum-fail b { color:var(--danger-text); }
-.msg.summary .sum-fail li { color:var(--danger-text); }
-`;
-    document.head.appendChild(s);
-  }
-  // busy 改容器：上 status bar + 下 step 流（每步都 append）+ 终态 message
-  busy.textContent = '';
-  const status = document.createElement('div');
-  status.className = 'stream-status';
-  status.textContent = '思考中…';
-  const stepsBox = document.createElement('div');
-  stepsBox.className = 'stream-steps';
-  busy.appendChild(status);
-  busy.appendChild(stepsBox);
-  const allSteps = [];
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  function appendStep(s) {
-    allSteps.push(s);
-    const row = document.createElement('div');
-    row.className = 'stream-step ' + (s.kind || '');
-    if (s.kind === 'thought') {
-      row.innerHTML = '<span class="badge">◇</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>';
-    } else if (s.kind === 'toolcall') {
-      const args = JSON.stringify(s.tool_input || {}, null, 0).slice(0,200);
-      row.innerHTML = '<span class="badge">' + ico('wrench', 'xs') + '</span><span class="text">调用 <b>' + esc(s.tool) + '</b>(<code>' + esc(args) + '</code>)</span>';
-    } else if (s.kind === 'toolresult') {
-      // v0.5.3 验证错误内联醒目（红框 + 字段/期望/实际）
-      let valHtml = '';
-      try {
-        const j = JSON.parse(s.content || '');
-        if (j && j.error_type === 'validation') {
-          const gotStr = (j.got !== null && j.got !== undefined && j.got !== '') ? ` 实际 ${esc(j.got)}` : '';
-          valHtml = '<div style="color:var(--danger-text);font-weight:600;background:var(--danger-bg);padding:3px 6px;border-radius:3px;margin:2px 0;">❌ 参数错误: 字段 ' + esc(j.field||'?') + ' 期望 ' + esc(j.expected||'?') + gotStr + '（tool=' + esc(j.tool||'?') + '）</div>';
-        } else if (j && (j.error_type === 'not_found' || j.error_type === 'rate_limit' || j.error_type === 'acl' || j.error_type === 'timeout')) {
-          valHtml = '<div style="color:var(--warn);font-weight:600;background:var(--warn-bg);padding:3px 6px;border-radius:3px;margin:2px 0;">⚠ ' + esc(j.error_type) + ': ' + esc(j.error || '') + '</div>';
-        }
-      } catch (e) {}
-      row.innerHTML = '<span class="badge">' + ico('chevron-down', 'xs') + '</span><span class="text">' + esc((s.content||'').slice(0,200)) + '</span>' + valHtml;
-    } else if (s.kind === 'answer') {
-      row.innerHTML = '<span class="badge">' + ico('check', 'xs') + '</span><span class="text">' + esc(s.content||'') + '</span>';
-    } else {
-      row.textContent = JSON.stringify(s).slice(0,200);
-    }
-    stepsBox.appendChild(row);
-    box.scrollTop = box.scrollHeight;
-  }
-  fetch('/api/agents/hub-self/chat/stream', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  }).then(r => {
-    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
-    const rd = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
-    function pump() {
-      return rd.read().then(({value, done}) => {
-        if (done) return;
-        buf += dec.decode(value, { stream: true });
-        // SSE 一帧以 \n\n 切分
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
-          const line = frame.split('\n').find(l => l.startsWith('data: '));
-          if (!line) continue;
-          try {
-            const obj = JSON.parse(line.slice(6));
-            if (obj.event === 'start') {
-              status.textContent = '思考中… (' + (obj.session_id || sid).slice(0,8) + ')';
-            } else if (obj.event === 'step') {
-              appendStep(obj.step);
-              const tc = allSteps.filter(s => s.kind === 'toolcall').length;
-              status.textContent = '进度: 思考 ' + allSteps.filter(s=>s.kind==='thought').length + ' / 工具 ' + tc + ' / 结果 ' + allSteps.filter(s=>s.kind==='toolresult').length;
-            } else if (obj.event === 'final') {
-              busy.className = 'msg ' + (obj.success ? 'assistant' : 'err');
-              busy.textContent = obj.response || obj.error || JSON.stringify(obj.hint || obj);
-              if (obj.model) busy.textContent += '\n· model: ' + obj.model;
-              // v0.5.2 任务总结：把 summary 渲染为独立卡片（紧跟 assistant 答案之后）
-              if (obj.summary) {
-                const sumCard = renderSummaryCard(obj.summary);
-                if (sumCard) box.appendChild(sumCard);
-              }
-              status.remove();
-              chatSessLoad();
-            } else if (obj.event === 'error') {
-              busy.className = 'msg err';
-              busy.textContent = '[错误] ' + (obj.error || 'unknown');
-              status.remove();
-            }
-          } catch (e) { /* ignore frame */ }
-        }
-        return pump();
-      }).catch(e => {
-        status.remove();
-        busy.className = 'msg err';
-        busy.textContent = '[流式中断] ' + e.message + '（已自动回退非流式）';
-        // 回退非流式
-        api('/api/agents/hub-self/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-          .then(d => { busy.textContent = d.response || d.error || JSON.stringify(d); busy.className = 'msg ' + (d.success ? 'assistant' : 'err'); chatSessLoad(); });
-      });
-    }
-    return pump();
-  });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1066,7 +742,7 @@ const DEFAULT_CWDS = ['/fs/1000/ftp/技术文档', '/home/gztxt', '/home/gztxt/a
 function chatCwdLoad() {
   const sel = $('chatCwd');
   if (!sel) return;
-  // 1) agent 画像默认 cwd（hub-self/claude/jcode/hermes/bash）
+  // 1) agent 画像默认 cwd（claude/jcode/hermes/bash）
   const a = entityById(chatPick);
   const profCwd = a && a.working_dir;
   // 2) localStorage 历史选择
@@ -1510,7 +1186,7 @@ async function callToolSel() {
   } catch (e) { $('mcCallOut').textContent = '失败: ' + e.message; }
 }
 
-/* ── T8 命令面板（⌘K/Ctrl+K）：搜实体直达对话；/路径 对 hub-self 发 list_dir ── */
+/* ── T8 命令面板（⌘K/Ctrl+K）：搜实体直达工作台 ── */
 function openCmd() {
   $('cmdMask').classList.add('on');
   const i = $('cmdInput');
@@ -1521,11 +1197,6 @@ function openCmd() {
 function closeCmd() { $('cmdMask').classList.remove('on'); }
 function renderCmdList(q) {
   const box = $('cmdList');
-  if (q.startsWith('/')) {
-    box.innerHTML = '<div class="cmd-item" onclick="cmdListDir(' + JSON.stringify(q).replace(/"/g, '&quot;') + ')">' +
-      '<span>对 hub-self 执行 list_dir</span><span class="hint">' + escapeHtml(q) + '</span></div>';
-    return;
-  }
   const ql = q.toLowerCase();
   const items = AGENTS.filter(a => !ql || a.id.toLowerCase().includes(ql) || (a.name || '').toLowerCase().includes(ql)).slice(0, 12);
   box.innerHTML = items.map(a =>
@@ -1533,14 +1204,6 @@ function renderCmdList(q) {
     '<div class="hint" style="padding:8px">无匹配实体</div>';
 }
 function cmdGo(id) { closeCmd(); gotoChat(id); }
-function cmdListDir(path) {
-  closeCmd();
-  gotoChat('hub-self', 'chat');  // 走已有对话通道，tools=true，不新造后端
-  const cb = $('chatToolsOn');
-  if (cb) cb.checked = true;
-  $('chatInput').value = 'list_dir ' + path;
-  chatSend();
-}
 
 /* ── 启动 ─────────────────────────────────────────── */
 
@@ -1594,7 +1257,9 @@ function navItemHtml(a) {
   const actBtns = [];
   if (es.some(e => e.type === 'embed')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')" title="嵌入会话">' + ico('monitor') + '</span>');
   if (es.some(e => e.type === 'term')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')" title="终端">' + ico('terminal') + '</span>');
-  if (es.some(e => e.type === 'chat')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'chat\')" title="对话">' + ico('message') + '</span>');
+  /* v0.10.1：删掉「对话」图标。智管对话（hub 自带会话页）已在 v0.10 移除，profile 里残留的
+     chat entry 实测为死入口：claude / jcode 两个实体 POST /api/agents/{id}/chat 均 HTTP 500。
+     留着它 = 坏入口（比没入口更糟），且让无 Web UI 的 Agent 行多出第三个图标。 */
   // 启动按钮：installed/stopped 状态的 agent
   if (a.kind === 'agent' && (st === 'installed' || st === 'stopped') && es.some(e => e.type === 'term')) {
     actBtns.push('<span class="act-btn start-btn" onclick="event.stopPropagation();startAgent(\'' + a.id + '\')" title="启动">' + ico('play') + '</span>');
@@ -1693,6 +1358,14 @@ function renderPageCrumb(page) {
   const label = escapeHtml(PAGE_LABELS[page] || page);
   const top = '';
   crumb.innerHTML = top + '<b>' + label + '</b>';
+  syncOpBar();
+}
+/* v0.10.1：#opBar 无标题也无 tab 时整条收起，窄屏省 37px，宽屏也不留空带 */
+function syncOpBar() {
+  const ob = $('opBar'), c = $('crumb'), t = $('opTabs');
+  if (!ob) return;
+  const empty = !((c && c.textContent.trim()) || (t && t.textContent.trim()));
+  ob.classList.toggle('void', empty);
 }
 /* 模式 tab 点击：embed/term/chat 走既有 switchMode，open/detail 各自直行 */
 function navMode(m) {
@@ -1790,8 +1463,8 @@ $('cmdInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     e.preventDefault();
     const q = e.target.value.trim();
-    if (q.startsWith('/')) cmdListDir(q);
-    else { const first = $('cmdList').querySelector('.cmd-item'); if (first && !q) closeCmd(); else if (first) first.click(); }
+    const first = $('cmdList').querySelector('.cmd-item');
+    if (first && !q) closeCmd(); else if (first) first.click();
   } else if (e.key === 'Escape') closeCmd();
 });
 document.addEventListener('keydown', e => {

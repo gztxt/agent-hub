@@ -3,8 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Hub - 智管</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='10' y='10' width='80' height='80' fill='none' stroke='%23111111' stroke-width='8'/><rect x='38' y='38' width='24' height='24' fill='%23111111'/></svg>">
+    <title>Agent Hub · 本机多 Agent 统一管理中心</title>
+    <!-- v0.10.1：品牌图标换成落盘资产（static/，由 agent 生成并验过尺寸/MIME）。
+         旧的内联 data-URI 方块与顶部 wordmark 不是同一个图形，手机书签/PWA 安装后会更丑，故删除。
+         manifest 用 .json 而非 .webmanifest：FastAPI FileResponse 按扩展名猜 MIME，.webmanifest 会给错。 -->
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#ededed">
     <link rel="stylesheet" href="/static/vendor/xterm.css?v=20260907c">
     <style>
         /* ── v0.9 配色：标准黑白体系（画布 + 内容面 两层），:root 是唯一色板源，全文引用 var() ──
@@ -134,6 +140,16 @@
 
         .header { background: var(--bg); padding: 10px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
         .header h1 { font-size: var(--fs-xl); font-weight: 700; color: var(--text-1); letter-spacing: .01em; line-height: var(--lh-tight); }
+        /* ── 品牌字标（v0.10.1）：hub-and-spoke 彽标 + 双字重 wordmark ──
+           黑白体系下不用色相做装饰，“美”靠三件事：字重对撞（Agent 800 / Hub 300）、
+           负字距收紧（拉丁文 -0.03em，跟中文的 .01em 走相反方）、彽标与字标的尺寸锚定。
+           对比度：bw-b = --text-2 #444 on 白 9.7:1，达 WCAG AA。 */
+        .brand { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+        .brand-glyph { width: 1.05em; height: 1.05em; flex: none; fill: none; stroke: currentColor;
+                       stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; color: var(--text-1); }
+        .brand-word { display: inline-flex; align-items: baseline; white-space: nowrap;
+                      font-weight: 800; letter-spacing: -.03em; color: var(--text-1); }
+        .brand-word .bw-b { font-weight: 300; letter-spacing: -.015em; color: var(--text-2); }
         .hstats { display: flex; align-items: center; gap: 14px; font-size: var(--fs-sm); color: var(--text-2); flex-wrap: wrap; }
         .hstats > span { display: inline-flex; align-items: center; gap: 5px; }
         /* 顶部健康指示：改用与侧栏 s-badge 同一套「方块 + 明度」语言，全站状态图形只此一族 */
@@ -153,16 +169,10 @@
         .nav-group-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); letter-spacing: .04em;
                            color: var(--muted); padding: 0 8px 8px; white-space: nowrap; overflow: hidden; }
         .nav-group-title::after { content: ''; flex: 1; border-top: 1px dashed var(--divider); margin-left: 2px; }
-        .sidebar button[data-page] { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-                                     background: transparent; border: 1px solid transparent; color: var(--muted);
-                                     padding: 10px 12px; font-size: var(--fs-md); line-height: 1.4; border-radius: 8px; transition: .12s; }
-        .sidebar button[data-page]:hover { background: var(--hover); color: var(--text-1); }
-        /* 选中态 = 半透明块 + 深描边（v0.8.1 起不再用实黑反色块，见 :root --sel-*） */
-        .sidebar button[data-page].on { color: var(--text-1); background: var(--sel-bg);
-                                        border-color: var(--sel-border); font-weight: 600; }
-        .sidebar button[data-page].on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
-        .sidebar button[data-page] svg.i { width: var(--ico-md); height: var(--ico-md); }
-        .sidebar button[data-page] .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* v0.10.1：删除上面这组 `.sidebar button[data-page]` 遗留样式（共 6 条，含 :hover/.on/svg/.lbl）。
+           它服务的那批静态常驻按钮早被手风琴推平，全文已无 data-page 元素；而「总览」刚挂 data-page 时
+           正好被它打歪（padding 10px 12px / --fs-md / radius 8 / --muted），实测与菜单项差 4 个属性。
+           常驻项从此只走 .nav-item/.side-item 一条路，不会再长出第二套长相。 */
         .badge { flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
                  background: var(--surface-2); color: var(--text-2); font-size: var(--fs-xs);
                  display: inline-flex; align-items: center; justify-content: center; }
@@ -184,14 +194,19 @@
                         padding-left: 7px; border-left: 1px solid var(--border); }
         .nav-acc.open .nav-acc-body { display: flex; }
         .nav-sub { font-size: var(--fs-xs); color: var(--muted); letter-spacing: .04em; padding: 6px 7px 3px; }
-        .nav-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+        /* v0.10.1：设置项从顶栏搬进菜单栏。`.side-item` 直接加入下面这组选择器，
+           与菜单项共用同一套规则（不是拄一份），以后改菜单样式两者一起变，不会再两套长相。 */
+        .nav-item, .side-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
                     background: transparent; border: 1px solid transparent; color: var(--text-2);
-                    padding: 8px 10px; font-size: var(--fs-base); line-height: 1.4; border-radius: 7px; transition: .12s; }
-        .nav-item:hover { background: var(--hover); color: var(--text-1); }
-        .nav-item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
-        .nav-item.on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
+                    padding: 8px 10px; font-size: var(--fs-base); line-height: 1.4; border-radius: 7px; transition: .12s;
+                    /* 实测：带 22×22 图标的行 40px、纯文字行 39px，同一列表里行高不齐；
+                       统一到 40px（与分组标题 .nav-acc-head 同高），触控目标也够 */
+                    min-height: 40px; }
+        .nav-item:hover, .side-item:hover { background: var(--hover); color: var(--text-1); }
+        .nav-item.on, .side-item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
+        .nav-item.on:hover, .side-item.on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
         .nav-item.on .nav-port, .nav-item.on .nav-st { color: var(--text-2); }
-        .nav-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-item .lbl, .side-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .nav-item .nav-port { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
         .nav-item .nav-st { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--text-2); letter-spacing: .02em; }
         /* 操作按钮组 */
@@ -202,7 +217,10 @@
                    color: var(--text-2); line-height: 1; }
         .act-btn svg.i { width: var(--ico-sm); height: var(--ico-sm); stroke-width: 2; }
         .act-btn:hover { background: var(--sel-bg-hover); color: var(--text-1); }
-        .start-btn { color: var(--success-text); }
+        /* v0.10.1：启动按钮静置时不再用绿色（--ok #2f7a4f）——它是行内唯一的色相，
+           让「无 Web UI 的 Agent」行跟「有 Web UI」行看起来不是一套图标。
+           色相只留在 hover（语义：这是可执行动作），静置与 monitor/terminal 同色。*/
+        .start-btn { color: var(--text-2); }
         .start-btn:hover { background: var(--success); color: #fff; }
         /* 搜索结果计数 */
         .search-count { font-size: var(--fs-xs); color: var(--text-2); margin-left: 6px; }
@@ -213,7 +231,7 @@
         .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after,
         .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port, .sidebar.collapsed .nav-st { display: none; }
         .sidebar.collapsed .nav-group-title { justify-content: center; padding: 0 0 6px; font-size: var(--fs-xs); }
-        .sidebar.collapsed button[data-page], .sidebar.collapsed .nav-acc-head, .sidebar.collapsed .nav-item {
+        .sidebar.collapsed button[data-page], .sidebar.collapsed button.side-item, .sidebar.collapsed .nav-acc-head, .sidebar.collapsed .nav-item {
           justify-content: center;
           padding: 8px 0;
           min-height: 34px;
@@ -225,7 +243,13 @@
         .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
         .sidebar.collapsed svg.i { width: var(--ico-md); height: var(--ico-md); }
         .sidebar.collapsed .nav-item .s-badge { margin: 0; }
-        .side-toggle { margin-top: auto; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;
+        /* 常驻项成对锺在底部：自由空间由 .side-item 的 margin-top:auto 吃掉，
+           .side-toggle 不再需要自己撑到底部 */
+        /* 底部常驻项（设置）靠 auto 上边距沉底；顶部常驻项用 .side-top 把 auto 抹成 0
+           （两条同特异度，.side-top 在后 → 生效） */
+        .side-item { flex: 0 0 auto; margin-top: auto; }
+        .side-top { margin-top: 0; }
+        .side-toggle { margin-top: 0; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;
                        background: transparent; border: 1px solid var(--border);
                        color: var(--text-2); border-radius: 8px; padding: 8px; font-size: var(--fs-sm); width: 100%; }
         .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
@@ -243,15 +267,23 @@
         #crumb .sep { color: var(--muted); }
         #opTabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
         #opTabs .btn.on { background: var(--sel-bg); color: var(--text-1); border-color: var(--sel-border); font-weight: 600; }
+        /* 顶栏无内容时整条收起（不占高不留分割线）：聊天页的模式 tab 已停用、实体名改由
+           #chatEntName 显示，syncOpBar() 据此打 .void 标记 */
+        #opBar.void { display: none; }
         #sideMask { display: none; }
 
-        /* ── 首页：说明区 + 智管对话（v0.7.1 取代原教室座位矩阵） ── */
-        .home-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 20px; align-items: stretch; }
+        /* ── 首页：说明区（v0.10.0 起移除指挥官对话区块，回到单列概览页） ── */
+        .home-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; max-width: 1000px; }
         .home-intro { display: flex; flex-direction: column; gap: 16px; }
         .home-brand { display: flex; align-items: center; gap: 12px; }
         .home-mark { width: 54px; height: 54px; flex: none; display: grid; place-items: center; border-radius: 14px; border: 2px solid var(--accent); background: var(--accent); color: var(--on-accent); }
         .home-mark svg.i { width: var(--ico-xl); height: var(--ico-xl); }
-        .home-brand h2 { font-size: var(--fs-xl); letter-spacing: .01em; line-height: var(--lh-tight); }
+        .home-brand h2 { font-size: var(--fs-2xl); line-height: var(--lh-tight); }
+        .home-brand .brand-glyph { width: 30px; height: 30px; color: var(--on-accent); }   /* 实心黑块内反白 */
+        .home-brand-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        /* 字标上方的一行 mono 大字距 kicker：黑白体系里用“节奏”而不是颜色做装饰 */
+        .home-kicker { margin: 0; font-family: var(--font-mono); font-size: var(--fs-xs);
+                       letter-spacing: .24em; text-transform: uppercase; color: var(--muted); }
         .home-sub { font-size: var(--fs-base); color: var(--muted); margin-top: 4px; }
         .home-desc { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text-2); border-left: 2px solid var(--border); padding-left: 14px; }
         .home-desc b { color: var(--text-1); }
@@ -263,14 +295,6 @@
         .home-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: var(--fs-base); color: var(--text-2); }
         .home-legend .lg { display: inline-flex; align-items: center; gap: 7px; }
         .home-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
-        .home-chat { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; min-height: 430px; }
-        .hc-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-        .hc-head b { font-size: var(--fs-md); }
-        .hc-head .hint { flex: 1; font-size: var(--fs-sm); }
-        .hc-msgs { min-height: 190px; }
-        .home-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px; border-top: 1px solid var(--divider); }
-        .home-chip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); padding: 8px 13px; background: var(--surface-2); cursor: pointer; }
-        .home-chip:hover { border-color: var(--accent-2); }
 
         /* 状态：色相 + 形状 + 明度 + 中文标签 四重冗余（左侧手风琴 / 首页图例共用）
            色相让「在线/异常」一眼可分，形状保证色觉障碍下仍可分辨 */
@@ -286,34 +310,23 @@
         /* 提示栏 110px 太窄：提示文本被挤成每行 3~4 字（v0.9 字号上调后更明显），放到 220px 可正常阅读。
            宽屏下 .chat-grid 只作用于指挥官页（#page-chat 在 @media(min-width:768px) 里已改为单列） */
         .chat-grid { display: grid; grid-template-columns: 220px 1fr; gap: 16px; flex: 1; min-height: 420px; }
-        .chat-side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px; overflow-y: auto; }
-        .chat-side .item { padding: 10px 12px; border-radius: 8px; font-size: var(--fs-base); cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-        .chat-side .item:hover, .chat-side .item.on { background: var(--surface-2); }
+        /* Agent 清单不再内嵌进对话页（2026-09-20 用户指令：窄屏也不需要，宽屏本来就藏）：
+           实体选择统一走左侧手风琴 / 窄屏图标条抽屉，同一份清单不散落两处。
+           DOM 里仍保留 #chatAgents 容器 —— hub.js renderChatSide() 拿它当渲染锚点，
+           并在末尾调用 applyChatMode() 切换 嵌入/终端/对话 三个 pane；删掉元素会把对话页打死。 */
+        .chat-side { display: none; }
         .chips > summary { padding: 9px 11px; font-size: var(--fs-base); color: var(--info); cursor: pointer; list-style: none; user-select: none; border-radius: 8px; }
         .chips > summary::-webkit-details-marker { display: none; }
         .only-mob { display: none; }
         .chat-main { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex: 1; min-height: 0; }
+        /* 当前实体名：原先靠顶栏面包屑带出，顶栏收起后住在对话工具栏首格 */
+        .ent-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); white-space: nowrap; }
         .msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
         .msg { max-width: 78%; padding: 12px 15px; border-radius: 12px; font-size: var(--fs-base); line-height: var(--lh-loose); white-space: pre-wrap; word-break: break-word; }
         .msg.user { align-self: flex-end; background: var(--btn); color: var(--on-accent); border-bottom-right-radius: 4px; }
         .msg.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
         .msg.err { align-self: flex-start; background: var(--danger-bg); color: var(--danger-text); }
         /* v0.5.2.3 任务总结卡片：表格化 + 紧凑 */
-        .msg.summary { background: var(--surface-2); border-left: 3px solid var(--accent); align-self: flex-start; max-width: 92%; padding: 10px 14px; }
-        .msg.summary .sum-head { font-weight: 600; font-size: var(--fs-base); margin-bottom: 8px; }
-        .msg.summary .sum-tbl { margin: 6px 0; font-size: var(--fs-sm); line-height: var(--lh-base); }
-        .msg.summary .sum-tbl th { width: 60px; min-width: 60px; padding: 4px 8px; color: var(--muted); font-weight: 500; background: transparent; border-bottom: 1px solid var(--divider); }
-        .msg.summary .sum-tbl td { padding: 4px 8px; border-bottom: 1px solid var(--divider); }
-        .msg.summary .sum-tbl tr:last-child th, .msg.summary .sum-tbl tr:last-child td { border-bottom: none; }
-        .msg.summary .sum-tail { font-size: var(--fs-sm); line-height: var(--lh-base); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--divider); color: var(--text-2); }
-        .msg.summary code { font-family: var(--font-mono); font-size: var(--fs-sm); }
-        .steps { align-self: flex-start; width: 100%; display: flex; flex-direction: column; gap: 6px; }
-        .step { font-size: var(--fs-sm); border-radius: 8px; padding: 8px 12px; line-height: var(--lh-base); }
-        .step.thought { color: var(--text-2); font-style: italic; background: var(--surface-2); }
-        .step.toolcall { background: var(--warn-bg); color: var(--text-1); font-family: var(--font-mono); }
-        .step.toolresult { background: var(--bg); border: 1px solid var(--border); }
-        .step.toolresult summary { color: var(--text-2); cursor: pointer; }
-        .step.toolresult pre { margin-top: 8px; max-height: 180px; overflow: auto; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-2); white-space: pre-wrap; line-height: var(--lh-base); }
         .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
         .composer input { flex: 1; }
 
@@ -377,21 +390,66 @@
         .pane.on { display: flex; }
         .pane .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
         .pane iframe { flex: 1; width: 100%; border: 0; background: var(--surface-2); min-height: 0; }
-        /* 终端 inset 放在包裹层上，#termEl 自身必须零 padding ——
-           FitAddon 按 _terminal.element.parentElement(=#termEl) 的 height 算行数，
-           而它只减去 xterm 自己的 padding、不减父元素的。父元素带 6px padding 时
-           算出的行数会多出一行，屏幕高度超出内容盒并被 overflow:hidden 裁掉（底部遮挡）。
-           真凭实据：改前 .xterm 高 468px、#termEl 内容盒仅 459px，底部溢出 9~10px。 */
-        .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px; }
-        #termEl { flex: 1; min-height: 0; padding: 0; background: var(--term-bg);
-                  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-        .sess-item { font-size: var(--fs-xs); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; display: inline-flex; gap: 6px; align-items: center; }
+        /* ── 原生 UI 外框：跟 pi-web 同参（2026-09-20 实测 pi-web :30141 首页 DOM，非估计值）──
+           pi-web 行1「菜单」：容器 h=36（窄屏 35）、标题 15px/700、菜单块 11px、border-bottom 1px #e0e0e0
+           pi-web 行2「信息」：容器 h=29、bg #eeeeee、11px、border-bottom 1px #e0e0e0（它放工作目录/cwd）
+           → 嵌入视图顶部固定两行：行1 菜单（回总览 / 实体名 / 刷新 / 新窗口），行2 IP 地址；
+             iframe 不再叠任何 hub 装饰（用户口径：内框直接加载 agent 原生界面）*/
+        .ebar-menu { display: flex; align-items: center; gap: 8px; flex: none; height: 36px;
+                     padding: 0 10px; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
+        .ebar-menu > b { font-size: 15px; font-weight: 700; line-height: 1.2; color: var(--text-1);
+                         min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ebar-sp { flex: 1 1 auto; min-width: 4px; }
+        .ebar-btn { display: inline-flex; align-items: center; gap: 4px; flex: none;
+                    height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px;
+                    background: transparent; color: var(--text-2); font-size: 11px; line-height: 1;
+                    cursor: pointer; transition: .12s; }
+        .ebar-btn:hover { background: var(--hover); color: var(--text-1); border-color: var(--border); }
+        .ebar-addr { display: flex; align-items: center; gap: 8px; flex: none; height: 29px; padding: 0 10px;
+                     background: #eeeeee; border-bottom: 1px solid #e0e0e0; }
+        .ebar-k { font-size: 11px; color: var(--muted); letter-spacing: .04em; flex: none; }
+        .ebar-addr-v { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 11px;
+                       color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                       user-select: all; -webkit-user-select: all; cursor: text; }
+        .ebar-addr-v:empty::before { content: '—'; color: var(--muted); }
+        .ebar-state { margin-left: auto; flex: none; font-size: 11px; color: var(--muted); }
+        .ebar-state.ok { color: var(--ok); }
+        .ebar-state.dead { color: var(--danger); }
+        /* 终端会话芯片（用户 09-20）：行1 内联，取代旧的「会话」刷新按钮与「暂无活会话」常驻字。
+           新会话建立后由 termNew() 先本地插一个芯片（即时可见），再由 termRefreshList() 以服务端为准重绘。
+           单行不换行：芯片多了就横向滚动，不能撑成第二行（那样就破了“外框只一行”的口径）。
+           点芯片本体 = 回看该会话；点右侧 × = 只销毁这一个。 */
+        .sess-row { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0;
+                    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; height: 100%; }
+        .sess-row::-webkit-scrollbar { display: none; }
+        .sess-item { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 22px;
+                     padding: 0 3px 0 8px; font-size: var(--fs-xs); font-family: var(--font-mono);
+                     background: var(--bg); border: 1px solid var(--border); border-radius: 11px; color: var(--text-2); }
+        .sess-item.cur { border-color: var(--text-1); color: var(--text-1); background: var(--sel-bg); }
+        .sess-item a { color: inherit; text-decoration: none; cursor: pointer; }
+        .sess-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+                  padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+        .sess-x:hover { background: var(--danger-bg); color: var(--danger); }
+        .sess-item .sess-x > svg { width: 10px; height: 10px; }
+        /* 终端 inset：外框统一后 .term-body 与 #termEl 都改零 padding / 零描边（内容区直接是 CLI）。
+           下面这条硬约束仍成立，改样式时别再踩：FitAddon 按 _terminal.element.parentElement(=#termEl)
+           的 height 算行数，而它只减去 xterm 自己的 padding、不减父元素的——一旦给任一层加 inset，
+           算出的行数就会多出一行，屏幕高度超出内容盒被 overflow:hidden 裁掉（底部遵住）。
+           旧实测凭据：父层带 6px padding 时 .xterm 高 468px、#termEl 内容盒仅 459px，底部溢出 9~10px。 */
+        .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; }
+        #termEl { flex: 1; min-height: 0; padding: 0; background: var(--term-bg); overflow: hidden; }
 
         /* ── 移动端自适应（US-001：消除左偏留白/页签换行/两栏错位） ── */
         @media (max-width: 767px) {
-            .header { padding: 10px 12px; gap: 8px; }
-            .header h1 { font-size: var(--fs-lg); }
-            .hstats { gap: 10px; }
+            /* 顶栏单行（窄屏）：wordmark 降到 fs-md、彽标跟着缩，状态字降一档 + 齿轮图标化 */
+            .header { padding: 6px 10px; gap: 8px; flex-wrap: nowrap; }
+            .header h1 { font-size: var(--fs-base); flex: 0 0 auto; }   /* 字标不收缩、不截断 */
+            .hstats { gap: 6px; font-size: var(--fs-xs); flex-wrap: nowrap; margin-left: auto; min-width: 0;
+                      overflow: hidden; }
+            .hstats > span { white-space: nowrap; flex: 0 0 auto; }
+            /* 收缩压力只由计数文字承担（省略号截断）；字标 / 状态点 / 齿轮一律不收缩 */
+            .hstats > #hAgents { flex: 0 1 auto; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+            /* 齿轮已移入左侧菜单栏，顶部不再需要 #btnSettings 的任何规则 */
             /* 窄屏：手风琴退化为「图标条 + 浮层抽屉」，复用既有 .collapsed 机制
                收起 = 52px 图标条（仍在文档流内，不遮挡 header）；展开 = 覆盖式抽屉，点遮罩收起 */
             .sidebar { flex-basis: 52px; width: 52px; padding: 10px 5px; gap: 8px; }
@@ -401,13 +459,8 @@
             .sidebar.collapsed .side-toggle .lbl { display: none; }
             .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
-            main { max-width: 100%; margin: 0; padding: 12px; }
+            main { max-width: 100%; margin: 0; padding: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .home-chat { min-height: 380px; }
-            /* 窄屏：标题 + 说明 + 按钮挤在一行会把「智管对话」折成两行，
-               让说明独占一行（标题与按钮留第一行），四个字不再断行 */
-            .hc-head { flex-wrap: wrap; }
-            .hc-head .hint { flex: 1 1 100%; order: 3; }
             select { max-width: 100%; }
             .toolbar input, .toolbar select { min-width: 0; }
             .mem-grid { gap: 10px; }
@@ -420,20 +473,46 @@
                 mask: var(--m-chev-down) center / contain no-repeat; }
             .chips:not([open]) > summary::after {
                 -webkit-mask-image: var(--m-chev-right); mask-image: var(--m-chev-right); }
-            .chat-grid { grid-template-columns: 1fr; height: auto; min-height: 0; gap: 10px; }
-            #chatAgents { display: flex; flex-direction: row; align-items: center; gap: 8px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 2px 0 4px; }
-            #chatAgents::-webkit-scrollbar { display: none; }
-            #chatAgents .item { flex: 0 0 auto; white-space: nowrap; background: var(--bg); border: 1px solid var(--border); border-radius: 99px; padding: 8px 12px; }
-            #chatAgents .item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
-            .chat-main { height: 62vh; min-height: 360px; }
+            /* ── 窄屏纵向预算（2026-09-20）──────────────────────────────────────
+               改前实测 390x844：header 87 / opBar 37 / chatToolbar 145 / composer 71 / footer 73，
+               且 .chat-main 被 62vh 写死（少用 89px）⇒ 消息区仅 306px。
+               以下只改排布密度，不砍功能：工具栏换成单行横向滚动，所有控件仍可点。 */
+            .chat-grid { grid-template-columns: 1fr; min-height: 0; gap: 8px; }
+            .chat-main { min-height: 0; }          /* 取消 62vh 写死，由 grid 行高撑满剩余视口 */
+            #opBar { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+            #chatToolbar { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none;
+                           align-items: center; gap: 6px !important; padding: 5px 8px !important; }
+            #chatToolbar::-webkit-scrollbar { display: none; }
+            #chatToolbar > * { flex: 0 0 auto; }
+            #chatToolbar > span { border-left: 0 !important; padding-left: 0 !important; margin-left: 0 !important; }
+            #chatToolbar select { max-width: 46vw !important; min-width: 0; height: 30px;
+                                  font-size: var(--fs-xs); padding: 0 6px; }
+            #chatToolbar .btn.sm { height: 30px; min-width: 30px; padding: 0 7px; }
+            #chatToolbar svg.i { width: 14px; height: 14px; }
+            /* 三个 pane 自己的顶栏（刷新 / 新窗口 / 会话 / 销毁）同步压平：
+               改前嵌入栏在 390px 下折成 4 行 = 92px（实测 embedTitle 148 + 按钮 71/113 + URL 170）
+               现：标题 + 按钮一行，长 URL 独占一行并截断 */
+            .pane .bar { gap: 6px; padding: 4px 8px; }
+            .pane .bar > b { font-size: var(--fs-sm); max-width: 44vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .pane .bar .btn.sm { height: 28px; padding: 0 8px; }
+            .pane .bar .hint { flex: 1 1 100%; order: 3; font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            /* 窄屏：外框两行仍按 pi-web 同参（行1 35 / 行2 29），只收内边距与间距 */
+            .ebar-menu { height: 35px; gap: 6px; padding: 0 8px; }
+            .ebar-menu > b { max-width: 38vw; }
+            .ebar-addr { height: 29px; gap: 6px; padding: 0 8px; }
+            .ebar-btn { padding: 0 6px; }
+            .msgs { padding: 10px; }
+            #chatPane .composer { padding: 8px; }
+            #chatPane .composer input { height: 38px; }
+            .footer { padding: 5px 10px; font-size: var(--fs-xs); }
+            .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
             .mem-grid { grid-template-columns: 1fr !important; }
             .panel { padding: 12px; }
             .toolbar input { min-width: 140px; }
         }
-        /* 宽屏：统一对话页内嵌的实体列表让位给左侧手风琴（避免同一份清单散落两处）
-           窄屏保留——手风琴收成图标条时，顶部横向 chip 条更好用 */
+        /* 实体列表的隐藏已上提到 .chat-side 基础规则（宽窄屏一律不内嵌），
+           此处只剩宽屏的单列栅格修正 */
         @media (min-width: 768px) {
-            #page-chat .chat-side { display: none; }
             #page-chat .chat-grid { grid-template-columns: 1fr; }
         }
     </style>
@@ -443,6 +522,9 @@
          图形只在此处定义一次；尺寸由 --ico-xs/sm/md/lg/xl 五档决定，禁止再写字号 -->
     <svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true" focusable="false">
         <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></symbol>
+        <!-- 品牌彽标：中心 hub 圆角斊形 + 四向 agent 节点（小半径圆靠 stroke 撞成实心点，
+             18px 下仍可读）+ 四条短辐条。尺寸由 .brand-glyph 控制，不进 .i 字号系统。 -->
+        <symbol id="i-hubmark" viewBox="0 0 24 24"><rect x="9.4" y="9.4" width="5.2" height="5.2" rx="1.5"/><circle cx="4.4" cy="4.4" r="1.1"/><circle cx="19.6" cy="4.4" r="1.1"/><circle cx="4.4" cy="19.6" r="1.1"/><circle cx="19.6" cy="19.6" r="1.1"/><path d="M6.2 6.2 9.6 9.6M17.8 6.2 14.4 9.6M6.2 17.8 9.6 14.4M17.8 17.8 14.4 14.4"/></symbol>
         <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></symbol>
         <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></symbol>
         <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
@@ -485,23 +567,28 @@
         <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
     </svg>
     <div class="header">
-        <h1>Agent Hub · 智管</h1>
+        <h1 class="brand" title="Agent Hub"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h1>
         <div class="hstats">
-            <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span>Hub 在岗</span>
+            <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
             <span id="hAgents">Agents: -</span>
             <span id="hErrors"></span>
-            <button class="btn ghost sm" id="btnSettings" role="button" tabindex="0" aria-label="打开设置" onclick="openSettings()" title="设置：终端 token 查看与应用"><svg class="i xs" aria-hidden="true"><use href="#i-settings"/></svg>设置</button>
         </div>
     </div>
 
     <div class="shell">
     <aside class="sidebar" id="sidebar" role="tablist" aria-label="功能导航">
+        <!-- 常驻项（用户 09-20：把「总览」搬进左侧菜单最顶部）。用 data-sys 不用 data-page：
+             侧栏事件委托本来就认 data-sys（点击即 go()，窄屏顺带收抽屉），而 data-page 会被刚删掉的
+             遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
+        <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
+                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
         <div class="nav-search">
             <input id="navSearch" type="search" placeholder="搜索名称 / id / 端口…" aria-label="搜索实体" autocomplete="off">
             <span id="navSearchCount" class="search-count"></span>
         </div>
         <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
         <div id="navTree"></div>
+        <button class="side-item" id="btnSettings" aria-label="打开设置" onclick="openSettings()" title="设置：终端 token 查看与应用"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">设置</span></button>
         <button class="side-toggle" id="btnSideToggle" title="收起 / 展开侧栏"><svg class="i xs" aria-hidden="true"><use href="#i-panel-collapse"/></svg><span class="lbl">收起</span></button>
     </aside>
     <div id="sideMask" aria-hidden="true"></div>
@@ -512,14 +599,15 @@
             <nav id="crumb" aria-label="位置"></nav>
             <div id="opTabs"></div>
         </div>
-        <!-- 首页：说明 + 智管对话（Agent / 基础设施已全部收拢至左侧手风琴） -->
+        <!-- 首页：说明区（Agent / 基础设施已全部收拢至左侧手风琴） -->
         <section class="page on" id="page-classroom">
             <div class="home-wrap">
                 <div class="home-intro">
                     <div class="home-brand">
-                        <span class="home-mark"><svg class="i" aria-hidden="true"><use href="#i-cpu"/></svg></span>
-                        <div>
-                            <h2>智管 Agent Hub</h2>
+                        <span class="home-mark"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg></span>
+                        <div class="home-brand-txt">
+                            <p class="home-kicker">Multi-Agent Control Plane</p>
+                            <h2 class="brand"><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h2>
                             <p class="home-sub">本机多 Agent 统一管理中心</p>
                         </div>
                     </div>
@@ -543,48 +631,10 @@
                         <button class="btn ghost" onclick="go('telemetry')"><svg class="i xs" aria-hidden="true"><use href="#i-activity"/></svg>遥测</button>
                     </div>
                 </div>
-                <div class="home-chat">
-                    <div class="hc-head">
-                        <b>智管对话</b>
-                        <span class="hint">与「指挥官」共用会话 · 工具在服务端真实执行</span>
-                        <button class="btn ghost sm" onclick="clearMgr()"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
-                    </div>
-                    <div class="msgs hc-msgs" id="homeMsgs"><div class="hint" style="margin:auto">可以直接问：现在哪些 Agent 在运行？</div></div>
-                    <div class="home-chips">
-                        <button class="chip home-chip" onclick="homeAsk('现在哪些 Agent 在运行？')"><svg class="i xs" aria-hidden="true"><use href="#i-zap"/></svg>哪些 Agent 在跑</button>
-                        <button class="chip home-chip" onclick="homeAsk('查一下记忆里关于 CCR 的约束')"><svg class="i xs" aria-hidden="true"><use href="#i-database"/></svg>查 CCR 记忆</button>
-                        <button class="chip home-chip" onclick="homeAsk('3457 端口是谁在用？')"><svg class="i xs" aria-hidden="true"><use href="#i-share"/></svg>3457 端口归属</button>
-                        <button class="chip home-chip" onclick="go('manager')">完整指挥官<svg class="i xs" aria-hidden="true"><use href="#i-arrow-right"/></svg></button>
-                    </div>
-                    <div class="composer">
-                        <input id="homeInput" placeholder="向智管下达指令…" aria-label="智管对话输入" onkeydown="if(event.key==='Enter')homeSend()">
-                        <button class="btn" onclick="homeSend()">发送</button>
-                    </div>
-                </div>
             </div>
         </section>
 
-        <!-- 指挥官 -->
-        <section class="page" id="page-manager">
-            <div class="chat-grid">
-                <details class="chat-side chips" open>
-                    <summary class="chips-sum">使用提示</summary>
-                    <div class="hint" style="padding:0 10px;line-height:1.7">
-                        例：<br>「现在哪些 Agent 在运行？」<br>「打开 pi 的界面」<br>「查一下记忆里关于 CCR 的约束」<br>「3457 端口是谁在用？」<br>「记住：我偏好中文回复」<br><br>工具在服务端真执行；会话已持久化。
-                    </div>
-                    <div style="padding:10px"><button class="btn ghost sm" onclick="clearMgr()"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button></div>
-                </details>
-                <div class="chat-main">
-                    <div class="msgs" id="mgrMsgs"><div class="hint" style="margin:auto">向指挥官下达指令</div></div>
-                    <div class="composer">
-                        <input id="mgrInput" placeholder="例如：列出所有 Agent 状态" onkeydown="if(event.key==='Enter')mgrSend()">
-                        <button class="btn" onclick="mgrSend()">发送</button>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- 统一对话（Agent 原生会话嵌入 / 终端 / 智管对话） -->
+        <!-- 统一对话（Agent 原生会话嵌入 / 终端 / 对话） -->
         <section class="page" id="page-chat">
             <div class="chat-grid">
                 <details class="chat-side chips" open>
@@ -593,34 +643,43 @@
                 </details>
                 <div class="chat-main">
                     <div class="bar" id="chatModeBar" style="display:none;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)"></div>
-                    <!-- 模式1：原生 Web UI 嵌入 -->
+                    <!-- 模式1：原生 Web UI 嵌入 —— 外框固定两行（菜单 / IP 地址），内框直入原生界面 -->
                     <div class="pane" id="embedPane">
-                        <div class="bar"><b id="embedTitle"></b>
-                            <button class="btn ghost sm" onclick="embedRefresh()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
-                            <button class="btn ghost sm" onclick="embedNewTab()"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口打开</button>
-                            <span class="hint" id="embedUrlHint"></span></div>
+                        <div class="ebar-menu">
+                            <b id="embedTitle"></b>
+                            <span class="ebar-sp"></span>
+                            <button class="ebar-btn" onclick="embedRefresh()" title="重新加载内嵌界面"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                            <button class="ebar-btn" onclick="embedNewTab()" title="在新窗口打开原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口</button>
+                        </div>
+                        <div class="ebar-addr">
+                            <span class="ebar-k">地址</span>
+                            <span class="ebar-addr-v" id="embedUrlHint" title="已全选样式：长按/双击可直接选中，点右侧图标复制"></span>
+                            <button class="ebar-btn" onclick="embedCopyUrl()" title="复制完整地址"><svg class="i xs" aria-hidden="true"><use href="#i-copy"/></svg>复制</button>
+                            <span class="ebar-state" id="embedProbeState">探测中…</span>
+                        </div>
                         <iframe id="embedFrame" src="about:blank"></iframe>
                     </div>
-                    <!-- 模式2：pty 终端 -->
+                    <!-- 模式2：pty 终端 —— 外框与嵌入视图统一（同一个 .ebar-menu）。
+                         行1 = 实体名 + 会话芯片 + 新会话；不再显“终端界面”字样，也不留「销毁当前」大按钮（用户 09-20） -->
                     <div class="pane" id="termPane">
-                        <div class="bar"><b id="termTitle"></b>
-                            <button class="btn sm" onclick="termNew()"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
-                            <button class="btn ghost sm" onclick="termRefreshList()"><svg class="i xs" aria-hidden="true"><use href="#i-layers"/></svg>会话</button>
-                            <button class="btn ghost sm" onclick="termKill()"><svg class="i xs" aria-hidden="true"><use href="#i-trash"/></svg>销毁当前</button>
-                            <span id="termSessList" style="display:flex;gap:6px;flex-wrap:wrap"></span></div>
+                        <div class="ebar-menu"><b id="termTitle"></b>
+                            <span class="sess-row" id="termSessList"></span>
+                            <span class="ebar-sp"></span>
+                            <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button></div>
                         <div class="term-body"><div id="termEl"></div></div>
                     </div>
-                    <!-- 模式3：对话框（智管自身/有 chat 适配器者） -->
+                    <!-- 模式3：对话框（有 chat 适配器的实体） -->
                     <div class="pane on" id="chatPane">
                         <!-- 对话工具栏（参考 pi/qwenpaw：模型 + 工作目录 + 会话 + 工具） -->
                         <div class="bar" id="chatToolbar" style="gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+                            <b id="chatEntName" class="ent-name" title="当前实体"></b>
                             <select id="chatModel" style="max-width:220px" title="对话模型（CCR /v1/models 动态）">
                                 <option value="">加载模型中…</option>
                             </select>
                             <button class="btn ghost sm" id="chatModelRefresh" title="重新拉取模型列表" onclick="loadChatModels(true)"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg></button>
                             <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
                                 <svg class="i xs" aria-hidden="true"><use href="#i-folder"/></svg>
-                                <select id="chatCwd" style="max-width:300px" title="工作目录（hub-self 注入 LLM 上下文）">
+                                <select id="chatCwd" style="max-width:300px" title="工作目录（作为上下文注入所选 Agent）">
                                     <option value="">加载中…</option>
                                 </select>
                                 <button class="btn ghost sm" title="自定义路径" onclick="chatCwdCustom()"><svg class="i xs" aria-hidden="true"><use href="#i-pencil"/></svg></button>
@@ -635,16 +694,8 @@
                                 <button class="btn ghost sm" title="删除当前会话" onclick="chatSessDel()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
                                 <button class="btn ghost sm" title="刷新列表" onclick="chatSessLoad()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg></button>
                             </span>
-                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px" id="chatToolsRow" title="hub-self 启用指挥官工具环（带工具调用展示）">
-                                <input type="checkbox" id="chatToolsOn" checked style="width:auto;margin:0 4px 0 0">
-                                <label for="chatToolsOn" style="color:var(--text-2);cursor:pointer">工具</label>
-                            </span>
-                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px" id="chatRepairRow" title="v0.4 修复模式：开启后多 5 个修复工具（白名单 restart / 配置写 / 回滚 / 双次确认）。改完记得关。" hidden>
-                                <input type="checkbox" id="chatRepairOn" style="width:auto;margin:0 4px 0 0">
-                                <label for="chatRepairOn" style="display:inline-flex;align-items:center;gap:5px;color:var(--warn);cursor:pointer;font-weight:600"><svg class="i xs" aria-hidden="true"><use href="#i-wrench"/></svg>修复模式</label>
-                            </span>
                         </div>
-                        <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent 或「智管对话」</div></div>
+                        <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent</div></div>
                         <div class="composer">
                             <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
                             <button class="btn" onclick="chatSend()">发送</button>
@@ -856,15 +907,15 @@
     <!-- 命令面板（⌘K / Ctrl+K） -->
     <div class="modal-mask" id="cmdMask" onclick="if(event.target===this)closeCmd()">
         <div class="modal" style="padding:12px">
-            <input id="cmdInput" placeholder="搜索实体直达对话；输入 / 开头路径则对 hub-self 执行 list_dir" style="width:100%" autocomplete="off" aria-label="命令面板搜索">
+            <input id="cmdInput" placeholder="搜索实体直达工作台" style="width:100%" autocomplete="off" aria-label="命令面板搜索">
             <div id="cmdList" style="margin-top:8px;max-height:50vh;overflow-y:auto"></div>
         </div>
     </div>
 
-    <div class="footer">Agent Hub v{{ version }} · 融合 Agent_Manager (Apache-2.0) 设计理念 · <span id="ftTime"></span></div>
+    <div class="footer">Agent Hub v{{ version }}<span class="foot-long"> · 融合 Agent_Manager (Apache-2.0) 设计理念</span> · <span id="ftTime"></span></div>
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260919a"></script>
+    <script src="/static/hub.js?v=20260920d"></script>
 </body>
 </html>

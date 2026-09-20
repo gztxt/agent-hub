@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 328.3 64" width="328.3" height="64" role="img" aria-label="Agent Hub">
+  <title>Agent Hub</title>
+  <g transform="translate(0.0 0.0) scale(2.666667)" fill="none" stroke="#111111" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9.4" y="9.4" width="5.2" height="5.2" rx="1.5"/>
+    <circle cx="4.4" cy="4.4" r="1.1" fill="#111111"/>
+    <circle cx="19.6" cy="4.4" r="1.1" fill="#111111"/>
+    <circle cx="4.4" cy="19.6" r="1.1" fill="#111111"/>
+    <circle cx="19.6" cy="19.6" r="1.1" fill="#111111"/>
+    <path d="M6.2 6.2 9.6 9.6M17.8 6.2 14.4 9.6M6.2 17.8 9.6 14.4M17.8 17.8 14.4 14.4"/>
+  </g>
+  <g font-family="'PingFang SC','HarmonyOS Sans SC','MiSans','Source Han Sans SC','Helvetica Neue',Arial,sans-serif" font-size="55">
+    <text x="80.5" y="45.65" fill="#111111" font-weight="800" letter-spacing="-1.65">Agent</text>
+    <text x="228.06" y="45.65" fill="#444444" font-weight="300" letter-spacing="-0.825">Hub</text>
+  </g>
+</svg>

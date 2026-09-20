@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Agent Hub">
+  <g fill="none" stroke="#111111" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="9.4" y="9.4" width="5.2" height="5.2" rx="1.5"/>
+  <circle cx="4.4" cy="4.4" r="1.1" fill="#111111"/>
+  <circle cx="19.6" cy="4.4" r="1.1" fill="#111111"/>
+  <circle cx="4.4" cy="19.6" r="1.1" fill="#111111"/>
+  <circle cx="19.6" cy="19.6" r="1.1" fill="#111111"/>
+  <path d="M6.2 6.2 9.6 9.6M17.8 6.2 14.4 9.6M6.2 17.8 9.6 14.4M17.8 17.8 14.4 14.4"/>
+  </g>
+</svg>
