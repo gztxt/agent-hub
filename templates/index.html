@@ -395,6 +395,40 @@
            pi-web 行2「信息」：容器 h=29、bg #eeeeee、11px、border-bottom 1px #e0e0e0（它放工作目录/cwd）
            → 嵌入视图顶部固定两行：行1 菜单（回总览 / 实体名 / 刷新 / 新窗口），行2 IP 地址；
              iframe 不再叠任何 hub 装饰（用户口径：内框直接加载 agent 原生界面）*/
+        /* 头部容器：宽屏（≥768）把两栏并成一行；窄屏在下面的媒体查询里退回两行。
+           对齐口径 = 共享基线，不是各自垂直居中：标题 15px/700 与地址 11px 等宽混排时，
+           居中会让两条基线差 2~3px，肉眼看就是"数字和文字没对齐"（用户 09-20 指出）。
+           flex 容器的基线取自它第一个 flex 项的基线，所以 .ebar-menu 与 .ebar-addr 两个
+           分组能跟同一行里的标题文字对到一条基线上。 */
+        .ebar-head { display: flex; align-items: baseline; gap: 10px; flex: none; height: 36px;
+                     padding: 9px 10px 0; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
+        .ebar-head > .ebar-menu { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0; }
+        .ebar-head > .ebar-addr { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0;
+                                  margin-left: auto; gap: 6px; }
+        /* 行内按钮改成贴文字高（原来固定 24px 盒会在基线对齐时把行高顶起来）。
+           只作用于宽屏：窄屏那两行是另一套已验证版式（35 + 29），不能被串改。 */
+        @media (min-width: 768px) {
+          /* 按钮改成 inline-block：inline-flex 容器向父级提交的基线取自第一个子项
+             （SVG 图标的底边），会把整行文字拉高 3.5px；inline-block 的基线由内部
+             文字决定，图标用 vertical-align 自己就位的下沿。 */
+          .ebar-head .ebar-btn { display: inline-block; height: auto; line-height: 18px; padding: 1px 6px; }
+          .ebar-head .ebar-btn > svg.i { vertical-align: -2px; margin-right: 4px; }
+          .ebar-head .ebar-btn-icon { padding: 1px 5px; }
+          .ebar-head .ebar-btn-icon > svg.i { margin-right: 0; }
+          .ebar-head .ebar-k, .ebar-head .ebar-addr-v { line-height: 18px; }
+          /* 摊平两个分组：display:contents 让标题、地址、按钮成为同一个 flex 行的直接
+             子项，align-items:baseline 才能真正贯穿整行（分在两个容器里时，两组各自的
+             基线只能靠容器基线间接对齐，15px 与 11px 混排就会露出 2px 错位）。
+             顺序用 order 重排：标题 → 地址组 → 弹性空隙 → 刷新/新窗口。 */
+          .ebar-head { gap: 6px; }
+          .ebar-head > .ebar-menu, .ebar-head > .ebar-addr { display: contents; }
+          .ebar-head > .ebar-menu > b { order: 1; min-width: 0; flex: 0 1 auto; }
+          .ebar-head > .ebar-addr > .ebar-k { order: 2; margin-left: 8px; }
+          .ebar-head > .ebar-addr > .ebar-addr-v { order: 2; min-width: 0; flex: 0 1 auto; }
+          .ebar-head > .ebar-addr > .ebar-btn { order: 2; }
+          .ebar-head > .ebar-menu > .ebar-sp { order: 3; }
+          .ebar-head > .ebar-menu > .ebar-btn { order: 4; }
+        }
         .ebar-menu { display: flex; align-items: center; gap: 8px; flex: none; height: 36px;
                      padding: 0 10px; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
         .ebar-menu > b { font-size: 15px; font-weight: 700; line-height: 1.2; color: var(--text-1);
@@ -412,9 +446,6 @@
                        color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                        user-select: all; -webkit-user-select: all; cursor: text; }
         .ebar-addr-v:empty::before { content: '—'; color: var(--muted); }
-        .ebar-state { margin-left: auto; flex: none; font-size: 11px; color: var(--muted); }
-        .ebar-state.ok { color: var(--ok); }
-        .ebar-state.dead { color: var(--danger); }
         /* 终端会话芯片（用户 09-20）：行1 内联，取代旧的「会话」刷新按钮与「暂无活会话」常驻字。
            新会话建立后由 termNew() 先本地插一个芯片（即时可见），再由 termRefreshList() 以服务端为准重绘。
            单行不换行：芯片多了就横向滚动，不能撑成第二行（那样就破了“外框只一行”的口径）。
@@ -498,6 +529,11 @@
             .pane .bar .hint { flex: 1 1 100%; order: 3; font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             /* 窄屏：外框两行仍按 pi-web 同参（行1 35 / 行2 29），只收内边距与间距 */
             .ebar-menu { height: 35px; gap: 6px; padding: 0 8px; }
+            /* 窄屏：一行放不下地址，退回两行（首行 surface 35px，次行 #eeeeee 29px），
+               与宽屏同源同色带，只是换了排布口径 */
+            #embedPane .ebar-head { display: block; height: auto; padding: 0; background: transparent; border-bottom: 0; }
+            #embedPane .ebar-head > .ebar-menu { height: 35px; padding: 0 8px; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
+            #embedPane .ebar-head > .ebar-addr { height: 29px; padding: 0 8px; background: #eeeeee; border-bottom: 1px solid #e0e0e0; justify-self: stretch; }
             .ebar-menu > b { max-width: 38vw; }
             .ebar-addr { height: 29px; gap: 6px; padding: 0 8px; }
             .ebar-btn { padding: 0 6px; }
@@ -645,19 +681,22 @@
                 </details>
                 <div class="chat-main">
                     <div class="bar" id="chatModeBar" style="display:none;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)"></div>
-                    <!-- 模式1：原生 Web UI 嵌入 —— 外框固定两行（菜单 / IP 地址），内框直入原生界面 -->
+                    <!-- 模式1：Web UI 嵌入 —— 外框宽屏一行（标题 + 地址）、窄屏两行（菜单 / 地址），内框直载宿主界面 -->
                     <div class="pane" id="embedPane">
+                        <!-- 宽屏一行：.ebar-head 用 flex+baseline 把「菜单栏」与「地址栏」并成
+                             标题左 / 地址右；窄屏退回两行（35 + 29），两条口径各按自己的媒体查询。 -->
+                        <div class="ebar-head">
                         <div class="ebar-menu">
                             <b id="embedTitle"></b>
                             <span class="ebar-sp"></span>
                             <button class="ebar-btn" onclick="embedRefresh()" title="重新加载内嵌界面"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
-                            <button class="ebar-btn" onclick="embedNewTab()" title="在新窗口打开原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口</button>
+                            <button class="ebar-btn" onclick="embedNewTab()" title="在新标签页打开"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口</button>
                         </div>
                         <div class="ebar-addr">
                             <span class="ebar-k">地址</span>
                             <span class="ebar-addr-v" id="embedUrlHint" title="已全选样式：长按/双击可直接选中，点右侧图标复制"></span>
-                            <button class="ebar-btn" onclick="embedCopyUrl()" title="复制完整地址"><svg class="i xs" aria-hidden="true"><use href="#i-copy"/></svg>复制</button>
-                            <span class="ebar-state" id="embedProbeState">探测中…</span>
+                            <button class="ebar-btn ebar-btn-icon" onclick="embedCopyUrl()" title="复制完整地址" aria-label="复制地址"><svg class="i xs" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                                                    </div>
                         </div>
                         <iframe id="embedFrame" src="about:blank"></iframe>
                     </div>
@@ -918,6 +957,6 @@
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260920e"></script>
+    <script src="/static/hub.js?v=20260920h"></script>
 </body>
 </html>

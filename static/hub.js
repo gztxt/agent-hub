@@ -324,13 +324,11 @@ function applyChatMode() {
   if (chatMode === 'embed') {
     const e = (a.entries || []).find(x => x.type === 'embed');
     const url = e ? lanUrl(e.url) : '';
-    $('embedTitle').textContent = a.name + ' · 原生界面';
+    $('embedTitle').textContent = a.name;   // 用户 09-20：删掉「原生界面」后缀（宽屏要把地址并进同一行，标题越短越好）
     // 地址行：#embedUrlHint 现为 <button><span>URL</span><svg/></button>，直接写 textContent 会把图标抹掉
     const hintEl = $('embedUrlHint');
     const hintTxt = hintEl ? hintEl.querySelector('span') : null;
     if (hintTxt) hintTxt.textContent = url; else if (hintEl) hintEl.textContent = url;
-    const ps = $('embedProbeState');
-    if (ps) { ps.textContent = '探测中…'; ps.className = 'ebar-state'; }
     const f = $('embedFrame');
     if (f.dataset.src !== url) { f.src = url; f.dataset.src = url; }
     probeEmbed(url);
@@ -367,8 +365,8 @@ function switchMode(m) {
 /* 嵌入存活探测：no-cors fetch 失败=目标端口无响应 → 覆盖层引导切换 */
 async function probeEmbed(url) {
   const pane = $('embedPane');
-  const st = $('embedProbeState');
-  const setState = (txt, cls) => { if (st) { st.textContent = txt; st.className = 'ebar-state ' + cls; } };
+  // 存活信号只保留"死时"的那一份：失败会有整屏覆盖层（含切模式/重试按钮），
+  // 活着时行内再挂一句「可达」是纯噪声 —— 用户 09-20 要求删掉该字样。
   let dead = pane.querySelector('.embed-dead');
   if (dead) dead.remove();
   try {
@@ -376,9 +374,7 @@ async function probeEmbed(url) {
       fetch(url, { mode: 'no-cors', cache: 'no-store' }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
     ]);
-    setState('可达', 'ok');
   } catch (e) {
-    setState('未响应', 'dead');
     dead = document.createElement('div');
     dead.className = 'embed-dead';
     dead.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:var(--mask);z-index:5';
