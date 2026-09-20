@@ -48,6 +48,8 @@ import tasks as tasks_mod
 import mcpgw as mcpgw_mod
 import cronjobs as cronjobs_mod
 import term as term_mod
+import profiles as profiles_mod
+import embed_proxy as embed_proxy_mod
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
@@ -531,9 +533,13 @@ async def _get_pi_sessions(limit: int) -> list:
     return []
 
 
+_embed_proxy = None      # 外框注入代理句柄（EMBED_UNIFY=0 时保持 None）
+
+
 @app.on_event("startup")
 async def startup():
     global discovery
+    global _embed_proxy
     db.init_db(config.db_path)
     discovery = AgentDiscovery(config, db=db)
     build_adapters(config)
@@ -547,6 +553,20 @@ async def startup():
     cronjobs_mod.set_context(
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr))
     cronjobs_mod.start_engine()
+    # 外框统一注入代理（用户 09-20 方案 b）：:3103 → qwenpaw :8088，HTML 出栈前插 <style>。
+    # 起不来也不能影响 hub 本体：裹 try/except，顶多外框不统一（嵌入视图仍直连可用）。
+    if profiles_mod.EMBED_UNIFY:
+        try:
+            qp = next((p for p in profiles_mod.PROFILES if p.get("id") == "qwenpaw"), None)
+            if qp and qp.get("port"):
+                _embed_proxy = embed_proxy_mod.EmbedProxy(
+                    "QwenPaw", "127.0.0.1", qp["port"],
+                    listen_host=os.getenv("EMBED_PROXY_HOST", config.host),
+                    listen_port=profiles_mod.EMBED_PROXY_PORT)
+                await _embed_proxy.start()
+        except Exception as e:
+            print(f"[Agent Hub] 注入代理启动失败（不影响其他功能）：{type(e).__name__}: {e}")
+            _embed_proxy = None
     print(f"[Agent Hub] 启动完成 v{VERSION}，监听 {config.host}:{config.port}")
     print(f"[Agent Hub] CCR: {config.ccr_url} | pi: {config.pi_url} | "
           f"jcode: {config.jcode_url} | TDAI: {config.tdaI_url}")
@@ -556,6 +576,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    if _embed_proxy is not None:
+        await _embed_proxy.stop()
     term_mod.kill_all()
 
 

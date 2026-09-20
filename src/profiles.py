@@ -18,6 +18,15 @@ from typing import Dict, List, Optional
 
 LAN_HOST_NOTE = "loopback 地址由前端按访问主机名改写"
 
+# ── 外框统一注入代理（用户 09-20 选定方案 b）──────────────────────
+# qwenpaw 自带 56px 顶栏（实测 h=56、sider=calc(100vh-64px)），跨源 iframe 下 hub 注不进
+# 任何样式，而官方也没有 hideHeader/custom_css 钩子。hub 在进程内起一个本地反代，
+# HTML 出栈前插一段 <style>（见 src/embed_proxy.py）。默认开；想回直连只需在 .env
+# 写 EMBED_UNIFY=0 重启 hub，不必改代码。
+EMBED_UNIFY = os.getenv("EMBED_UNIFY", "1") == "1"
+EMBED_PROXY_PORT = int(os.getenv("EMBED_PROXY_PORT", "3103"))
+QWENPAW_UI = ("http://127.0.0.1:%d" % EMBED_PROXY_PORT) if EMBED_UNIFY else "http://127.0.0.1:8088"
+
 # 进程扫描缓存（一次 discovery 周期复用）
 _proc_cache = {"ts": 0.0, "procs": []}
 
@@ -108,9 +117,10 @@ PROFILES: List[dict] = [
      "desc": "TUI Agent（无 Web UI/本地 API）→ 原生终端会话"},
     {"id": "qwenpaw", "name": "QwenPaw", "kind": "agent",
      "detect": {"proc": [r"qwenpaw app"]},
-     "cli": None, "port": 8088, "ui": "http://127.0.0.1:8088",
+     "cli": None, "port": 8088, "ui": QWENPAW_UI,
      "terminal": None, "chat": None,
-     "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088"},
+     "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088" +
+             ("；经 hub 注入代理 :%d 统一外框" % EMBED_PROXY_PORT if EMBED_UNIFY else "；直连（注入已关）")},
 
     # ── Gateways（非 Agent，仅快捷方式）──────────────────────
     {"id": "ccr", "name": "CCR Gateway", "kind": "gateway",
