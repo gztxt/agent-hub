@@ -121,7 +121,9 @@ class AgentDiscovery:
                 vrec = vitals.vitals.get(p["id"])
             except Exception:  # noqa: BLE001
                 vrec = None
-            if vrec and vrec.get("verdict") in ("not_installed", "blocked_by_account", "broken"):
+            # 只有 truly gone（not_installed / broken）才跳过；
+            # blocked_by_account 是额度/登录问题，agent 本身可用，保留卡片标状态。
+            if vrec and vrec.get("verdict") in ("not_installed", "broken"):
                 continue
             entries = profiles.entries_for(p, status)
             # 通用宿主探测：dict ui = 独立 Web 界面宿主（如 claude←cloudcli :3010），
