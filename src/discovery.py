@@ -114,14 +114,14 @@ class AgentDiscovery:
             ui = p.get("ui")
             # vitals 闸门放在发现层（每个请求都算）：profiles 那边的同名单子有 30s 缓存，
             # 只靠它会造成「每次重启后假卡再活 30 秒」的反复。
-            # 动态发现的假卡直接不出卡；用户手定的静态画像不默默掉卡，
-            # 而是保留卡片 + 标不可用 + 去掉必败的「终端」按钮。
+            # 判定为不可用的统一跳过不出卡（静态画像、动态发现一律处理）。
+            # 异常时判定层挂掉也不能把菜单清空。
             vrec = None
             try:
                 vrec = vitals.vitals.get(p["id"])
-            except Exception:  # noqa: BLE001  判定层异常不能把菜单清空
+            except Exception:  # noqa: BLE001
                 vrec = None
-            if vrec and vrec.get("verdict") == "not_installed" and p.get("dynamic"):
+            if vrec and vrec.get("verdict") in ("not_installed", "blocked_by_account", "broken"):
                 continue
             entries = profiles.entries_for(p, status)
             # 通用宿主探测：dict ui = 独立 Web 界面宿主（如 claude←cloudcli :3010），
@@ -140,10 +140,8 @@ class AgentDiscovery:
             # 死面板不出按钮（probe_port 过滤）
             entries = [e for e in entries
                        if not (e.get("probe_port") and not self._sync_check_port(e["probe_port"]))]
-            # vitals 判定：假卡/坏卡不出「终端」死按钮，并给前端可解释的理由
+            # 判定层异常 / 无记录：正常出卡，前端会显示 null 字段
             vv = _verdict_view(p, vrec)
-            if vv["verdict"] in ("not_installed", "broken"):
-                entries = [e for e in entries if e.get("type") != "term"]
             agents.append(AgentInfo(
                 id=p["id"], name=p["name"], kind=p["kind"], status=status,
                 endpoint=endpoint, port=p.get("port"),
