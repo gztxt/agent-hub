@@ -11,6 +11,54 @@ from typing import Dict, List, Optional
 import aiohttp
 
 import profiles
+import vitals
+
+
+def _verdict_view(p: dict, vrec: Optional[dict]):
+    """把 vitals 记录翻译成前端字段（usable / 中文理由）。没结论时 usable=None，不装懂。"""
+    if not vrec:
+        return {"usable": None, "verdict": "pending", "reason": "尚未体检（等首轮探针跑完）",
+                "source": "pending", "confidence": None, "at": None, "attested": None}
+    v = vrec.get("verdict", "unknown")
+    ev = vrec.get("evidence", {})
+    if v == "usable":
+        if ev.get("agent_shape") == "terminal-cli":
+            if ev.get("run_ok") or vrec.get("l4_run_ok"):
+                reason = "实测应答正常"
+            elif ev.get("run_rc") is not None:
+                reason = "真实请求已跑但未见正常应答（rc=%s），只能算自述正常" % ev.get("run_rc")
+            else:
+                reason = "可执行文件自述正常（本轮未做真实应答实测）"
+        else:
+            code = ev.get("endpoint_http_v4") or ev.get("endpoint_http_v6")
+            reason = "自有端点应声 HTTP %s" % code
+    else:
+        reason = {
+            "not_installed": ("假卡：命中的是入口壳 %s，它打印「找不到目标命令」后就退出，"
+                              "该 Agent 本体未安装" % (ev.get("resolved_path") or "-")),
+            "blocked_by_account": "已安装但被账号条件拦住（额度/登录未就绪），需人工恢复",
+            "broken": "已安装但启动失败/超时无响应",
+            "stopped": "服务未运行（端口无应答），程序本身没坏",
+        }.get(v, "证据不足，未能判定")
+    l4at = vrec.get("l4_at")
+    if vrec.get("flaky"):
+        reason += "（本轮真实请求没成功，先当抖动；连错 %s 次才改判）" % (
+            vrec.get("neg_streak") or 1)
+    if vrec.get("probe_defect"):
+        reason += "（注：上轮真请求探针被 CLI 参数/信任检查拒过，该结论未拿它作证）"
+    if l4at and v not in ("usable", "pending"):
+        reason += "（依据 %s 的真实请求实测）" % datetime.fromtimestamp(
+            l4at, timezone.utc).strftime("%m-%d %H:%M")
+    usable = v == "usable"
+    # 凭据：真应答跑通过（L4），或服务型 Agent 自有端口在应声
+    attested = bool(usable and (vrec.get("l4_run_ok") or ev.get("run_ok") or
+                                (ev.get("agent_shape") == "web-service" and
+                                 ev.get("endpoint_serving"))))
+    ts = vrec.get("checked_at")
+    return {"usable": usable, "verdict": v, "reason": reason,
+            "source": vrec.get("source", "rule"), "confidence": vrec.get("confidence"),
+            "at": datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None,
+            "attested": attested}
 
 
 @dataclass
@@ -28,6 +76,16 @@ class AgentInfo:
     builtin: bool = True
     working_dir: Optional[str] = None
     entries: List[dict] = field(default_factory=list)
+    # ── vitals 判定层（2026-09-21）：status 说「在不在」，verdict 说「能不能用」
+    usable: Optional[bool] = None
+    verdict: str = ""
+    verdict_reason: str = ""
+    verdict_source: str = ""      # jev | jev-lowconf | rule | pending
+    verdict_confidence: Optional[float] = None
+    verdict_at: Optional[str] = None
+    # attested：这条「可用」是有实测凭据支撑的（真应答 / 自有端点应声）。
+    # 只跑了 L2 自述探针时为 False —— 前端据此显示「未见异常」而不是「可用」。
+    attested: Optional[bool] = None
 
     def to_dict(self):
         return asdict(self)
@@ -54,6 +112,17 @@ class AgentDiscovery:
         for p in prof_list:
             status = status_map[p["id"]]
             ui = p.get("ui")
+            # vitals 闸门放在发现层（每个请求都算）：profiles 那边的同名单子有 30s 缓存，
+            # 只靠它会造成「每次重启后假卡再活 30 秒」的反复。
+            # 动态发现的假卡直接不出卡；用户手定的静态画像不默默掉卡，
+            # 而是保留卡片 + 标不可用 + 去掉必败的「终端」按钮。
+            vrec = None
+            try:
+                vrec = vitals.vitals.get(p["id"])
+            except Exception:  # noqa: BLE001  判定层异常不能把菜单清空
+                vrec = None
+            if vrec and vrec.get("verdict") == "not_installed" and p.get("dynamic"):
+                continue
             entries = profiles.entries_for(p, status)
             # 通用宿主探测：dict ui = 独立 Web 界面宿主（如 claude←cloudcli :3010），
             # 端口活才出「原生会话」入口，且计入实体 running 证据
@@ -71,6 +140,10 @@ class AgentDiscovery:
             # 死面板不出按钮（probe_port 过滤）
             entries = [e for e in entries
                        if not (e.get("probe_port") and not self._sync_check_port(e["probe_port"]))]
+            # vitals 判定：假卡/坏卡不出「终端」死按钮，并给前端可解释的理由
+            vv = _verdict_view(p, vrec)
+            if vv["verdict"] in ("not_installed", "broken"):
+                entries = [e for e in entries if e.get("type") != "term"]
             agents.append(AgentInfo(
                 id=p["id"], name=p["name"], kind=p["kind"], status=status,
                 endpoint=endpoint, port=p.get("port"),
@@ -80,7 +153,11 @@ class AgentDiscovery:
                 config_path=self._find_config_path(p["id"]),
                 last_seen=self._iso_now(), builtin=True,
                 working_dir=(p.get("terminal") or {}).get("cwd"),
-                entries=entries))
+                entries=entries,
+                usable=vv["usable"], verdict=vv["verdict"],
+                verdict_reason=vv["reason"], verdict_source=vv["source"],
+                verdict_confidence=vv["confidence"], verdict_at=vv["at"],
+                attested=vv["attested"]))
         # 动态注册/扫描项（一律 service 类，仅快捷方式）
         for c in self._custom_agents():
             port = c.get("port")
@@ -131,22 +208,19 @@ class AgentDiscovery:
         self._cache.clear()
 
     def _sync_check_port(self, port: Optional[int]) -> bool:
+        """双栈探活（2026-09-21）：127.0.0.1 拒连不等于服务没起。
+        实测 qwenpaw 2.2.1 只监听 IPv6（:8088 上 127.0.0.1=拒连、::1=通），
+        单栈探测会把它误报成离线。"""
         if not port:
             return False
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.2)
-            ok = s.connect_ex(("127.0.0.1", port)) == 0
-            s.close()
-            return ok
-        except OSError:
-            return False
+        return vitals.port_open(port) or vitals.port_open(port, "::1")
 
     def _find_config_path(self, agent_id: str) -> Optional[str]:
         paths = {
             "claude": Path.home() / ".claude" / "settings.json",
             "pi": Path.home() / ".pi" / "settings.json",
             "jcode": Path.home() / ".config" / "jcode" / "config.toml",
+            "grok": Path.home() / ".grok" / "config.toml",
             "hermes": Path.home() / ".hermes" / "config.yaml",
             "ccr": Path.home() / ".ccr" / "config.json",
         }

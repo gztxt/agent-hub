@@ -49,12 +49,13 @@ import mcpgw as mcpgw_mod
 import cronjobs as cronjobs_mod
 import term as term_mod
 import profiles as profiles_mod
+import vitals as vitals_mod
 import embed_proxy as embed_proxy_mod
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -218,6 +219,51 @@ async def get_agent(agent_id: str):
     if not agent:
         raise HTTPException(404, f"Agent {agent_id} not found")
     return agent.to_dict()
+
+
+def _agent_profs_for_vitals():
+    """只体检 kind=agent 的画像（gateway/service/tool 不进菜单闸门），
+    且**含已被摘掉的候补** —— 不重新探测就会被永久固化，用户装好了也回不来。"""
+    return [p for p in profiles_mod.all_profiles(include_blocked=True)
+            if p.get("kind") == "agent"]
+
+
+@app.get("/api/vitals")
+async def get_vitals():
+    """判定台账（可审计）：每个 agent 的证据 + 裁决 + 来源 + 概率"""
+    snap = vitals_mod.vitals.snapshot()
+    return {"count": len(snap), "last_sweep": vitals_mod.vitals.last_sweep,
+            "jev_key_present": bool(vitals_mod.profiles_jev_key()),
+            "menu_min": vitals_mod.MENU_MIN, "sweep_every_sec": vitals_mod.SWEEP_EVERY,
+            "detail": snap}
+
+
+@app.post("/api/vitals/sweep")
+async def post_sweep():
+    """跑一轮完整体检：先全量 L1/L2（不碰模型），再对「上次真请求实测已过期」的
+    候补补 L4（每人每 24h 最多一次）。VITALS_RT_SWEEP=0 可退成纯廉价轮。"""
+    return await asyncio.to_thread(vitals_mod.vitals.sweep, _agent_profs_for_vitals())
+
+
+@app.post("/api/agents/{agent_id}/verify")
+async def verify_agent(agent_id: str):
+    """L4 体检：跑一次真实一次性请求。要耗 token 且慢（冷启动可达 60s），
+    所以只给显式动作触发，不进自动周期。"""
+    p = profiles_mod.get_profile(agent_id)
+    if not p:
+        raise HTTPException(404, f"未知 agent: {agent_id}")
+    if not p.get("verify_argv"):
+        raise HTTPException(400, {"error": "该 Agent 未声明 verify_argv（无法做真实应答实测）",
+                                 "shape": (vitals_mod.collect(p)).get("agent_shape")})
+    rec = await asyncio.to_thread(vitals_mod.vitals.verify, p)
+    ev = rec.get("evidence", {})
+    out = {k: rec.get(k) for k in ("verdict", "source", "rule_verdict", "confidence",
+                                   "menu_noul", "present_noul", "roundtrip_noul",
+                                   "block_noul", "jev_error")}
+    out["evidence"] = {kk: ev.get(kk) for kk in
+                       ("agent_shape", "resolved_path", "version_rc", "run_rc", "run_ok",
+                        "run_evidence", "evidence_sha", "endpoint_serving")}
+    return out
 
 
 @app.post("/api/agents/detect")
@@ -536,6 +582,21 @@ async def _get_pi_sessions(limit: int) -> list:
 _embed_proxy = None      # 外框注入代理句柄（EMBED_UNIFY=0 时保持 None）
 
 
+async def vitals_loop():
+    """可用心跳慢周期：首轮延后 2s（先让 hub 开接请求），之后每 VITALS_SWEEP_SEC 一轮。
+    只跑 L1/L2（which / 文件头 / --version / --help / 端点探活），不碰模型；
+    任何异常都不打死循环（否则一次偶发就把菜单永久冻在旧结论上）。"""
+    await asyncio.sleep(2)
+    while True:
+        try:
+            r = await asyncio.to_thread(vitals_mod.vitals.sweep, _agent_profs_for_vitals())
+            print("[vitals] sweep %s" % r, flush=True)
+        except Exception as e:  # noqa: BLE001
+            print("[vitals] sweep 异常（下轮重试）%s: %s" % (
+                type(e).__name__, str(e)[:160]), flush=True)
+        await asyncio.sleep(vitals_mod.SWEEP_EVERY)
+
+
 @app.on_event("startup")
 async def startup():
     global discovery
@@ -548,6 +609,7 @@ async def startup():
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr),
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
     asyncio.create_task(tasks_mod.sweep_stale_tasks())
+    asyncio.create_task(vitals_loop())
     mcpgw_mod.ensure_schema()
     cronjobs_mod.ensure_schema()
     cronjobs_mod.set_context(

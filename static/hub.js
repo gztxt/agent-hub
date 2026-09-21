@@ -102,7 +102,13 @@ async function loadAgents() {
     renderHomeStats();
     renderNav();   // v0.7.1：Agent / 基础设施的唯一入口是左侧手风琴，随数据刷新
     const ag = AGENTS.filter(a => a.kind === 'agent');
-    $('hAgents').textContent = 'Agents: ' + ag.length + '（在线 ' + ag.filter(a => a.status === 'running').length + '）';
+    /* v0.10.2：「在线」换成「可用」——装了 ≠ 能用（fcc-* 入口壳、qoder 额度耗尽都是实例）。
+       假卡已在服务端被 vitals 拦掉，这里的分母已经是真 Agent 数。 */
+    const usableN = ag.filter(a => a.attested === true).length;
+    const untryN = ag.filter(a => a.usable === true && a.attested === false).length;
+    const pendN = ag.filter(a => a.usable == null).length;
+    $('hAgents').textContent = 'Agents: ' + ag.length + '（可用 ' + usableN +
+      (untryN ? ' · 未实测 ' + untryN : '') + (pendN ? ' · 待检 ' + pendN : '') + '）';
     const errs = AGENTS.filter(a => a.status === 'error').length;
     $('hErrors').innerHTML = errs ? '<span class="hdot r"></span>异常 ' + errs : '';
   } catch (e) {
@@ -119,13 +125,13 @@ async function loadAgents() {
 function renderHomeStats() {
   const ag = AGENTS.filter(a => a.kind === 'agent');
   const infra = AGENTS.filter(a => a.kind !== 'agent');
-  const running = ag.filter(a => a.status === 'running').length;
+  const running = ag.filter(a => a.attested === true).length;   /* 「可用」只统计有实测凭据的 */
   const errs = AGENTS.filter(a => a.status === 'error').length;
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   set('cntAgent', ag.length);
   set('cntInfra', infra.length);
   set('hsAgent', ag.length);
-  set('hsRunning', running);
+  set('hsRunning', running);   /* 标签在模板里已改「可用」：取 vitals 结论，无结论时退为在线 */
   set('hsInfra', infra.length);
   set('hsError', errs);
   const errCard = $('hsError');
@@ -148,9 +154,25 @@ async function pollHealth() {
 
 
 function seatStateOf(a) {
+  /* vitals 判定优先于状态色：账号阻断/启动失败都按「异常」菱形给到眼前，
+     但不删卡（它是真装了的 Agent，修好账号就能用）。 */
+  if (a.kind === 'agent' && (a.verdict === 'blocked_by_account' || a.verdict === 'broken'))
+    return 'error';
   return a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : (a.status === 'error' ? 'error' : 'stopped'));
 }
 const SEAT_LABELS = { running: '在线', installed: '可启动', stopped: '离线', error: '异常' };
+/* 判定结果给人看的短标：宁可短句，详情进 tooltip 与详情抽屉 */
+const VERDICT_LABELS = { usable: '可用', blocked_by_account: '账号受限', broken: '启动异常',
+                         stopped: '未运行', not_installed: '未安装', pending: '待体检',
+                         unknown: '未判定' };
+function seatLabelOf(a) {
+  const st = seatStateOf(a);
+  // 只有真跑通过应答（或自有端点在应声）才叫「可用」；仅 L2 自述正常 → 「未见异常」
+  if (a.kind === 'agent' && a.verdict === 'usable') return a.attested === false ? '未见异常' : '可用';
+  if (a.kind === 'agent' && a.verdict && a.verdict !== 'stopped' && VERDICT_LABELS[a.verdict])
+    return VERDICT_LABELS[a.verdict];
+  return SEAT_LABELS[st];
+}
 
 
 
@@ -164,6 +186,20 @@ function showDetail(id) {
     '<div style="margin:6px 0"><div class="hint">' + k + '</div>' +
     '<div style="font-family:var(--font-mono);font-size:var(--fs-sm);word-break:break-all;color:var(--text-1)">' + escapeHtml(v) + '</div></div>').join('');
   const es = a.entries || [];
+  /* vitals 台账：判定是什么、凭什么判的、什么时候判的 —— 可审计，不只是个颜色 */  if (a.kind === 'agent' && a.verdict) {
+    html += '<div class="hint" style="margin:10px 0 4px">可用性判定</div>' +
+      '<div style="font-size:var(--fs-sm);color:var(--text-1)">' +
+      escapeHtml(VERDICT_LABELS[a.verdict] || a.verdict) +
+      ' （来源 ' + escapeHtml(a.verdict_source || '-') +
+      (a.verdict_confidence != null ? '，置信 ' + a.verdict_confidence.toFixed(2) : '') + '）</div>' +
+      '<div class="hint" style="margin-top:2px">' + escapeHtml(a.verdict_reason || '') + '</div>' +
+      '<div class="hint" style="margin-top:2px">' +
+      '<button class="act-btn" style="display:inline-block;padding:2px 8px" ' +
+      'onclick="verifyAgent(\'' + escapeHtml(a.id) + '\')" ' +
+      'title="跑一次真实请求（耗 token、冷启动可近 60s）">实测应答</button>' +
+      (a.verdict_at ? ' 上次 ' + escapeHtml(String(a.verdict_at).slice(0, 19).replace('T', ' ')) + 'Z' : '') +
+      '</div>';
+  }
   html += '<div class="hint" style="margin:10px 0 4px">entries</div>' +
     (es.length ? es.map(e => '<span class="tag agent" style="display:inline-block;margin:2px 4px 2px 0;max-width:100%;overflow-wrap:anywhere">' +
       escapeHtml(e.type) + (e.url ? ': ' + escapeHtml(e.url) : '') + '</span>').join('') : '<span class="hint">无</span>');
@@ -171,6 +207,21 @@ function showDetail(id) {
   $('detailDrawer').classList.add('on');
 }
 function closeDetail() { $('detailDrawer').classList.remove('on'); }
+
+/* L4 体检：让 hub 现场跑一次真实一次性请求（耗 token、冷启动可近 60s），完事刷列表 */
+async function verifyAgent(id) {
+  toast('体检 ' + id + '：正在跑真实请求（最长 120s）…');
+  try {
+    const d = await api('/api/agents/' + encodeURIComponent(id) + '/verify', { method: 'POST' });
+    const ev = d.evidence || {};
+    toast(id + ' → ' + (VERDICT_LABELS[d.verdict] || d.verdict) +
+      '（来源 ' + (d.source || '-') + '，应答概率 ' +
+      (d.roundtrip_noul == null ? '-' : d.roundtrip_noul.toFixed(2)) + '）',
+      d.verdict === 'usable' ? 'ok' : 'err');
+    await loadAgents();
+    showDetail(id);
+  } catch (e) { toast('体检失败：' + e.message, 'err'); }
+}
 
 /* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
@@ -1245,7 +1296,9 @@ function navItemHtml(a) {
   const st = seatStateOf(a);
   const on = (curPage === 'chat' && a.id === chatPick) ? ' on' : '';
   // 窄栏里名称会截断，title 里给全量信息（名称 · 状态 · 端口 · 描述）
-  const tip = a.name + ' · ' + SEAT_LABELS[st] + (a.port ? ' · :' + a.port : '') + (a.description ? '\n' + a.description : '');
+  const tip = a.name + ' · ' + seatLabelOf(a) + (a.port ? ' · :' + a.port : '') +
+    (a.verdict_reason ? '\n' + a.verdict_reason : '') +
+    (a.description ? '\n' + a.description : '');
   // 搜索高亮：名称用 hlMatch，ID 和端口保持原样
   const nameHtml = hlMatch(a.name || a.id, ($('navSearch') ? $('navSearch').value.trim() : ''));
   // 操作按钮：按 entries 类型渲染（最多3个）
@@ -1262,12 +1315,12 @@ function navItemHtml(a) {
   }
   const actsHtml = actBtns.length ? '<span class="nav-acts">' + actBtns.join('') + '</span>' : '';
   return '<button class="nav-item' + on + '" data-entity="' + escapeHtml(a.id) + '"' +
-    ' title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(a.name + ' ' + SEAT_LABELS[st]) + '">' +
+    ' title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(a.name + ' ' + seatLabelOf(a)) + '">' +
     '<span class="s-badge ' + st + '"></span>' +
     '<span class="lbl">' + nameHtml + '</span>' +
     (a.port ? '<span class="nav-port">:' + a.port + '</span>' : '') +
     actsHtml +
-    '<span class="nav-st">' + escapeHtml(SEAT_LABELS[st]) + '</span></button>';
+    '<span class="nav-st">' + escapeHtml(seatLabelOf(a)) + '</span></button>';
 }
 // 启动 agent：创建新的终端会话
 async function startAgent(id) {

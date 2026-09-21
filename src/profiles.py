@@ -115,6 +115,13 @@ PROFILES: List[dict] = [
      "terminal": {"cmd": "hermes", "cwd": "/home/gztxt"},
      "chat": None,
      "desc": "TUI Agent（无 Web UI/本地 API）→ 原生终端会话"},
+    {"id": "grok", "name": "Grok CLI", "kind": "agent",
+     "detect": {"proc": [r"(^|/)grok( |$)", r"(^|/)grok-native( |$)"]},
+     "cli": "grok", "port": None, "ui": None,
+     "terminal": {"cmd": "grok", "cwd": "/fs/1000/ftp/技术文档"},
+     "chat": None,
+     "desc": "xAI Grok CLI（native TUI）；默认模型经本机 CCR :3456" +
+             "（~/.grok/config.toml [models].default）→ 原生终端会话"},
     {"id": "qwenpaw", "name": "QwenPaw", "kind": "agent",
      "detect": {"proc": [r"qwenpaw app"]},
      "cli": None, "port": 8088, "ui": QWENPAW_UI,
@@ -184,58 +191,140 @@ SHELL_PROFILE = {"id": "shell", "name": "系统终端 (bash)", "kind": "tool",
                  "desc": "hub 原生 pty 终端（白名单=bash，可用 TERM_ALLOW_BASH=0 关闭）"}
 
 
-# ── B 档动态发现（2026-09-14）──────────────────────────────
+# ── B 档动态发现（2026-09-14；2026-09-21 改多候选名）──────────────
 # CLI watchlist 单一真相源（scanner.py 引用此处）；已安装但未进 PROFILES
-# 的 CLI 自动补 agent 卡片（终端入口），未来新装 CLI 无需改代码。
-CLI_WATCHLIST = ["claude", "codex", "pi", "jcode", "openclaw", "hermes",
-                 "qoder", "opencode", "aider", "gemini", "kimi"]
+# 的 CLI 自动补 agent 卡片（终端入口）。
+#
+# 2026-09-21 修正：原扁平名单与本机实际安装名系统性错配 —— 实装的是
+# qodercli / fcc-opencode / fcc-aider / fcc-muse ...，而名单写 qoder / opencode /
+# aider，which() 每次落空（grok 也是这样，装了却永不出现）。改为
+# 「id → 候选名列表」：同一 Agent 允许多个可执行名（含 fcc- 前缀的
+# free-claude-code 包装），逐个 which，首个命中即用；names[0] 作为卡片 id。
+# 注意：不做 ~/.local/bin/fcc-* 盲枚举 —— fcc-server / fcc-desktop 等不是
+# Agent，盲枚举会把网关和桌面端也变成卡片。
+CLI_ALIASES: Dict[str, dict] = {
+    "claude":   {"display": "Claude Code", "names": ["claude"]},
+    "codex":    {"display": "Codex CLI",   "names": ["codex", "fcc-codex"]},
+    "pi":       {"display": "Pi Agent",    "names": ["pi", "fcc-pi"]},
+    "jcode":    {"display": "JCode",       "names": ["jcode"]},
+    "hermes":   {"display": "Hermes",      "names": ["hermes", "fcc-hermes"]},
+    "openclaw": {"display": "OpenClaw",    "names": ["openclaw"]},
+    "qoder":    {"display": "Qoder CLI",   "names": ["qodercli", "qoder"]},
+    "opencode": {"display": "OpenCode",    "names": ["opencode", "fcc-opencode"]},
+    "aider":    {"display": "Aider",       "names": ["aider", "fcc-aider"]},
+    "muse":     {"display": "Muse",        "names": ["muse", "fcc-muse"]},
+    "cline":    {"display": "Cline",       "names": ["cline", "fcc-cline"]},
+    "dsh":      {"display": "DSH",         "names": ["dsh", "fcc-dsh"]},
+    "gemini":   {"display": "Gemini CLI",  "names": ["gemini"]},
+    "kimi":     {"display": "Kimi CLI",    "names": ["kimi"]},
+}
 
-CLI_DISPLAY = {"codex": "Codex CLI", "openclaw": "OpenClaw", "opencode": "OpenCode",
-               "aider": "Aider", "gemini": "Gemini CLI", "kimi": "Kimi CLI",
-               "qoder": "Qoder", "hermes": "Hermes", "jcode": "JCode",
-               "claude": "Claude Code", "pi": "Pi Agent"}
-
-_cli_dyn_cache = {"ts": 0.0, "items": []}
+# 扁平候选名（scanner.py 的 cli_installed 报告用，保持同名兼容）
+CLI_WATCHLIST = [n for s in CLI_ALIASES.values() for n in s["names"]]
+CLI_DISPLAY = {s["names"][0]: s["display"] for s in CLI_ALIASES.values()}
 
 
-def _dynamic_cli_agents() -> List[dict]:
-    """watchlist 中实测已安装（which 可解析）且注册表未收录的 CLI → 动态 agent 画像。
+# ── 探针声明（vitals.py 消费；2026-09-21 加）─────────────────────
+# aliases      ：该 Agent 在本机可能的可执行名（含 fcc-* 入口壳），逐个 which
+# verify_argv  ：一次性真实请求（{p} 换成短提示）。**烧 token**，只在显式「体检」时跑；
+#                慢周期只跑 --version/--help 这类不碰模型的探针。
+# 服务型 Agent（pi :30141、qwenpaw :8088）不在此表 —— 它们的存在性证据是自有端口应声。
+# 未声明 verify_argv 的 Agent 不做 L4，停在 L2（可用但标「未实测应答」）。
+AGENT_PROBE: Dict[str, dict] = {
+    "claude": {"verify_argv": ["claude", "-p", "{p}"]},
+    "jcode":  {"verify_argv": ["jcode", "run", "{p}"]},
+    "codex":  {"aliases": ["codex", "fcc-codex"],
+               # --skip-git-repo-check 必需：cwd（技术文档根）不在 codex 信任目录里，
+               # 缺这个参数 codex 会 rc=1 报「Not inside a trusted directory」——
+               # 那是探针自摆一道，不是 Agent 坏了（2026-09-21 实测踩到并已修正）。
+               "verify_argv": ["codex", "exec", "--skip-git-repo-check", "{p}"]},
+    "hermes": {"aliases": ["hermes", "fcc-hermes"],
+               "verify_argv": ["hermes", "-z", "{p}", "--cli"]},
+    "grok":   {"aliases": ["grok", "fcc-grok"], "verify_argv": ["grok", "-p", "{p}"]},
+    # qoder 卡片 id 是 qoder，实际可执行名 qodercli（WorkBuddy 21:51 的多候选名修正）
+    "qoder":  {"aliases": ["qodercli", "qoder"], "verify_argv": ["qodercli", "-p", "{p}"]},
+}
+
+
+def _enrich(p: dict) -> dict:
+    """把 AGENT_PROBE + CLI_ALIASES 的候选名/探针注入画像（不新增条目，只补字段）"""
+    spec = dict(AGENT_PROBE.get(p.get("id"), {}))
+    alias = CLI_ALIASES.get(p.get("id"))
+    if alias:
+        spec.setdefault("aliases", alias["names"])
+    if not spec:
+        return p
+    out = dict(p)
+    for k, v in spec.items():
+        out.setdefault(k, v)
+    return out
+
+
+_cli_dyn_cache: Dict[bool, dict] = {}
+
+
+def _dynamic_cli_agents(gate: bool = True) -> List[dict]:
+    """CLI_ALIASES 中实测已安装（候选名逐个 which）且注册表未收录的 CLI → 动态 agent 画像。
+
+    2026-09-21 第二道闸门：`which()` 命中只代表「有个同名文件能执行」，不代表该 Agent
+    真的存在。fcc-* 入口壳会 rc=0 地打印「Could not find X command: muse」后退出，
+    单靠 which 一口气冒出 5 张假卡。改为再问 vitals：判为 not_installed 的不进菜单。
+    vitals 没结论（首次启动、探针未跑完）时**保留卡片**，宁多不误删。
     结果缓存 30s，避免每次 discovery 都扫盘。"""
     import time
     now = time.monotonic()
-    if now - _cli_dyn_cache["ts"] < 30:
-        return _cli_dyn_cache["items"]
+    cache = _cli_dyn_cache.setdefault(gate, {"ts": 0.0, "items": []})
+    if now - cache["ts"] < 30:
+        return cache["items"]
     covered = {p["id"] for p in PROFILES}
     covered |= {p.get("cli") for p in PROFILES if p.get("cli")}
     out: List[dict] = []
-    for name in CLI_WATCHLIST:
-        if name in covered:
+    for cid, spec in CLI_ALIASES.items():
+        if cid in covered:
             continue
-        path = which(name)
-        if not path:
+        hit = None
+        for name in spec["names"]:
+            if name in covered:
+                continue
+            path = which(name)
+            if path:
+                hit = (name, path)
+                break
+        if not hit:
             continue
+        name, path = hit
+        if gate:                                  # vitals ↔ profiles 互引，延迟导入断开环
+            try:
+                import vitals
+                if not vitals.vitals.show_in_menu(cid):
+                    continue
+            except Exception:  # noqa: BLE001  判定层挂了不能把菜单清空
+                pass
         out.append({
-            "id": name, "name": CLI_DISPLAY.get(name, name.capitalize()),
+            "id": cid, "name": spec["display"],
             "kind": "agent",
             "detect": {"proc": [rf"(^|/){re.escape(name)}( |$)"]},
             "cli": name, "port": None, "ui": None,
             "terminal": {"cmd": name, "cwd": "/fs/1000/ftp/技术文档"},
             "chat": None, "dynamic": True,
-            "desc": f"CLI Agent（watchlist 自动发现：{path}）→ 原生终端会话"})
-    _cli_dyn_cache["ts"] = now
-    _cli_dyn_cache["items"] = out
+            "desc": f"CLI Agent（自动发现：{path}）→ 原生终端会话"})
+    cache["ts"] = now
+    cache["items"] = out
     return out
 
 
-def all_profiles() -> List[dict]:
-    out = list(PROFILES) + _dynamic_cli_agents()
+def all_profiles(include_blocked: bool = False) -> List[dict]:
+    """include_blocked=True：被判定为假卡的候补也要给出。
+    体检必须覆盖它们，否则「今日判为未安装」会被永久固化：被摘掉的卡再也不会被
+    重新探测，用户装好了也不会自动回来。菜单（discovery）走带门版的默认值。"""
+    out = list(PROFILES) + _dynamic_cli_agents(gate=not include_blocked)
     if os.getenv("TERM_ALLOW_BASH", "1") != "0":
         out.append(SHELL_PROFILE)
-    return out
+    return [_enrich(p) for p in out]
 
 
 def get_profile(pid: str) -> Optional[dict]:
-    for p in all_profiles():
+    for p in all_profiles(include_blocked=True):   # 体检/终端拉起床都可能点名一张被摘的卡
         if p["id"] == pid:
             return p
     return None
