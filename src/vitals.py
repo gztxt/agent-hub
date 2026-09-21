@@ -70,7 +70,8 @@ BLOCK_RE = re.compile(r"credits?\b[^.\n]{0,24}exhausted|please check your plan|n
                       r"account.{0,24}(disabled|not configured)|"
                       # 同一台 qodercli 会换说法（2026-09-21 实测两种文案），关键字只能当兜底
                       r"reached your\b[^.\n]{0,24}(limit|quota)|upgrade your subscription|"
-                      r"credit usage limit|api key doesn't exist|rejected your api key", re.I)
+                      r"credit usage limit|api key doesn't exist|rejected your api key|"
+                      r"unrecognized_model|model not found", re.I)
 VERSION_RE = re.compile(r"\d+\.\d+")
 # 探针被 CLI 自身的参数/信任检查拒了 → 不能拿来当 Agent 的坏证据
 USAGE_RE = re.compile(r"not inside a trusted directory|unexpected argument|unknown option|"
