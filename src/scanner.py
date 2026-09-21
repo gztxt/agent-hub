@@ -11,7 +11,6 @@
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 from typing import Dict, List
 
@@ -135,10 +134,15 @@ def scan_systemd() -> List[Dict]:
 
 
 def scan_cli_installed() -> List[Dict]:
-    """仅报告安装状态（不注册）：卡片补发由 profiles._dynamic_cli_agents 负责（B 档）"""
+    """仅报告安装状态（不注册）：卡片补发由 profiles._dynamic_cli_agents 负责（B 档）
+
+    2026-09-21：改用 profiles.which 与卡片补发同口径 —— 服务进程 PATH 只有
+    /usr/local/bin:/usr/bin...，shutil.which 对 ~/.local/bin（fcc-* 家族）与
+    ~/.npm-global/bin（grok/qodercli）全部落空，扫描报告会漏掉大半已装 CLI。"""
+    import profiles
     installed = []
     for cli in _watchlist():
-        p = shutil.which(cli)
+        p = profiles.which(cli)
         if p:
             installed.append({"name": cli, "path": p})
     return installed

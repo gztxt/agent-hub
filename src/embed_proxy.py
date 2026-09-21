@@ -199,6 +199,18 @@ async def _document(writer: asyncio.StreamWriter, head_line: bytes, header: byte
     writer.close()
 
 
+def _upstream_candidates(host: str) -> list[str]:
+    """回环上游在 v4/v6 互为备胎：uvicorn/asyncio 绑 `::` 时强制 IPV6_V6ONLY=1，
+    2026-09-21 qwenpaw 2.2.1 起 127.0.0.1 直连被 RST，需要回落 ::1。"""
+    alt = {"127.0.0.1": "::1", "::1": "127.0.0.1"}.get(host)
+    return [host, alt] if alt else [host]
+
+
+def _authority(host: str, port: int) -> bytes:
+    # IPv6 写进 Host 头必须加方括号，否则 "::1:8088" 是歧义地址
+    return ("[%s]:%d" % (host, port) if ":" in host else "%s:%d" % (host, port)).encode()
+
+
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                   upstream: tuple[str, int]) -> None:
     try:
@@ -212,16 +224,23 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     # 若客户端在同一连接上已带正文（PUT/POST 的 body 紧跟头），已读到的部分要一起转发
     pre_body = parts[1] if len(parts) > 1 else b""
     host, port = upstream
-    try:
-        up_r, up_w = await asyncio.open_connection(host, port)
-    except OSError as e:
+    up_r = up_w = None
+    last_err: OSError | None = None
+    for try_host in _upstream_candidates(host):
+        try:
+            up_r, up_w = await asyncio.open_connection(try_host, port)
+            host = try_host
+            break
+        except OSError as e:
+            last_err = e
+    if up_w is None:
         msg = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         try:
             writer.write(msg)
             await writer.drain()
         except Exception:
             pass
-        log.debug("上游不可达 %s:%s (%s)", host, port, e)
+        log.debug("上游不可达 %s:%s (%s)", upstream[0], port, last_err)
         writer.close()
         return
     doc = _is_document(head_line, rest)   # 逐请求埋点已摘（会把 hub 日志刷满）
@@ -229,7 +248,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
         print("[embed] GET+html Accept 但判为非文档，走隧道: %s" % head_line.decode(errors="replace")[:48], flush=True)
     if doc:
         await _document(writer, head_line, rest, up_w, up_r, pre_body,
-                        ("%s:%d" % (host, port)).encode())
+                        _authority(host, port))
     else:
         await _tunnel(reader, writer, header + pre_body, up_w, up_r)
 
