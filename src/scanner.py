@@ -51,6 +51,20 @@ def _scan_id(name: str, command: str, port) -> str:
     return "scan-" + h[:10]
 
 
+# systemd 的 Description= 常写成整句（"Pi Web LAN relay (8084 -> 30141, replaces tailcat for
+# phone access)" 实测 514px），直接当名称会把侧栏菜单撑爆。取第一个补充说明标记之前的部分做名称，
+# 全句另存 description（行 hover 与详情卡片都读它，信息不丢）。
+NAME_CUT = re.compile(r"[(,:：，]|\s+[-–—]\s+")
+NAME_MAX = 28
+
+
+def _short_name(desc: str, fallback: str) -> str:
+    s = NAME_CUT.split(desc or "")[0].strip()
+    if len(s) > NAME_MAX:
+        s = s[:NAME_MAX].rsplit(" ", 1)[0].rstrip(",.;:")
+    return s or fallback
+
+
 def _sh(cmd: list, timeout: int = 8) -> str:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -119,15 +133,20 @@ def scan_systemd() -> List[Dict]:
                 break
         if port and port in BUILTIN_PORTS:
             continue
+        full_desc = desc_m.group(1).strip() if desc_m else ""
+        name = _short_name(full_desc, uname)
+        desc = f"systemd(user) · {uname}"
+        if full_desc and full_desc != name:
+            desc += f" · {full_desc}"
         found.append({
             "id": _scan_id(uname, command, port),
-            "name": desc_m.group(1).strip() if desc_m else uname,
+            "name": name,
             "type": "systemd-service",
             "port": port,
             "endpoint": f"http://127.0.0.1:{port}" if port else "",
             "command": command_disp[:300],
             "working_dir": None,
-            "description": f"systemd(user) · {uname}",
+            "description": desc,
             "source": "scan:systemd",
         })
     return found
