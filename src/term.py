@@ -2,6 +2,8 @@
 
 安全模型：
 - 可执行命令 = profiles 画像白名单（terminal.cmd），API 只接受 agent_id，绝不接受任意命令
+- v0.13.0 续聊：命令仍只出自画像白名单 + 后端模板（sessions_store.resume_argv），
+  客户端最多传一个过正则且实盘存在的 session id，传不进命令
 - 会话仅创建者主机可见（服务本身 LAN/Tailscale 信任域）；可选 TERM_TOKEN 鉴权（ws ?token=）
 - 空闲 TTL（默认 45min）自动回收；hub 重启即全部销毁（无残留 shell）
 """
@@ -25,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSock
 from pydantic import BaseModel
 
 import profiles
+import sessions_store
 
 router = APIRouter()
 
@@ -68,12 +71,14 @@ class Session:
         self.viewers: set = set()
         self.ring = bytearray()  # 输出环形缓冲：重连回放，避免"重挂后白屏"
         self._cleaned = False    # 资源回收幂等守卫
+        self.resume_of = ""     # v0.13.0：非空 = 由某条磁盘历史续聊而来
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
     def to_dict(self):
         return {"id": self.id, "agent_id": self.agent_id, "cmd": " ".join(self.cmd),
                 "cwd": self.cwd, "alive": self.alive,
-                "created": self.created, "idle_s": round(time.time() - self.last_io)}
+                "created": self.created, "resume_of": self.resume_of,
+                "idle_s": round(time.time() - self.last_io)}
 
     def _signal_group(self, sig):
         """pty.fork 子进程是会话首进程（pgid=pid）→ 组灭可带走它派生的子进程"""
@@ -136,6 +141,7 @@ _sessions: Dict[str, Session] = {}
 
 class CreateIn(BaseModel):
     agent_id: str
+    session_id: Optional[str] = None    # v0.13.0：续聊某条历史；仅接受形状合法且实盘存在的 id
 
 
 @router.post("/api/term/sessions")
@@ -147,24 +153,59 @@ async def create_session(body: CreateIn, request: Request):
         raise HTTPException(400, f"{body.agent_id} 无终端入口（仅画像白名单可拉起）")
     if len([s for s in _sessions.values() if s.alive]) >= MAX_SESSIONS:
         raise HTTPException(429, f"终端会话数达上限 {MAX_SESSIONS}")
-    cmd = shlex.split(prof["terminal"]["cmd"])
+    cwd = prof["terminal"].get("cwd") or os.path.expanduser("~")
+    if body.session_id:
+        # 客户端只能给 id：命令仍由后端模板拼装，id 必须过形状正则 + 实盘存在双校验
+        try:
+            cmd = sessions_store.resume_argv(prof["id"], body.session_id, cwd)
+        except ValueError as e:
+            if "不在实盘清单" in str(e):
+                raise HTTPException(404, str(e)) from e
+            raise HTTPException(400, str(e)) from e
+    else:
+        cmd = shlex.split(prof["terminal"]["cmd"])
     resolved = profiles.which(cmd[0])
     if not resolved:
         raise HTTPException(400, f"命令 {cmd[0]} 未在本机找到")
     cmd[0] = resolved
-    cwd = prof["terminal"].get("cwd") or os.path.expanduser("~")
     sid = uuid.uuid4().hex[:10]
     sess = Session(sid, prof["id"], cmd, cwd)
+    sess.resume_of = body.session_id or ""
     _sessions[sid] = sess
     _attach_reader(sess)
-    return {"session": sess.to_dict()}
+    title = (sessions_store.live_titles(prof["id"]) or {}).get(sess.pid, "")
+    return {"session": dict(sess.to_dict(), title=title)}
 
 
 @router.get("/api/term/sessions")
 async def list_sessions():
     _reap()
-    # 只展示活会话：已退出记录不再以"僵尸条目"出现在会话记录里
-    return {"sessions": [s.to_dict() for s in _sessions.values() if s.alive]}
+    # 只展示活会话：已退出记录不再以"僵尸条目"出现（历史改由 /api/term/history 从磁盘直读）
+    titles: Dict[str, Dict[int, str]] = {}
+    out = []
+    for s in _sessions.values():
+        if not s.alive:
+            continue
+        if s.agent_id not in titles:
+            titles[s.agent_id] = sessions_store.live_titles(s.agent_id) or {}
+        t = titles[s.agent_id].get(s.pid, "")
+        if not t and s.resume_of:      # pid 反查不到（jcode 只在退出时写 last_pid、codex/qoder 无映射）
+            t = sessions_store.title_for(s.agent_id, s.resume_of, s.cwd)   # 那就按 resume_of 直查盘上标题
+        out.append(dict(s.to_dict(), title=t))
+    return {"sessions": out}
+
+
+@router.get("/api/term/history/{agent_id}")
+async def agent_history(agent_id: str, request: Request, limit: int = Query(default=3, ge=1, le=20)):
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "GET /api/term/history")
+    prof = profiles.get_profile(agent_id)
+    if not prof or not prof.get("terminal"):
+        raise HTTPException(400, f"{agent_id} 无终端入口，谈不上续聊历史")
+    if not sessions_store.supports(prof["id"]):
+        raise HTTPException(400, f"{agent_id} 无历史会话仓库")
+    cwd = prof["terminal"].get("cwd") or os.path.expanduser("~")
+    return dict(sessions_store.list_history(prof["id"], cwd, limit), agent=prof["id"])
 
 
 @router.delete("/api/term/sessions/{sid}")
