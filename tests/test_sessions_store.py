@@ -242,6 +242,19 @@ class TestResumeExists(unittest.TestCase):
         self.assertEqual(argv[argv.index("-w") + 1], it["cwd"], "-w 必须是会话自己的目录")
         self.assertEqual(argv[-2:], ["-r", it["id"]])
 
+    def test_missing_recorded_dir_falls_back(self):
+        """记录目录已被删时必须退回 fallback——否则 pty 起在不存在的目录里直接死，
+           而这条分支在真仓库里没有自然样本（探针只能 SKIP），故用 mock 钉住。"""
+        from unittest import mock
+        items = ss.list_history("jcode", CWD, 1)["items"]
+        if not items:
+            self.skipTest("jcode 无可续条目")
+        sid, want = items[0]["id"], items[0]["cwd"]
+        self.assertTrue(want, "样本需自带目录")
+        with mock.patch.object(Path, "is_dir", return_value=False):
+            self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), "FALLBACK")
+        self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), want, "未打桩时必须给真目录")
+
     def test_absent_id_still_rejected(self):
         with self.assertRaises(ValueError):
             ss.resume_argv("jcode", "session_zzzz_1790000000000_0000000000000000", CWD)
