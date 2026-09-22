@@ -265,6 +265,22 @@
         /* 搜索高亮 */
         mark { background: var(--warn-hi); color: var(--warn); border-radius: 2px; padding: 0 1px; }
         .nav-empty { font-size: var(--fs-sm); color: var(--muted); padding: 8px 10px; }
+        /* ── v0.13.0 左侧历史下拉：agent 行下方展开，点条目 = 终端里续聊该历史 ──
+           行高/字号与 .nav-item 同级；左内缩一个图标位，与名称起点对齐。
+           刻意不加滚动条与边框盒：侧栏 09-22 已定为「不出滚动条」且宽度收到 --sb-w。 */
+        .nav-hist { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 4px;
+                    padding-left: calc(var(--ico-md) + 6px); }
+        .nav-hist .hh-hd { font-size: var(--fs-xs); color: var(--muted); padding: 2px 6px; letter-spacing: .02em; }
+        .nav-hist .hh-row { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; cursor: pointer;
+                            border-radius: 8px; font-size: var(--fs-xs); color: var(--text-2); min-width: 0; }
+        .nav-hist .hh-row:hover { background: var(--surface-2); color: var(--text-1); }
+        .nav-hist .hh-t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-hist .hh-ts { flex: none; color: var(--muted); font-family: var(--font-mono); }
+        .nav-hist .hh-note { padding: 4px 6px; font-size: var(--fs-xs); color: var(--muted); }
+        .sidebar.collapsed .nav-hist { display: none; }   /* 收起态是 48px 图标条，放不下 */
+        /* 顶栏芯片：字母 sid 换成中文标题后需要一个截断窗（max-width 用 em，不写死 px） */
+        .sess-item .s-t { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                          display: inline-block; vertical-align: bottom; }
         .sidebar.collapsed .nav-search, .sidebar.collapsed .nav-acc-body { display: none; }
         .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after,
         .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port { display: none; }
@@ -1008,6 +1024,6 @@
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260920h"></script>
+    <script src="/static/hub.js?v=20260922a"></script>
 </body>
 </html>

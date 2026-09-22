@@ -714,18 +714,22 @@ async function termNew() {
     // 即时可见：不等服务端回写，先把新芯片本地插进去（termConnect 已设 termSid，所以自带 .cur）
     const el = $('termSessList');
     if (el && !el.querySelector('.sess-item[data-sid="' + d.session.id + '"]'))
-      el.insertAdjacentHTML('beforeend', termChipHtml(Object.assign({ alive: true }, d.session)));
+      el.insertAdjacentHTML('beforeend', termChipHtml(Object.assign({ alive: true, title: '' }, d.session)));
     termRefreshList();   // 再拿服务端清单覆写，DOM 不骗人
   } catch (e) { toast(e.message, 'err'); }
 }
 
-/* 芯片模板：行1 内联会话项。本体 = 回看，.sess-x = 只销毁这一个。
-   新会话走 termNew() 先本地插一个（即时可见），termRefreshList() 再拿服务端清单覆写。 */
+/* 芯片模板：行1 内联会话项。v0.13.0 起标签＝历史会话的问题原文（中文），
+   取不到标题（刚新建、agent 还没落摘要 / 无 pid 登记表）退显「新会话 MM-DD」。
+   字母 sid 只留在 data-sid 里作 DOM 键，用户可见处一律不再出现。 */
 function termChipHtml(s) {
-  const sid4 = escapeHtml(String(s.id).slice(0, 4));
+  const label = (s.title && s.title.trim()) ? s.title.trim() : ('新会话 ' + hhTime(Math.floor(s.created)));
   return '<span class="sess-item' + (s.id === termSid ? ' cur' : '') + '" data-sid="' + s.id + '">' +
-         '<a href="javascript:void(0)" title="回看会话 ' + sid4 + '" onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')">' + sid4 + '</a>' +
-         '<button class="sess-x" title="关闭此会话" aria-label="关闭会话 ' + sid4 + '" onclick="termKillOne(\'' + s.id + '\')">' + ico('x', 'xs') + '</button></span>';
+         '<a href="javascript:void(0)" title="' + escapeHtml(label) + '"' +
+         ' onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')"><span class="s-t">' +
+         escapeHtml(label) + '</span></a>' +
+         '<button class="sess-x" title="关闭此会话" aria-label="关闭此会话" ' +
+         'onclick="termKillOne(\'' + s.id + '\')">' + ico('x', 'xs') + '</button></span>';
 }
 
 async function termRefreshList() {
@@ -1438,6 +1442,72 @@ async function startAgent(id) {
     setTimeout(() => termConnect(d.session.id, id), 100);
   } catch (e) { toast(e.message, 'err'); }
 }
+/* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
+   histOpen 进 localStorage；数据缓存在 HIST —— 30s loadAgents 重绘时不闪空白。 ── */
+const HIST_LIMIT = 3;                                   // D6：每 agent 3 条，不做「显示全部」
+const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
+let histOpen = localStorage.getItem('hub.hist') || '';
+const HIST = {};                                        // agent_id -> {items,note,loading,err}
+
+function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
+  if (!ts) return '';
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function histHtml(aid) {
+  const h = HIST[aid];
+  if (!h || h.loading) return '<div class="nav-hist"><div class="hh-note">读取历史…</div></div>';
+  if (h.err) return '<div class="nav-hist"><div class="hh-note">历史读取失败：' + escapeHtml(h.err) + '</div></div>';
+  const rows = (h.items || []).map(it =>
+    '<div class="hh-row" data-agent="' + escapeHtml(aid) + '" data-sid="' + escapeHtml(it.id) + '"' +
+    ' title="' + escapeHtml(it.title) + '"><span class="hh-t">' + escapeHtml(it.title) + '</span>' +
+    '<span class="hh-ts">' + hhTime(it.ts) + '</span></div>').join('');
+  const hd = '<div class="hh-hd">历史会话' + (rows ? '（' + h.items.length + '）' : '') + '</div>';
+  return '<div class="nav-hist">' + hd +
+         (rows || '<div class="hh-note">' + escapeHtml(h.note || '该目录暂无可续会话') + '</div>') + '</div>';
+}
+
+function histLoad(aid) {
+  HIST[aid] = { items: [], note: '', loading: true, err: '' };
+  renderNav();
+  api('/api/term/history/' + encodeURIComponent(aid) + '?limit=' + HIST_LIMIT, { headers: termHeaders() })
+    .then(d => { HIST[aid] = { items: d.items || [], note: d.note || '', loading: false, err: '' }; })
+    .catch(e => { const m = String((e && e.message) || e);
+      // 新前端 + 未重启的旧后端＝路由不存在（FastAPI 回 Not Found）。说人话，别抛生涩 404。
+      HIST[aid] = { items: [], note: '', loading: false,
+                    err: /not\s*found|404/i.test(m) ? '后端未更新：需重启 agent-hub.service 后生效' : m }; })
+    .then(() => renderNav());                            // 无 finally 依赖：老 Safari 也走得到
+}
+
+/* 刷新后 histOpen 会从 localStorage 复原，但 HIST 缓存是空的——不补一次拉取，下拉就
+   永远停在「读取历史…」（实测 reload 必现）。没存过 token 时干脆收起：留个展开空壳更误导，
+   而且 termToken() 会在每次刷新都弹一次口令框。 */
+(function histBootstrap() {
+  if (!histOpen) return;
+  if (!TERM_HIST_AGENTS.includes(histOpen) || !localStorage.getItem('hub.term.token')) {
+    histOpen = '';
+    localStorage.removeItem('hub.hist');
+    return;
+  }
+  histLoad(histOpen);
+})();
+
+async function termResume(agentId, sid) {
+  try {
+    const d = await api('/api/term/sessions', { method: 'POST',
+      headers: termHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ agent_id: agentId, session_id: sid }) });
+    toast('已在终端里续聊该历史会话', 'ok');
+    gotoChat(agentId, 'term');
+    termConnect(d.session.id, agentId);
+    termRefreshList();
+  } catch (e) { toast('续聊失败：' + e.message, 'err'); }
+}
+
+/* 菜单行 = 实体行本体 + （命中展开项时）历史块。renderNav 的三分支 map 统一走这里。 */
+function navRow(a) { return navItemHtml(a) + (a.id === histOpen ? histHtml(a.id) : ''); }
+
 let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 function renderNav() {
   const box = $('navTree');
@@ -1463,16 +1533,16 @@ function renderNav() {
     if (g === 'infra') {
       NAV_SUB_KINDS.forEach(([k, label]) => {
         const sub = list.filter(a => a.kind === k);
-        if (sub.length) body += '<div class="nav-sub">' + label + '</div>' + sub.map(navItemHtml).join('');
+        if (sub.length) body += '<div class="nav-sub">' + label + '</div>' + sub.map(navRow).join('');
       });
       const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
-      if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navItemHtml).join('');
+      if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navRow).join('');
     } else if (g === 'system') {
       body = list.map(([p, label, ic]) =>
         '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
         ico(ic) + '<span class="lbl">' + label + '</span></button>').join('');
     } else {
-      body = list.map(navItemHtml).join('');
+      body = list.map(navRow).join('');
     }
     if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
     return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
@@ -1559,8 +1629,21 @@ function initSidebar() {
     if (el) { go(el.dataset.page); if (narrow()) apply(true); return; }
     el = e.target.closest('button[data-sys]');
     if (el) { go(el.dataset.sys); if (narrow()) apply(true); return; }
+    el = e.target.closest('.hh-row');                     // 历史条目：续聊，窄屏顺手收抽屉
+    if (el) { termResume(el.dataset.agent, el.dataset.sid); if (narrow()) apply(true); return; }
     el = e.target.closest('button[data-entity]');
-    if (el) { openEntity(el.dataset.entity); if (narrow()) apply(true); return; }
+    if (el) {
+      const aid = el.dataset.entity;
+      if (TERM_HIST_AGENTS.includes(aid)) {
+        if (histOpen === aid) histOpen = '';              // 再点当前行 = 只收起，不离开页面
+        else { histOpen = aid; histLoad(aid); }           // 展开新的（自动收起上一个）
+        localStorage.setItem('hub.hist', histOpen);
+        renderNav();
+      }
+      openEntity(aid);                                    // 进工作台照旧（A：两件事一次点击）
+      if (narrow() && !histOpen) apply(true);
+      return;
+    }
     el = e.target.closest('button[data-group]');
     if (el) {
       // 收起态下点组图标 = 先展开侧栏并定位到该组（否则手风琴体被 display:none，点了没反应）
