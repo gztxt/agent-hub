@@ -515,6 +515,9 @@
             .sidebar:not(.collapsed) .nav-item .nav-acts,
             .sidebar:not(.collapsed) .nav-item .s-badge { display: none; }
             .nav-item { --nav-st-w: 3.4em; }
+            /* 名称不再撑满整行（基础规则 flex:1 会把状态推到行尾，短名与状态之间空出一大截）：
+               抽屉里收成 0 1 auto，状态紧贴名称末尾，省出的空白留在行尾 */
+            .sidebar:not(.collapsed) .nav-item .lbl { flex: 0 1 auto; }
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
             main { max-width: 100%; margin: 0; padding: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
