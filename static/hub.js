@@ -153,10 +153,16 @@ async function pollHealth() {
 }
 
 
+/* 模型层情报（rt_state）→ 短标。它只影响副标文案，永远不影响「可用」。 */
+const RT_LABELS = {
+  answered: '已应答', blocked_by_account: '额度/登录', rate_limited: '上游限流',
+  model_unsupported: '模型标识', timeout: '应答超时', probe_rejected: '探针缺陷',
+  no_output: '无输出', skipped: '未实测'
+};
 function seatStateOf(a) {
-  /* vitals 判定优先于状态色：账号阻断/启动失败都按「异常」菱形给到眼前，
-     但不删卡（它是真装了的 Agent，修好账号就能用）。 */
-  if (a.kind === 'agent' && (a.verdict === 'blocked_by_account' || a.verdict === 'broken'))
+  /* 生死只看 verdict（能否打开窗口 + 能否自检）。额度/限流/超时是账号与上游条件，
+     不配把菱形打成「异常」—— 那正是上一版误伤 claude/jcode/grok 的地方。 */
+  if (a.kind === 'agent' && a.verdict === 'broken')
     return 'error';
   return a.status === 'running' ? 'running' : (a.status === 'installed' ? 'installed' : (a.status === 'error' ? 'error' : 'stopped'));
 }
@@ -167,8 +173,13 @@ const VERDICT_LABELS = { usable: '可用', blocked_by_account: '账号受限', b
                          unknown: '未判定' };
 function seatLabelOf(a) {
   const st = seatStateOf(a);
-  // 只有真跑通过应答（或自有端点在应声）才叫「可用」；仅 L2 自述正常 → 「未见异常」
-  if (a.kind === 'agent' && a.verdict === 'usable') return a.attested === false ? '未见异常' : '可用';
+  // 只有真跑通过应答（或自有端点在应声）才叫「可用」；仅自检正常 → 「未见异常」
+  if (a.kind === 'agent' && a.verdict === 'usable') {
+    const base = a.attested === false ? '未见异常' : '可用';
+    // 模型层有情况就在标签里带一句，但底色仍是正常态（不是异常）
+    const r = RT_LABELS[a.rt_state];
+    return (a.rt_state && a.rt_state !== 'answered' && r) ? base + '·' + r : base;
+  }
   if (a.kind === 'agent' && a.verdict && a.verdict !== 'stopped' && VERDICT_LABELS[a.verdict])
     return VERDICT_LABELS[a.verdict];
   return SEAT_LABELS[st];
@@ -193,10 +204,15 @@ function showDetail(id) {
       ' （来源 ' + escapeHtml(a.verdict_source || '-') +
       (a.verdict_confidence != null ? '，置信 ' + a.verdict_confidence.toFixed(2) : '') + '）</div>' +
       '<div class="hint" style="margin-top:2px">' + escapeHtml(a.verdict_reason || '') + '</div>' +
+      '<div class="hint" style="margin-top:2px">模型层：' +
+      escapeHtml(RT_LABELS[a.rt_state] || a.rt_state || '未实测') +
+      (a.rt_model ? '（模型 ' + escapeHtml(a.rt_model) + '）' : '') +
+      (a.rt_note ? '<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);word-break:break-all;margin-top:2px">' + escapeHtml(a.rt_note) + '</div>' : '') +
+      '</div>' +
       '<div class="hint" style="margin-top:2px">' +
       '<button class="act-btn" style="display:inline-block;padding:2px 8px" ' +
       'onclick="verifyAgent(\'' + escapeHtml(a.id) + '\')" ' +
-      'title="跑一次真实请求（耗 token、冷启动可近 60s）">实测应答</button>' +
+      'title="跑一次真实请求（耗 token，只出模型层情报，不改可用性结论）">实测应答</button>' +
       (a.verdict_at ? ' 上次 ' + escapeHtml(String(a.verdict_at).slice(0, 19).replace('T', ' ')) + 'Z' : '') +
       '</div>';
   }
@@ -210,13 +226,13 @@ function closeDetail() { $('detailDrawer').classList.remove('on'); }
 
 /* L4 体检：让 hub 现场跑一次真实一次性请求（耗 token、冷启动可近 60s），完事刷列表 */
 async function verifyAgent(id) {
-  toast('体检 ' + id + '：正在跑真实请求（最长 120s）…');
+  toast('体检 ' + id + '：正在跑真实请求（模型层实测，最长 40s）…');
   try {
     const d = await api('/api/agents/' + encodeURIComponent(id) + '/verify', { method: 'POST' });
     const ev = d.evidence || {};
+    const rts = (d.rt_state || (d.evidence || {}).rt_state || 'skipped');
     toast(id + ' → ' + (VERDICT_LABELS[d.verdict] || d.verdict) +
-      '（来源 ' + (d.source || '-') + '，应答概率 ' +
-      (d.roundtrip_noul == null ? '-' : d.roundtrip_noul.toFixed(2)) + '）',
+      '｜模型层 ' + (RT_LABELS[rts] || rts),
       d.verdict === 'usable' ? 'ok' : 'err');
     await loadAgents();
     showDetail(id);

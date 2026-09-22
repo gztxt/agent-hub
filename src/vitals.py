@@ -58,6 +58,11 @@ RT_PROMPT = os.getenv("VITALS_RT_PROMPT", "只回复一个字：好")
 # 一次抖动不得写成永久结论（2026-09-21 实测：hermes 偶发 401，下一轮又是好的，
 # 而单次 L4 的负结论会被 24h 保鲜窗冻住）。负结论连错 N 次才允许改判。
 RT_NEG_STREAK = int(os.getenv("VITALS_NEG_STREAK", "2"))
+# 真请求用的测试模型（2026-09-22 用户指定 Agnes-2.0-flash）。CCR 认斜杠形态，实测可用；
+# 写成下划线形态会被 CCR 拒（军规：CCR 用 /，FCC 用 _，两者不通用）。
+RT_MODEL = os.getenv("VITALS_RT_MODEL", "agnes/agnes-2.0-flash")
+# 实测一轮真请求耗时：claude 14s / jcode 9s / grok 19s / hermes 21s，40s 够宽容抖。
+RT_TIMEOUT = float(os.getenv("VITALS_RT_TIMEOUT", "40"))
 TRANSIENT = ("unknown", "broken", "pending")
 STATE_PATH = Path(os.getenv("VITALS_STATE",
                             str(Path(__file__).resolve().parent.parent / "data" / "vitals.json")))
@@ -70,8 +75,15 @@ BLOCK_RE = re.compile(r"credits?\b[^.\n]{0,24}exhausted|please check your plan|n
                       r"account.{0,24}(disabled|not configured)|"
                       # 同一台 qodercli 会换说法（2026-09-21 实测两种文案），关键字只能当兜底
                       r"reached your\b[^.\n]{0,24}(limit|quota)|upgrade your subscription|"
-                      r"credit usage limit|api key doesn't exist|rejected your api key|"
-                      r"unrecognized_model|model not found", re.I)
+                      r"credit usage limit|api key doesn't exist|rejected your api key", re.I)
+# 下面两类都是「外部条件」而非程序故障，但**不是账号问题**，所以不进 BLOCK_RE：
+# BLOCK_RE 一路都往 blocked_by_account 送，把模型标识/限流说成额度问题是错的归类。
+RATE_RE = re.compile(r"\b429\b|too many requests|exceeded retry limit|rate limit", re.I)
+MODEL_UNK_RE = re.compile(r"unrecognized_model|unknown model id|model not found|"
+                          r"couldn't set model|model metadata for", re.I)
+# 真请求输出里的噪声行（版本告警、node warning、CLI 自己的 tip），不算应答正文
+RT_NOISE_RE = re.compile(r"^\s*(\[[a-z0-9_-]+[:,]|warning:|\(node:|\(Use `node|tip:|"
+                         r"╭|│|╰|━|✓|\s*$)", re.I)
 VERSION_RE = re.compile(r"\d+\.\d+")
 # 探针被 CLI 自身的参数/信任检查拒了 → 不能拿来当 Agent 的坏证据
 USAGE_RE = re.compile(r"not inside a trusted directory|unexpected argument|unknown option|"
@@ -80,6 +92,33 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\r")
 
 VERDICTS = ("usable", "blocked_by_account", "not_installed", "broken", "stopped",
             "pending", "unknown", "probe_invalid")
+
+# 真请求（L4）的结果只进这个表，**不进 verdict**：2026-09-22 用户口径——
+# 「模型超时是正常情况，不要依据此项判定 agent 无法运行；判定依据是可以正常打开
+# 窗口、正常自检」。实测更坐实了这一点：6 个 CLI 里 4 个失败态的退出码都是 0
+# （codex 内部 429 也 rc=0），拿 rc/应答当生死闸门必错。
+RT_STATES = ("answered", "blocked_by_account", "rate_limited", "model_unsupported",
+             "timeout", "probe_rejected", "no_output", "skipped")
+
+
+def classify_rt(rc: Optional[int], out: str) -> str:
+    """把一次真请求的原始输出归档成一个情报态。纯代码分类，Jev 不可用时也能跑。"""
+    if rc is None:
+        return "skipped"
+    if rc == 124:
+        return "timeout"
+    body = "\n".join(l for l in (out or "").splitlines() if not RT_NOISE_RE.match(l))
+    if USAGE_RE.search(out or "") and not body.strip():
+        return "probe_rejected"
+    if BLOCK_RE.search(body):
+        return "blocked_by_account"
+    if RATE_RE.search(body):
+        return "rate_limited"
+    if MODEL_UNK_RE.search(body):
+        return "model_unsupported"
+    if body.strip():
+        return "answered"
+    return "no_output"
 
 
 # ── 取证原语：一律硬超时 + 显式失败，绝不无限等 ───────────────────
@@ -196,32 +235,40 @@ QUESTIONS = {
         "criteria": {
             "true": "Program is fine and would work as soon as the account condition is fixed",
             "false": "The program is missing, broken, hangs, or no blocking is evidenced"}},
-    "verdict": {
+    "roundtrip_state": {
         "type": "choice",
-        "instructions": ("Given all evidence fields for this agent, which single state "
-                         "describes it on this machine right now?"),
+        "instructions": {
+            "question": ("Read `run_output`, the result of sending this agent one short prompt. "
+                         "Which single outcome happened? This advises on the MODEL LAYER only: "
+                         "it never decides whether the agent is installed or usable, so do not "
+                         "reason about the program's health here."),
+            "note": ("A rate limit, an exhausted credit balance, an unsupported model id and a "
+                     "timeout are four different external causes with four different fixes — "
+                     "tell them apart. `run_rc` is not evidence: several of these CLIs exit 0 "
+                     "even when the call failed.")},
         "criteria": {
-            "usable": ("The agent program is installed and can serve requests (a reply was "
-                       "produced, or a live endpoint answers for a service agent)"),
-            "not_installed": ("Only a wrapper/launcher exists, or nothing resolves: the agent "
-                              "program itself is absent and the card is a phantom"),
-            "blocked_by_account": ("Installed and launches, but an exhausted quota, missing "
-                                   "login or unconfigured account stops it from answering"),
-            "broken": ("Installed but fails to serve: it crashed, timed out, or errored "
-                       "while trying to answer"),
-            "probe_invalid": ("The invocation was rejected by the CLI's own argument, trust or "
-                              "usage check before any model call happened, so nothing is "
-                              "proven about the agent itself"),
-            "stopped": ("Installed and healthy but not currently serving; nothing is broken "
-                        "(a service agent whose endpoint is simply down)")}},
+            "answered": "A genuine assistant reply to the prompt is present in the transcript",
+            "blocked_by_account": ("An exhausted quota/credit, a missing login or an "
+                                   "unconfigured account is named as the reason"),
+            "rate_limited": ("The upstream refused for volume: HTTP 429, 'too many requests', "
+                             "'exceeded retry limit', 'rate limit'"),
+            "model_unsupported": ("The requested model id is unknown to this CLI or router: "
+                                  "'unrecognized_model', 'unknown model id', 'model not found'"),
+            "timeout": "The probe's own deadline cut the invocation off before it finished",
+            "probe_rejected": ("The CLI rejected the probe's arguments/trust before any model "
+                               "call, so the attempt proves nothing about anything"),
+            "no_output": "The invocation ended with nothing readable"}},
     "list_in_agents_menu": {
         "type": "noul",
-        "instructions": ("Should the hub show this card in its Agents menu for a user who "
-                         "wants to work with an agent right now, or is it noise?"),
+        "instructions": ("Is this card a real agent installed on this machine, as opposed to a "
+                         "phantom card left behind by a launcher whose target program is "
+                         "absent? Judge existence only — a quota problem, a rate limit or a "
+                         "wrong model id does not make the card a phantom."),
         "criteria": {
-            "true": ("A real agent the user can select: either serving now, or only blocked by "
-                     "an account condition worth surfacing with a warning"),
-            "false": "A phantom card for a program that is not installed on this machine"}},
+            "true": ("The agent's own program started and identified itself (a version string, "
+                     "or an HTTP endpoint answering on its own port)"),
+            "false": ("Only a wrapper exists and it says the target command cannot be found or "
+                      "asks the user to install it")}},
 }
 
 
@@ -269,31 +316,29 @@ def profiles_jev_key() -> str:
     return v
 
 
-# ── 硬规则（无歧义才下结论；来源随结果一起上报）───────────────────
+# ── 存在性闸门（只用 L1/L2 自检证据；真请求结果一律不进这里）────────
 def rule_verdict(ev: dict) -> str:
-    text = " ".join([ev.get("version_output") or "", ev.get("help_output") or "",
-                     ev.get("run_output") or ""])
+    """能打开窗口 + 能自检 = 在。真请求结果（run_* / rt_state）一律不进这里。
+
+    2026-09-22 用户口径：「模型超时是正常情况，不要依据此项判定 agent 无法运行；
+    判定依据是可以正常打开窗口、正常自检。」实测亦坐实这一点：6 个 CLI 里 4 个
+    失败态的退出码都是 0（codex 内部 429 也 rc=0），拿 rc/应答当生死闸门必错。
+    """
     if ev.get("agent_shape") == "web-service":
         return "usable" if ev.get("endpoint_serving") else "stopped"
     if not ev.get("resolved"):
         return "not_installed" if ev.get("candidates_tried") else "unknown"
     # 入口壳的自我声明优先于任何版本号：fcc-dsh 的安装提示里就带着 "dsh@0.1.0-rc.8"，
     # 拿版本号当「装着呢」的证据会被它骗过去。
-    if SHIM_RE.search(text):
+    selfcheck = " ".join([ev.get("version_output") or "", ev.get("help_output") or ""])
+    if SHIM_RE.search(selfcheck):
         return "not_installed"
-    if BLOCK_RE.search(text):
-        return "blocked_by_account"
-    if ev.get("probe_rejected"):
-        return "unknown"              # 探针被参数/信任检查拒了 → 什么都还没证明
-    if ev.get("run_rc") == 124 or ev.get("version_rc") == 124:
+    # 两个不碰模型的探针全部超时 = 窗口根本打不开，这才是程序级故障
+    if ev.get("version_rc") == 124 and ev.get("help_rc") == 124:
         return "broken"
-    if ev.get("run_ok"):
-        return "usable"
-    if ev.get("run_rc") is not None and ev.get("run_rc") != 0:
-        # 真请求跑过、非 0 退出、又没认出 marker：最多说「未确认」，
-        # 绝不拿 L2 自述去覆盖一次失败的实测。
-        return "unknown"
-    if VERSION_RE.search(text):
+    if ev.get("version_rc") == 127:
+        return "not_installed"
+    if VERSION_RE.search(selfcheck):
         return "usable"
     return "unknown"
 
@@ -331,28 +376,27 @@ def collect(prof: dict, do_roundtrip: bool = False) -> dict:
             if do_roundtrip:
                 spec = prof.get("verify_argv")
                 if spec:
-                    # L4 自检：只验证 CLI 能启动并返回版本/帮助信息，不依赖模型响应
-                    # 模型超时/报错是配置问题，不是 agent 故障（2026-09-22 修正）
-                    argv = [a.replace("{p}", "") for a in spec]
-                    # 优先用 --version 自检（不触发模型调用）
-                    if not any("--version" in a for a in argv):
-                        argv = [argv[0], "--version"]
-                    r3 = run_argv(argv, float(os.getenv("VITALS_PROBE_TIMEOUT", "8")))
+                    model = prof.get("rt_model") or RT_MODEL
+                    argv = [a.replace("{p}", RT_PROMPT).replace("{m}", model) for a in spec]
+                    r3 = run_argv(argv, RT_TIMEOUT)
                     ev["run_rc"], ev["run_output"] = r3["rc"], r3["out"]
-                    # 应答判据：CLI 能启动 + 输出里有版本号 即可
-                    ev["run_ok"] = bool(r3["rc"] == 0 and VERSION_RE.search(r3["out"]))
-                    ev["run_evidence"] = "live self-check (version probe)"
-                    # 把失败时真正说事的那一行单拎出来：前端靠它一句话就能定位问题
-                    if r3["rc"] != 0:
+                    ev["rt_state"] = classify_rt(r3["rc"], r3["out"])
+                    ev["run_model"] = model if "{m}" in " ".join(spec) else "(cli default)"
+                    # run_ok 语义收窄为「真请求拿到应答」，仅供展示与前端旧字段兼容；
+                    # 它**不参与** verdict —— 应答失败不得推翻自检结论。
+                    ev["run_ok"] = ev["rt_state"] == "answered"
+                    ev["run_evidence"] = "live one-shot model request (advisory only)"
+                    if ev["rt_state"] != "answered":
                         lines = [x.strip() for x in (r3["out"] or "").splitlines()
                                  if x.strip() and "Warning:" not in x
                                  and "trace-warnings" not in x]
-                        ev["run_note"] = (lines[0] if lines else "")[:150]
-                    if r3["rc"] != 0 and USAGE_RE.search(r3["out"]):
+                        ev["run_note"] = (lines[0] if lines else "TIMEOUT")[:150]
+                    if ev["rt_state"] == "probe_rejected":
                         ev["probe_rejected"] = True
                         ev["run_evidence"] = ("probe rejected by the CLI's own argument/trust "
                                               "check before any model call happened")
                 else:
+                    ev["rt_state"] = "skipped"
                     ev["run_evidence"] = "no verify_argv declared for this agent"
             else:
                 ev["run_evidence"] = "round trip not probed this cycle"
@@ -381,7 +425,7 @@ def collect(prof: dict, do_roundtrip: bool = False) -> dict:
     ev["core_sha"] = hashlib.sha256(json.dumps(
         {k: v for k, v in ev.items()
          if k not in ("checked_at", "run_rc", "run_output", "run_ok", "run_evidence",
-                      "run_note", "probe_rejected")},
+                      "run_note", "run_model", "rt_state", "probe_rejected")},
         sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:12]
     return ev
 
@@ -430,24 +474,27 @@ class Vitals:
         with self._lock:
             cached = self._by_sha.get(core)
             rt = dict(self._rt.get(aid) or {})
+        # 生死闸门只认自检（L1/L2）。Jev 与真请求都不许改它（2026-09-22 用户口径）。
+        verdict = rule_verdict(ev)
+        rt_code = (classify_rt(ev.get("run_rc"), ev.get("run_output") or "")
+                   if ev.get("run_rc") is not None else "skipped")
         if cached and not do_roundtrip:
             rec = dict(cached)
+            rec.update(verdict=verdict, rule_verdict=verdict)
         else:
             ans = ask_jev(ev) or {}
             err = ans.get("_error") if isinstance(ans, dict) else None
-            rule = rule_verdict(ev)
-            jv = (ans.get("verdict") or {}).get("choice") if ans else None
-            conf = (ans.get("verdict") or {}).get("confidence") if ans else None
+            jrt = (ans.get("roundtrip_state") or {}).get("choice")
+            conf = (ans.get("roundtrip_state") or {}).get("confidence")
             menu = (ans.get("list_in_agents_menu") or {}).get("noul")
-            # 采信 Jev；低置信（<0.45）或它没答时退回硬规则，来源写清楚
-            if jv and jv in VERDICTS and (conf is None or conf >= 0.45):
-                verdict, source = jv, "jev"
+            # 应答态：Jev 读文案、代码兜底；两者都只出情报，不动 verdict
+            if jrt in RT_STATES and rt_code != "skipped" and (conf is None or conf >= 0.45):
+                rt_state, source = jrt, "jev"
             else:
-                verdict, source = rule, ("jev-lowconf" if jv else "rule")
-            if verdict == "probe_invalid":     # 探针缺陷不是 Agent 的结论
-                verdict = "unknown"
-            rec = {"verdict": verdict, "rule_verdict": rule, "source": source,
-                   "jev_error": err, "confidence": conf, "menu_noul": menu,
+                rt_state, source = rt_code, ("jev-lowconf" if jrt else "rule")
+            rec = {"verdict": verdict, "rule_verdict": verdict, "rt_state": rt_state,
+                   "source": source, "jev_error": err, "confidence": conf,
+                   "menu_noul": menu,
                    "present_noul": (ans.get("underlying_program_present") or {}).get("noul"),
                    "roundtrip_noul": (ans.get("model_round_trip_ok") or {}).get("noul"),
                    "block_noul": (ans.get("external_block_only") or {}).get("noul"),
@@ -457,49 +504,20 @@ class Vitals:
                 if len(self._by_sha) > 400:            # 只留近期，防无界增长
                     for k in sorted(self._by_sha, key=lambda k: self._by_sha[k]["checked_at"])[:100]:
                         self._by_sha.pop(k, None)
-            if do_roundtrip:
-                with self._lock:
-                    prev = self._rt.get(aid) or {}
-                    streak = int(prev.get("neg_streak", 0))
-                    kept = verdict
-                    flaky = False
-                    if verdict in TRANSIENT and prev.get("verdict") == "usable":
-                        streak += 1
-                        if streak < RT_NEG_STREAK:     # 第一次负结论不改判，只标抖动
-                            kept, flaky = "usable", True
-                    elif verdict == "usable":
-                        streak = 0
-                    self._rt[aid] = {"verdict": kept, "raw_verdict": verdict,
-                                     "source": rec["source"],
-                                     "roundtrip_noul": rec.get("roundtrip_noul"),
-                                     "block_noul": rec.get("block_noul"),
-                                     "menu_noul": rec.get("menu_noul"),
-                                     "neg_streak": streak, "flaky": flaky,
-                                     "probe_rejected": bool(ev.get("probe_rejected")),
-                                     "at": time.time(),
-                                     "run_ok": bool(ev.get("run_ok"))}
-                    if kept != verdict:        # 本轮返回的记录也得跟着抖动的口径走
-                        rec = dict(rec)
-                        rec["verdict_l4_raw"] = verdict
-                        rec["verdict"] = kept
-                        rec["flaky"], rec["neg_streak"] = True, streak
-        # 真实应答（L4）比自述（L2）大：保鲜期内的 L4 结论不会被一轮廉价扫描冲掉
+        if do_roundtrip:                # 应答历史：仅供展示与保鲜复用
+            with self._lock:
+                self._rt[aid] = {"rt_state": rec.get("rt_state"),
+                                 "run_note": (ev.get("run_note") or "")[:150],
+                                 "run_model": ev.get("run_model"),
+                                 "menu_noul": rec.get("menu_noul"),
+                                 "source": rec.get("source"), "at": time.time()}
         if not do_roundtrip and rt and (time.time() - rt.get("at", 0)) < self.RT_TTL:
             rec = dict(rec)
-            rec["l4_verdict"], rec["l4_at"] = rt.get("verdict"), rt.get("at")
-            rec["l4_run_ok"] = rt.get("run_ok")
-            rec["roundtrip_noul"] = rt.get("roundtrip_noul")
-            rec["block_noul"] = rt.get("block_noul")
-            rec["neg_streak"] = rt.get("neg_streak")
-            if rt.get("probe_rejected"):
-                # 探针自己被参数/信任检查拒了：不拿它推翻 L2，但记成探针缺陷
-                rec["probe_defect"] = True
-            elif rt.get("flaky"):
-                rec["flaky"] = True
-            elif rec["verdict"] != rt.get("verdict"):
-                rec["verdict_l2"] = rec["verdict"]
-                rec["verdict"] = rt.get("verdict")
-                rec["source"] = (rt.get("source") or "jev") + "+L4"
+            rec["rt_state"] = rt.get("rt_state") or rec.get("rt_state")
+            rec["rt_at"], rec["rt_note"] = rt.get("at"), rt.get("run_note")
+            rec["rt_model"] = rt.get("run_model")
+            if rec["rt_state"] in ("timeout", "rate_limited", "model_unsupported"):
+                rec["rt_flaky"] = True  # 外部条件，不是本机故障，不固化成坏结论
         with self._lock:
             self._latest[aid] = {"evidence": ev, **rec}
         return self._latest[aid]
@@ -515,7 +533,7 @@ class Vitals:
 
     # ── 慢周期：先全量 L1/L2（不碰模型），再按保鲜窗补 L4
     def needs_rt(self, prof: dict, ev: dict) -> bool:
-        """本轮是否该花一次真请求：声明了 verify_argv + L2 没报出问题 + 上次 L4 已过期"""
+        """本轮是否该花一次真请求：声明了 verify_argv + 自检过关 + 上次应答态已过期"""
         if not (RT_IN_SWEEP and prof.get("verify_argv")):
             return False
         if ev.get("agent_shape") != "terminal-cli" or not ev.get("resolved"):
@@ -525,8 +543,9 @@ class Vitals:
         with self._lock:
             rt = self._rt.get(prof["id"]) or {}
         age = time.time() - rt.get("at", 0)
-        # 负结论不配 24h 保鲜：抖动必须下一轮重试；账号/未安装这类硬结论才值得记住
-        if rt.get("verdict") in TRANSIENT or rt.get("flaky"):
+        # 外部条件（限流 / 超时 / 模型标识不对 / 空输出）不配 24h 保鲜：下一轮必须重试，
+        # 免得一次抖动被固化成永久情报。只有 answered 与 blocked_by_account 值得记住。
+        if rt.get("rt_state") in ("timeout", "rate_limited", "model_unsupported", "no_output"):
             return True
         return age >= self.RT_TTL
 

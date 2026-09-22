@@ -230,9 +230,14 @@ CLI_DISPLAY = {s["names"][0]: s["display"] for s in CLI_ALIASES.values()}
 #                慢周期只跑 --version/--help 这类不碰模型的探针。
 # 服务型 Agent（pi :30141、qwenpaw :8088）不在此表 —— 它们的存在性证据是自有端口应声。
 # 未声明 verify_argv 的 Agent 不做 L4，停在 L2（可用但标「未实测应答」）。
+#
+# {m} = 本次真请求指定的模型（留空则不注入）。2026-09-22 用户口径：测试模型统一用
+# Agnes-2.0-flash，但只有走 CCR 的两个 CLI 认它（实测 claude 14s 真答「好」、jcode 9s 出字）；
+# grok/qodercli 传 agnes 直接报 "unknown model id"，codex 报 429 —— 它们的 agnes 路由在本机
+# 根本不存在，硬塞只会把「模型标识不对」读成「Agent 坏了」。故这三个保留各自默认模型。
 AGENT_PROBE: Dict[str, dict] = {
-    "claude": {"verify_argv": ["claude", "-p", "{p}"]},
-    "jcode":  {"verify_argv": ["jcode", "run", "{p}"]},
+    "claude": {"verify_argv": ["claude", "-p", "{p}", "--model", "{m}"]},
+    "jcode":  {"verify_argv": ["jcode", "run", "--model", "{m}", "{p}"]},
     "codex":  {"aliases": ["codex", "fcc-codex"],
                # --skip-git-repo-check 必需：cwd（技术文档根）不在 codex 信任目录里，
                # 缺这个参数 codex 会 rc=1 报「Not inside a trusted directory」——

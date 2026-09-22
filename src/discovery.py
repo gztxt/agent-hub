@@ -14,51 +14,62 @@ import profiles
 import vitals
 
 
+# 应答态（rt_state）→ 中文后缀。全部是**情报**，没有一个能把卡判成不可用。
+RT_SUFFIX = {
+    "answered": "，真实请求已应答",
+    "blocked_by_account": "；额度/登录受限（账号条件，非程序故障）",
+    "rate_limited": "；上游限流 429（外部负载条件，非程序故障）",
+    "model_unsupported": "；测试模型标识不被该 CLI 接受（配置问题，非程序故障）",
+    "timeout": "；真实请求超时（模型侧常见现象，不影响可用性结论）",
+    "probe_rejected": "；探针被 CLI 参数/信任检查拒（探针缺陷，未用作证据）",
+    "no_output": "；真实请求无输出",
+    "skipped": "，本轮未做真实请求实测",
+}
+
+
 def _verdict_view(p: dict, vrec: Optional[dict]):
-    """把 vitals 记录翻译成前端字段（usable / 中文理由）。没结论时 usable=None，不装懂。"""
+    """翻译 vitals 记录给前端。两层口径（2026-09-22 用户指令）：
+
+      verdict  —— 生死：能不能打开窗口 + 能不能自检，**与模型应答无关**
+      rt_state —— 情报：真请求那次模型层发生了什么（应答/限流/额度/模型标识/超时）
+    """
     if not vrec:
         return {"usable": None, "verdict": "pending", "reason": "尚未体检（等首轮探针跑完）",
-                "source": "pending", "confidence": None, "at": None, "attested": None}
+                "source": "pending", "confidence": None, "at": None, "attested": None,
+                "rt_state": None, "rt_note": None, "rt_model": None}
     v = vrec.get("verdict", "unknown")
     ev = vrec.get("evidence", {})
+    rts = vrec.get("rt_state") or "skipped"
     if v == "usable":
         if ev.get("agent_shape") == "terminal-cli":
-            if ev.get("run_ok") or vrec.get("l4_run_ok"):
-                reason = "实测应答正常"
-            elif ev.get("run_rc") is not None:
-                reason = "真实请求已跑但未见正常应答（rc=%s），只能算自述正常" % ev.get("run_rc")
-            else:
-                reason = "可执行文件自述正常（本轮未做真实应答实测）"
+            head = "自检正常（%s）" % (ev.get("resolved_path") or ev.get("resolved_name") or "-")
         else:
             code = ev.get("endpoint_http_v4") or ev.get("endpoint_http_v6")
-            reason = "自有端点应声 HTTP %s" % code
+            head = "自有端点应声 HTTP %s" % code
+        reason = head + RT_SUFFIX.get(rts, "")
     else:
         reason = {
             "not_installed": ("假卡：命中的是入口壳 %s，它打印「找不到目标命令」后就退出，"
                               "该 Agent 本体未安装" % (ev.get("resolved_path") or "-")),
-            "blocked_by_account": "已安装但被账号条件拦住（额度/登录未就绪），需人工恢复",
-            "broken": "已安装但启动失败/超时无响应",
+            "broken": "已安装但自检失败：--version 与 --help 都无响应，窗口打不开",
             "stopped": "服务未运行（端口无应答），程序本身没坏",
         }.get(v, "证据不足，未能判定")
-    l4at = vrec.get("l4_at")
-    if vrec.get("flaky"):
-        reason += "（本轮真实请求没成功，先当抖动；连错 %s 次才改判）" % (
-            vrec.get("neg_streak") or 1)
-    if vrec.get("probe_defect"):
-        reason += "（注：上轮真请求探针被 CLI 参数/信任检查拒过，该结论未拿它作证）"
-    if l4at and v not in ("usable", "pending"):
-        reason += "（依据 %s 的真实请求实测）" % datetime.fromtimestamp(
-            l4at, timezone.utc).strftime("%m-%d %H:%M")
+    if vrec.get("rt_flaky"):
+        reason += "（外部条件，每轮重试，不固化为故障）"
+    ts = vrec.get("checked_at")
     usable = v == "usable"
-    # 凭据：真应答跑通过（L4），或服务型 Agent 自有端口在应声
-    attested = bool(usable and (vrec.get("l4_run_ok") or ev.get("run_ok") or
+    # 凭据 = 真应答跑通，或服务型 Agent 自有端口在应声
+    attested = bool(usable and (rts == "answered" or
                                 (ev.get("agent_shape") == "web-service" and
                                  ev.get("endpoint_serving"))))
-    ts = vrec.get("checked_at")
     return {"usable": usable, "verdict": v, "reason": reason,
+            "rt_state": rts, "rt_note": vrec.get("rt_note") or ev.get("run_note"),
+            "rt_model": vrec.get("rt_model") or ev.get("run_model"),
+            "rt_at": vrec.get("rt_at") or vrec.get("checked_at"),
             "source": vrec.get("source", "rule"), "confidence": vrec.get("confidence"),
             "at": datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None,
             "attested": attested}
+
 
 
 @dataclass
@@ -86,6 +97,11 @@ class AgentInfo:
     # attested：这条「可用」是有实测凭据支撑的（真应答 / 自有端点应声）。
     # 只跑了 L2 自述探针时为 False —— 前端据此显示「未见异常」而不是「可用」。
     attested: Optional[bool] = None
+    # 模型层情报（2026-09-22）：与 usable/verdict 解耦 —— 额度、限流、超时、模型标识
+    # 全都只改这几个字段，改不了「这个 Agent 能不能用」。
+    rt_state: str = ""
+    rt_note: Optional[str] = None
+    rt_model: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)
@@ -157,7 +173,9 @@ class AgentDiscovery:
                 usable=vv["usable"], verdict=vv["verdict"],
                 verdict_reason=vv["reason"], verdict_source=vv["source"],
                 verdict_confidence=vv["confidence"], verdict_at=vv["at"],
-                attested=vv["attested"]))
+                attested=vv["attested"],
+                rt_state=vv.get("rt_state") or "", rt_note=vv.get("rt_note"),
+                rt_model=vv.get("rt_model")))
         # 动态注册/扫描项（一律 service 类，仅快捷方式）
         for c in self._custom_agents():
             port = c.get("port")

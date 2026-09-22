@@ -55,7 +55,7 @@ import embed_proxy as embed_proxy_mod
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.11.1"
+VERSION = "0.12.0"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -259,10 +259,12 @@ async def verify_agent(agent_id: str):
     ev = rec.get("evidence", {})
     out = {k: rec.get(k) for k in ("verdict", "source", "rule_verdict", "confidence",
                                    "menu_noul", "present_noul", "roundtrip_noul",
-                                   "block_noul", "jev_error")}
+                                   "block_noul", "jev_error", "rt_state", "rt_flaky")}
+    # 应答态与生死判定分两栏回：前端拿 rt_state 说明模型层，拿 verdict 决定颜色
     out["evidence"] = {kk: ev.get(kk) for kk in
                        ("agent_shape", "resolved_path", "version_rc", "run_rc", "run_ok",
-                        "run_evidence", "evidence_sha", "endpoint_serving")}
+                        "run_output", "run_note", "run_model", "run_evidence",
+                        "evidence_sha", "endpoint_serving")}
     return out
 
 
