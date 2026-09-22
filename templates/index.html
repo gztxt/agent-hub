@@ -507,11 +507,14 @@
                                        box-shadow: 4px 0 20px var(--shadow-lg); }
             .sidebar.collapsed .side-toggle .lbl { display: none; }
             .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
-            /* 抽屉只有 236px，名称优先：端口让位（详情/tooltip 里都在），行内 ▶ 启动 是手机上的
-               唯一启动入口所以保留；名称放不下时整词换行走第二行，状态窗收到 3.4em 继续滚动 */
-            .nav-item .nav-port { display: none; }
+            /* 窄屏抽屉只留「名称 + 状态」：端口、行内动作图标（嵌入/终端/▶启动）、状态方块
+               全部让位。方块在展开态是冗余（状态文字已含同一信息），但收起态的 52px 图标条
+               只有它，所以规则一律限定 :not(.collapsed)。▶ 启动 在工作台终端栏「+ 新会话」
+               （termNew()）有等价入口，功能不丢。腾出的宽度让最长 Agent 名也能单行放下。 */
+            .sidebar:not(.collapsed) .nav-item .nav-port,
+            .sidebar:not(.collapsed) .nav-item .nav-acts,
+            .sidebar:not(.collapsed) .nav-item .s-badge { display: none; }
             .nav-item { --nav-st-w: 3.4em; }
-            .nav-item .lbl { white-space: normal; overflow-wrap: break-word; }
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
             main { max-width: 100%; margin: 0; padding: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
