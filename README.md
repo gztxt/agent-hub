@@ -32,6 +32,8 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 - 数据源是**各 CLI 自己的盘上仓库**（`src/sessions_store.py` 只读适配层，不写不删不过滤缓存），覆盖 grok / claude / jcode / hermes / codex / qoder；pi 无会话仓库，不进集合
 - 标题＝**用户当初那句问题原文**（非 agent 自生成摘要、非字母 sid），命中口令/长密串则糊为 `<masked>`
 - 默认 3 条，时间统一绝对 `MM-DD HH:MM`（相对时间会破侧栏 DOM diff）
+- 「先取最新 N 个候选再按目录过滤」是 v0.13.0 的一个真缺陷（jcode 平铺混 cwd，被探针占满窗口 ⇒ 89 条只显 1 条）；
+  v0.13.1 改为全量遍历 + 字节级 `working_dir` 预筛，且续聊存在性校验不再依赖被截断的展示清单
 - 点条目＝终端里 `--resume <id>` 续聊；命令只出自后端模板，客户端最多传一个过正则且实盘存在的 id
 - 顶栏会话芯片同步改中文标题：pid 反查拿不到时走 `resume_of` 直查盘上标题（jcode 只在退出时写 last_pid，codex/qoder 无 pid 登记表）
 
