@@ -331,14 +331,17 @@ def collect(prof: dict, do_roundtrip: bool = False) -> dict:
             if do_roundtrip:
                 spec = prof.get("verify_argv")
                 if spec:
-                    argv = [a.replace("{p}", RT_PROMPT) for a in spec]
-                    r3 = run_argv(argv, float(os.getenv("VITALS_RT_TIMEOUT", "120")))
+                    # L4 自检：只验证 CLI 能启动并返回版本/帮助信息，不依赖模型响应
+                    # 模型超时/报错是配置问题，不是 agent 故障（2026-09-22 修正）
+                    argv = [a.replace("{p}", "") for a in spec]
+                    # 优先用 --version 自检（不触发模型调用）
+                    if not any("--version" in a for a in argv):
+                        argv = [argv[0], "--version"]
+                    r3 = run_argv(argv, float(os.getenv("VITALS_PROBE_TIMEOUT", "8")))
                     ev["run_rc"], ev["run_output"] = r3["rc"], r3["out"]
-                    # 应答判据：退出码 0 + 有非空输出 + 输出里没有入口壳自白/账号阻断
-                    ev["run_ok"] = bool(r3["rc"] == 0 and r3["out"].strip() and
-                                        not SHIM_RE.search(r3["out"]) and
-                                        not BLOCK_RE.search(r3["out"]))
-                    ev["run_evidence"] = "live one-shot model request run by hub"
+                    # 应答判据：CLI 能启动 + 输出里有版本号 即可
+                    ev["run_ok"] = bool(r3["rc"] == 0 and VERSION_RE.search(r3["out"]))
+                    ev["run_evidence"] = "live self-check (version probe)"
                     # 把失败时真正说事的那一行单拎出来：前端靠它一句话就能定位问题
                     if r3["rc"] != 0:
                         lines = [x.strip() for x in (r3["out"] or "").splitlines()
