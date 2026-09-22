@@ -86,6 +86,10 @@
             --lh-tight: 1.35; --lh-base: 1.7; --lh-loose: 1.85;   /* 中文行高比西文松 */
             /* ── 图标系统：单一 SVG sprite（24 网格 / 1.9 描边），四档尺寸 ── */
             --ico-xs: 14px; --ico-sm: 16px; --ico-md: 18px; --ico-lg: 22px; --ico-xl: 26px;
+            /* ── 侧栏菜单行：名称优先完整显示，状态区定宽滚动（v0.12.1）──
+               状态串最长达 8 字（未见异常·模型标识），不封顶会把名称挤成 1~2 个字 */
+            --sb-w: 292px;        /* 侧栏展开宽：名称完整显示所需下限 */
+            --nav-st-w: 4.2em;    /* 状态可视窗宽（字号 --fs-xs），超出走横向滚动 */
             /* ── 嵌入式终端：浅色主题。字号 / 字族 / 配色全部走这套 token，hub.js 只读不写死 ──
                ANSI 16 色取语义色的邻近低饱和版本，保证浅底上 ≥ 5:1 可读（终端输出常带 color）；
                字族拉丁等宽在前、CJK 等宽在后：xterm 按首个命中字体量 cell 宽，CJK 在前会把 ASCII 撑宽 */
@@ -160,7 +164,7 @@
 
         /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
         .shell { display: flex; flex: 1; overflow: hidden; }
-        .sidebar { flex: 0 0 268px; width: 268px; background: var(--bg); border-right: 1px solid var(--border);
+        .sidebar { flex: 0 0 var(--sb-w); width: var(--sb-w); background: var(--bg); border-right: 1px solid var(--border);
                    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
                    position: relative; align-self: stretch; overflow-y: auto;
                    transition: flex-basis .18s ease, width .18s ease; }
@@ -207,8 +211,22 @@
         .nav-item.on:hover, .side-item.on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
         .nav-item.on .nav-port, .nav-item.on .nav-st { color: var(--text-2); }
         .nav-item .lbl, .side-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* v0.12.1：菜单行内间隙收到 6px，把省下的空间让给名称（分组含 3~5 个元素，每行省 6~12px） */
+        .nav-item { gap: 6px; }
         .nav-item .nav-port { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
-        .nav-item .nav-st { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--text-2); letter-spacing: .02em; }
+        .nav-item .nav-st { flex: 0 0 auto; min-width: 0; max-width: var(--nav-st-w); overflow: hidden;
+                            font-size: var(--fs-xs); color: var(--text-2); letter-spacing: .02em; }
+        /* 状态滚动窗：文案整体放进 .st-t，窄于窗口时静止显示，超出时由 hub.js 量出位移加 .mq */
+        .nav-st .st-t { display: inline-block; white-space: nowrap; }
+        .nav-st.mq .st-t { animation: st-roll var(--mq-d, 6s) ease-in-out var(--mq-delay, 1.2s) infinite alternate; }
+        @keyframes st-roll {
+          0%, 14% { transform: translateX(0); }
+          86%, 100% { transform: translateX(var(--mq-x, 0px)); }
+        }
+        /* 降低动效偏好：不滚动，退回省略号（名称仍完整） */
+        @media (prefers-reduced-motion: reduce) {
+          .nav-st.mq .st-t { display: block; overflow: hidden; text-overflow: ellipsis; animation: none; }
+        }
         /* 操作按钮组 */
         .nav-acts { display: flex; gap: 1px; flex: none; margin-left: 1px; }
         /* 行内操作按钮：统一 22×22 图形按钮，图标恒为 16px（14px 会把 monitor 这类多细节图形糊成一格）*/
@@ -489,6 +507,11 @@
                                        box-shadow: 4px 0 20px var(--shadow-lg); }
             .sidebar.collapsed .side-toggle .lbl { display: none; }
             .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
+            /* 抽屉只有 236px，名称优先：端口让位（详情/tooltip 里都在），行内 ▶ 启动 是手机上的
+               唯一启动入口所以保留；名称放不下时整词换行走第二行，状态窗收到 3.4em 继续滚动 */
+            .nav-item .nav-port { display: none; }
+            .nav-item { --nav-st-w: 3.4em; }
+            .nav-item .lbl { white-space: normal; overflow-wrap: break-word; }
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
             main { max-width: 100%; margin: 0; padding: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }

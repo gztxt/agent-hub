@@ -1336,7 +1336,22 @@ function navItemHtml(a) {
     '<span class="lbl">' + nameHtml + '</span>' +
     (a.port ? '<span class="nav-port">:' + a.port + '</span>' : '') +
     actsHtml +
-    '<span class="nav-st">' + escapeHtml(seatLabelOf(a)) + '</span></button>';
+    '<span class="nav-st"><span class="st-t">' + escapeHtml(seatLabelOf(a)) + '</span></span></button>';
+}
+/* 状态滚动窗：名称已占满优先级，状态只在 .nav-st 这个小窗里横向滚动。
+   窄于窗口就静止，超出才加 .mq 并把位移/时长写成变量（CSS 量不出溢出，只能在这儿量）。 */
+function rollNavStatus(root) {
+  (root || document).querySelectorAll('.nav-item .nav-st').forEach(el => {
+    const t = el.firstElementChild;
+    if (!t) return;
+    const over = t.scrollWidth - el.clientWidth;      // 先量后改类：中途改类会让正在滚的动画从头开始
+    if (over <= 2) { el.classList.remove('mq'); return; }   // 含 display:none（侧栏收起）时两者皆 0
+    const x = '-' + over + 'px';   // 位移刚好等于溢出量：终点时句尾贴右缘完整可见
+    if (el.classList.contains('mq') && el.style.getPropertyValue('--mq-x') === x) return;   // 没变化就不碰
+    el.classList.add('mq');
+    el.style.setProperty('--mq-x', x);
+    el.style.setProperty('--mq-d', Math.min(7, Math.max(3.2, over * 0.055 + 2.2)).toFixed(2) + 's');
+  });
 }
 // 启动 agent：创建新的终端会话
 async function startAgent(id) {
@@ -1347,6 +1362,7 @@ async function startAgent(id) {
     setTimeout(() => termConnect(d.session.id, id), 100);
   } catch (e) { toast(e.message, 'err'); }
 }
+let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 function renderNav() {
   const box = $('navTree');
   if (!box) return;
@@ -1363,7 +1379,7 @@ function renderNav() {
   if (q) {
     totalMatch = all.filter(a => navMatch(a, q)).length + infra.filter(a => navMatch(a, q)).length;
   }
-  box.innerHTML = NAV_ORDER.map(g => {
+  const html = NAV_ORDER.map(g => {
     const list = lists[g];
     if (q && !list.length) return '';
     const open = q ? true : navOpen === g;
@@ -1391,6 +1407,9 @@ function renderNav() {
       '<span class="badge">' + list.length + '</span></button>' +
       '<div class="nav-acc-body">' + body + '</div></div>';
   }).join('');
+  /* 内容没变就不重写 DOM —— loadAgents 每 30s 刷一次，重写会让状态滚动动画从头开始 */
+  if (html !== _navHtml) { box.innerHTML = html; _navHtml = html; }
+  rollNavStatus(box);
   // 搜索结果计数提示
   const countEl = $('navSearchCount');
   if (countEl) countEl.textContent = q ? ' 共 ' + totalMatch + ' 项' : '';
@@ -1459,6 +1478,10 @@ function initSidebar() {
   const stored = localStorage.getItem('hub.sidebar');
   apply(stored === '1' || (stored === null && narrow()));   // 窄屏首次默认收成图标条
   btn.onclick = () => apply(!sb.classList.contains('collapsed'));
+  /* 收起↔展开会改变 .nav-st 的可测宽度（收起时 display:none 量不到），字体后到也会改宽度：
+     这两个时点各重测一次滚动窗 */
+  if (window.ResizeObserver) new ResizeObserver(() => rollNavStatus()).observe(sb);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => rollNavStatus());
   // 事件委托：静态常驻项 + 手风琴动态项（含系统页）统一走这里
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
