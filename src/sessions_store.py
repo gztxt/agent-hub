@@ -14,12 +14,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import unquote
 
 HOME = Path.home()
 CACHE_TTL_S = 15          # 菜单 30s 轮询，15s 缓存足够去重
-SCAN_CANDIDATES = 60      # 每 agent 最多扫多少候选（mtime 倒序）：防 grok 88 / jcode 117 扫穿
-SCAN_CANDIDATES_JSON = 400  # jcode 现在扫**全部**候选（不再取“最新20个”，见 _t_jcode），此值只当病态目录的保险顶
 HEAD_CHARS = 262144       # 大 jsonl 只读头部这么多字符找标题（实测 grok 单是 <user_info> 一行就 33KB，64KB 窗口不够）
 HARD_BUDGET_S = 1.5       # 单次 list_history 硬预算，超时返回已读到的 + note
 
@@ -46,12 +44,6 @@ def mask_title(text: Optional[str]) -> str:
     t = _KV.sub(lambda m: m.group(1) + "=<masked>", text or "")
     t = _BLOB.sub("<masked>", t)
     return re.sub(r"\s+", " ", t).strip()[:120]
-
-
-def _dash_slug(cwd: str) -> str:
-    """claude / qoder 目录名：逐字符把非 [A-Za-z0-9] 换成 '-'
-       （实测 /fs/1000/ftp/技术文档 → -fs-1000-ftp-----；只正向生成，不逆向反解——反解有歧义）"""
-    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
 def _iso(ts: Optional[str]) -> int:
@@ -86,29 +78,6 @@ def _load(p: Path):
     """读整份 JSON 并确保关句柄（单测跑出过 ResourceWarning：一次扫 60 个候选会漏 fd）"""
     with open(p, "r", errors="ignore") as f:
         return json.load(f)
-
-
-_WD_KEY = b'"working_dir":"'
-
-
-def _fast_wd(p: Path) -> str:
-    """只从字节里把 working_dir 抠出来，不做整份 JSON 解析。
-       实测：jcode 会话文件最大 7MB，`working_dir` 落在文件中段（偏移最大见 7.3MB 处），
-       值是**原文未转义的 UTF-8**；117 个文件找键 7ms，全量 json.load 134ms（≈18×）。
-       路径里真出现引号会被转义成 `\"` ⇒ 跳过被反斜杠保护的那个引号。"""
-    try:
-        raw = p.read_bytes()
-    except Exception:  # noqa: BLE001
-        return ""
-    i = raw.find(_WD_KEY)
-    if i < 0:
-        return ""
-    j = i + len(_WD_KEY)
-    while j < len(raw):
-        if raw[j:j + 1] == b'"' and raw[j - 1:j] != b"\\":
-            break
-        j += 1
-    return raw[i + len(_WD_KEY):j].decode("utf-8", "ignore")
 
 
 def _text_of(c) -> str:
@@ -157,42 +126,51 @@ def _first_user_text(objs: List[dict], *, jcode: bool = False) -> str:
 
 # ── 各仓库适配器：统一返回 (items, note)。note 为中文，供前端空态/降级直显 ──────
 def _t_grok(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
-    root = HOME / ".grok" / "sessions" / quote(cwd, safe="")
+    """跳目录口径（用户 09-22 裁定）：不按画像 cwd 分桶，取全局时间最近的 limit 条。
+       桶结构 ~/.grok/sessions/<URL编码cwd>/<uuid>/summary.json，实测 7 桶共 136 条。"""
+    root = HOME / ".grok" / "sessions"
     if not root.is_dir():
-        return [], f"grok 在该目录无会话仓库（{root.name}）"
-    dirs = [p for p in root.iterdir() if (p / "summary.json").exists()]
-    dirs.sort(key=lambda p: (p / "summary.json").stat().st_mtime, reverse=True)
+        return [], "grok 无会话仓库"
+    files = sorted(root.glob("*/*/summary.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        return [], "grok 无历史会话"
     items: List[dict] = []
-    for p in dirs[:SCAN_CANDIDATES]:
+    for f in files:
         if time.time() - t0 > HARD_BUDGET_S:
             return items, "扫描超时，仅显示已读到的条目"
         try:
-            d = _load(p / "summary.json")
+            d = _load(f)
         except Exception:  # noqa: BLE001
             continue
+        sess = f.parent
         info = d.get("info") or {}
         # D2：标题＝用户问题原文优先；session_summary 是 agent 自生成的摘要，实测会出英文
         # （'Agent Hub sidebar menu name status badge layout fixes'），只能当兼底。
-        title = _first_user_text(_head_lines(p / "chat_history.jsonl", 20)) or \
+        title = _first_user_text(_head_lines(sess / "chat_history.jsonl", 20)) or \
             (d.get("session_summary") or "").strip()
-        items.append({"agent": "grok", "id": info.get("id") or p.name,
+        scwd = info.get("cwd") or unquote(sess.parent.name)      # 缺字段时从桶名反解
+        items.append({"agent": "grok", "id": info.get("id") or sess.name,
                       "title": mask_title(title) or "未命名会话", "ts": _iso(d.get("updated_at")),
-                      "msgs": d.get("num_messages"), "cwd": info.get("cwd") or cwd})
+                      "msgs": d.get("num_messages"), "cwd": scwd})
         if len(items) >= limit:
             break
     return items, ""
 
 
-def _t_jsonl_dir(kind: str, root_dir: Path, cwd: str, limit: int, t0: float, qoder: bool = False) -> Tuple[List[dict], str]:
-    if not root_dir.is_dir():
-        return [], f"{kind} 在该目录无会话仓库"
-    files = sorted(root_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+def _cwd_of_records(objs: List[dict]) -> str:
+    """claude/qoder 的 jsonl 每行都带 cwd（实测），取第一个字符串值即该会话的真实目录"""
+    return next((d.get("cwd") for d in objs if isinstance(d.get("cwd"), str)), "")
+
+
+def _t_jsonl_dir(kind: str, projects_dir: Path, cwd: str, limit: int, t0: float, qoder: bool = False) -> Tuple[List[dict], str]:
+    """claude / qoder 共用：~/.<kind>/projects/<cwd 脱敏名>/<sid>.jsonl，**跳目录**按 mtime 取最近。"""
+    if not projects_dir.is_dir():
+        return [], f"{kind} 无会话仓库"
+    files = sorted(projects_dir.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
-        skeletons = sum(1 for p in root_dir.iterdir() if p.is_dir())
-        return [], (f"{kind} 该目录 0 条可续会话（仅 {skeletons} 个无正文骨架）" if skeletons
-                    else f"{kind} 该目录暂无历史")
+        return [], f"{kind} 暂无可续会话（只有目录骨架）"
     items: List[dict] = []
-    for p in files[:SCAN_CANDIDATES]:
+    for p in files:
         if time.time() - t0 > HARD_BUDGET_S:
             return items, "扫描超时，仅显示已读到的条目"
         objs = _head_lines(p)
@@ -201,23 +179,24 @@ def _t_jsonl_dir(kind: str, root_dir: Path, cwd: str, limit: int, t0: float, qod
             title = next((d.get("lastPrompt", "") for d in objs if d.get("type") == "last-prompt"), "")
         title = title or _first_user_text(objs)
         items.append({"agent": kind, "id": p.stem, "title": mask_title(title) or "未命名会话",
-                      "ts": int(p.stat().st_mtime), "msgs": None, "cwd": cwd})
+                      "ts": int(p.stat().st_mtime), "msgs": None, "cwd": _cwd_of_records(objs) or cwd})
         if len(items) >= limit:
             break
     return items, ""
 
 
 def _t_claude(cwd: str, limit: int, t0: float):
-    return _t_jsonl_dir("claude", HOME / ".claude" / "projects" / _dash_slug(cwd), cwd, limit, t0)
+    return _t_jsonl_dir("claude", HOME / ".claude" / "projects", cwd, limit, t0)
 
 
 def _t_qoder(cwd: str, limit: int, t0: float):
-    return _t_jsonl_dir("qoder", HOME / ".qoder" / "projects" / _dash_slug(cwd), cwd, limit, t0, qoder=True)
+    return _t_jsonl_dir("qoder", HOME / ".qoder" / "projects", cwd, limit, t0, qoder=True)
 
 
 def _t_jcode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     """仓库以 ~/.jcode/sessions/*.json 为准（sqlite 的 recent_sessions 会被 prune，只作辅助）。
-       .bak 文件名以 .json.bak 结尾，glob('session_*.json') 天然不会命中。"""
+       .bak 文件名以 .json.bak 结尾，glob('session_*.json') 天然不会命中。
+       跳目录口径（用户 09-22 裁定）：不按 working_dir 过滤，取全局 mtime 最近 limit 条。"""
     root = HOME / ".jcode" / "sessions"
     if not root.is_dir():
         return [], "jcode 无会话仓库"
@@ -225,30 +204,20 @@ def _t_jcode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     if not files:
         return [], "jcode 无会话仓库"
     items: List[dict] = []
-    scanned = 0
-    # 不能“先取最新 N 个再按 cwd 过滤”：jcode 是平铺目录、混着所有 cwd。
-    # 实测 09-22：技术文档目录下实有 89 条会话，但当日 10 条探针（cwd=/tmp 与
-    # /home/gztxt/agent-hub）占满“最新 20 个”窗口 ⇒ 前端只剩 1 条，看着像漏读。
-    # 改成：全量遍历，先用 _fast_wd() 廉价过 cwd（117 个文件 7ms），命中才整份解析。
+    # 教训保留（v0.13.1）：此仓库是**平铺混所有 cwd** 的目录，绝不可「先取最新 N 个再按 cwd 过滤」
+    # ——实测那样会让技术文档目录下 89 条只剩 1 条可见（被当日 10 条探针占满窗口）。
     for p in files:
         if time.time() - t0 > HARD_BUDGET_S:
             return items, "扫描超时，仅显示已读到的条目"
-        scanned += 1
-        if scanned > SCAN_CANDIDATES_JSON:
-            return items, "候选文件过多已截断，仅显示已读到的条目"
-        if _fast_wd(p) != cwd:
-            continue
         try:
             d = _load(p)
         except Exception:  # noqa: BLE001
-            continue
-        if d.get("working_dir") != cwd:      # 便宜键可能误命中正文，整份解析后定案
             continue
         msgs = d.get("messages") or []
         title = _first_user_text(msgs, jcode=True) or (d.get("title") or "").strip()   # D2：问题原文优先
         items.append({"agent": "jcode", "id": d.get("id") or p.stem, "title": mask_title(title) or "未命名会话",
                       "ts": _iso(d.get("last_active_at") or d.get("updated_at")),
-                      "msgs": len(msgs) or None, "cwd": cwd})
+                      "msgs": len(msgs) or None, "cwd": d.get("working_dir") or cwd})
         if len(items) >= limit:
             break
     return items, ""
@@ -266,7 +235,7 @@ def _t_hermes(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     db = HOME / ".hermes" / "state.db"
     if not db.exists():
         return [], "hermes 无 state.db"
-    sql = ("select s.id as id, s.title as title, s.last_activity_at as ts, "
+    sql = ("select s.id as id, s.title as title, s.last_activity_at as ts, s.cwd as scwd, "
            "(select m.content from messages m where m.session_id=s.id and m.role='user' and m.active=1 "
            " order by m.id limit 1) as first_u "
            "from sessions s where s.source='cli' order by s.last_activity_at desc limit ?")
@@ -277,12 +246,13 @@ def _t_hermes(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
         return [], f"hermes 读取失败：{type(e).__name__}"
     items = [{"agent": "hermes", "id": r["id"],
               "title": mask_title(r["first_u"] or r["title"] or "") or "未命名会话",   # D2：问题原文优先，LLM 标题当兼底
-              "ts": int(r["ts"] or 0), "msgs": None, "cwd": cwd} for r in rows]
-    return items, "口径：hermes 按 source=cli 全量（历史多数条目未记 cwd）"
+              "ts": int(r["ts"] or 0), "msgs": None, "cwd": r["scwd"] or ""} for r in rows]
+    return items, "口径：hermes 按 source=cli 全量跳目录（历史多数条目未记 cwd）"
 
 
 def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
-    """只列 source='cli'（D5，否则把 codex exec 探针当历史）。实测 updated_at/created_at 为 epoch 秒；
+    """只列 source='cli'（D5，否则把 codex exec 探针当历史），但**跳目录**（用户 09-22 裁定）。
+       实测 updated_at/created_at 为 epoch 秒；
        `has_user_event` 实测在唯一真会话上为 0 ⇒ 不可当过滤条件。"""
     db = HOME / ".codex" / "state_5.sqlite"
     if not db.exists():
@@ -290,13 +260,13 @@ def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     try:
         with _ro(db) as c:
             rows = c.execute("select id, title, cwd, updated_at from threads "
-                             "where source='cli' and cwd=? and archived=0 order by updated_at desc limit ?",
-                             (cwd, limit)).fetchall()
+                             "where source='cli' and archived=0 order by updated_at desc limit ?",
+                             (limit,)).fetchall()
     except Exception as e:  # noqa: BLE001
         return [], f"codex 读取失败：{type(e).__name__}"
     items = [{"agent": "codex", "id": r["id"], "title": mask_title(r["title"] or "") or "未命名会话",
-              "ts": int(r["updated_at"] or 0), "msgs": None, "cwd": r["cwd"]} for r in rows]
-    return items, ("" if items else "codex 该目录无交互式历史（exec 探针不计）")
+              "ts": int(r["updated_at"] or 0), "msgs": None, "cwd": r["cwd"] or ""} for r in rows]
+    return items, ("" if items else "codex 无交互式历史（exec 探针不计）")
 
 
 SESSION_STORES: Dict[str, dict] = {
@@ -348,27 +318,57 @@ def _sql_one(db: Path, sql: str, params: tuple):
         return None
 
 
-def _exists_on_disk(agent_id: str, sid: str, cwd: str) -> bool:
-    """续聊前的「实盘存在」硬校验——按仓库结构直接定位那一条，不看 mtime 排名。
-       实测仓库总量：jcode 技术文档下 89 条、grok 88 条、claude 37 条，而展示清单上限 20 条
-       ⇒ 用 known_ids() 校验会把真实存在的旧会话拒成 404。"""
+def _store_path(agent_id: str, sid: str):
+    """按仓库结构定位「那一条」落在哪个文件（跳目录口径下 id 仍是全局唯一：实测各桶不撞名）"""
     if agent_id == "grok":
-        return (HOME / ".grok" / "sessions" / quote(cwd, safe="") / sid / "summary.json").is_file()
+        return next(iter((HOME / ".grok" / "sessions").glob(f"*/{sid}/summary.json")), None)
     if agent_id in ("claude", "qoder"):
         base = HOME / (".claude" if agent_id == "claude" else ".qoder") / "projects"
-        return (base / _dash_slug(cwd) / f"{sid}.jsonl").is_file()
+        return next(iter(base.glob(f"*/{sid}.jsonl")), None)
     if agent_id == "jcode":
         f = HOME / ".jcode" / "sessions" / f"{sid}.json"
-        return f.is_file() and _fast_wd(f) == cwd
+        return f if f.is_file() else None
+    return None
+
+
+def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
+    """续聊前的「实盘存在」硬校验——按仓库结构直接定位那一条，不看 mtime 排名。
+       教训（v0.13.1）：早先用 known_ids() 校验，而它走 list_history(limit<=20)
+       ⇒ 第 21 条以后的真会话会被误判「不在实盘清单」→ 404 续不了。"""
     if agent_id == "hermes":
-        # 无 cwd 口径（D7 例外：152/209 条未记 cwd），只认 source=cli
         return bool(_sql_one(HOME / ".hermes" / "state.db",
                              "select 1 from sessions where id=? and source='cli'", (sid,)))
     if agent_id == "codex":
         return bool(_sql_one(HOME / ".codex" / "state_5.sqlite",
-                             "select 1 from threads where id=? and cwd=? and source='cli' and archived=0",
-                             (sid, cwd)))
-    return False
+                             "select 1 from threads where id=? and source='cli' and archived=0", (sid,)))
+    return _store_path(agent_id, sid) is not None
+
+
+def session_cwd(agent_id: str, sid: str, fallback: str = "") -> str:
+    """会话自己的 cwd。跳目录之后必须按这一条来起 pty / 拼 qoder 的 -w，
+       否则会「在技术文档目录里打开一条 agent-hub 的会话」。目录不存在则退回 fallback。"""
+    c = ""
+    try:
+        f = _store_path(agent_id, sid)
+        if agent_id == "grok" and f:
+            info = _load(f).get("info") or {}
+            c = info.get("cwd") or unquote(f.parent.parent.name)
+        elif agent_id in ("claude", "qoder") and f:
+            c = _cwd_of_records(_head_lines(f, 5))
+        elif agent_id == "jcode" and f:
+            c = _load(f).get("working_dir") or ""
+        elif agent_id == "hermes":
+            r = _sql_one(HOME / ".hermes" / "state.db", "select cwd from sessions where id=?", (sid,))
+            c = (r["cwd"] or "") if r else ""
+        elif agent_id == "codex":
+            r = _sql_one(HOME / ".codex" / "state_5.sqlite", "select cwd from threads where id=?", (sid,))
+            c = (r["cwd"] or "") if r else ""
+    except Exception:  # noqa: BLE001
+        c = ""
+    c = (c or "").strip()
+    if c and Path(c).is_dir():
+        return c
+    return fallback
 
 
 def resume_argv(agent_id: str, session_id: str, cwd: str) -> List[str]:
@@ -380,7 +380,9 @@ def resume_argv(agent_id: str, session_id: str, cwd: str) -> List[str]:
         raise ValueError("session_id 形状非法")
     if not _exists_on_disk(agent_id, sid, cwd):
         raise ValueError("session_id 不在实盘清单内")
-    argv = [t.replace("{id}", sid).replace("{cwd}", cwd) for t in st["resume"]]
+    # {cwd} 用会话自己的目录（跳目录后不能用画像 cwd 硬套，否则 qoder 会开错工程）
+    real_cwd = session_cwd(agent_id, sid, cwd)
+    argv = [t.replace("{id}", sid).replace("{cwd}", real_cwd) for t in st["resume"]]
     for t in argv:                                  # 兜底栅栏：id 已过 ^…\Z，这里护住 cwd
         if any(c in t for c in "\x00\n;|&$`"):
             raise ValueError("拼装结果含可疑字符")
@@ -451,12 +453,10 @@ def _title_of_session(agent: str, sid: Optional[str], cwd: Optional[str] = None)
         return mask_title(_first_user_text(_head_lines(hit.parent / "chat_history.jsonl", 20)) or
                           (d.get("session_summary") or "").strip())
     if agent == "claude":
-        roots = [HOME / ".claude" / "projects" / _dash_slug(cwd)] if cwd else \
-            [x for x in (HOME / ".claude" / "projects").iterdir() if x.is_dir()]
-        for r in roots:
-            f = r / f"{sid}.jsonl"
-            if f.exists():
-                return mask_title(_first_user_text(_head_lines(f, 60)))
+        # id 是 UUID、跨桶唯一 ⇒ 不按 cwd 定位（跳目录口径下条目可能来自任何工程）
+        f = next(iter((HOME / ".claude" / "projects").glob(f"*/{sid}.jsonl")), None)
+        if f:
+            return mask_title(_first_user_text(_head_lines(f, 60)))
     if agent == "jcode":
         f = HOME / ".jcode" / "sessions" / f"{sid}.json"
         if not f.exists():

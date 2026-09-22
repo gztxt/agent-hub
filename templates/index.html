@@ -276,6 +276,8 @@
         .nav-hist .hh-row:hover { background: var(--surface-2); color: var(--text-1); }
         .nav-hist .hh-t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .nav-hist .hh-ts { flex: none; color: var(--muted); font-family: var(--font-mono); }
+        .nav-hist .hh-cw { flex: none; color: var(--muted); font-family: var(--font-mono);
+                          opacity: .7; max-width: 6em; overflow: hidden; text-overflow: ellipsis; }
         .nav-hist .hh-note { padding: 4px 6px; font-size: var(--fs-xs); color: var(--muted); }
         .sidebar.collapsed .nav-hist { display: none; }   /* 收起态是 48px 图标条，放不下 */
         /* 顶栏芯片：字母 sid 换成中文标题后需要一个截断窗（max-width 用 em，不写死 px） */
@@ -1024,6 +1026,6 @@
     <div id="toast"></div>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260922b"></script>
+    <script src="/static/hub.js?v=20260922c"></script>
 </body>
 </html>

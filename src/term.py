@@ -164,6 +164,10 @@ async def create_session(body: CreateIn, request: Request):
             raise HTTPException(400, str(e)) from e
     else:
         cmd = shlex.split(prof["terminal"]["cmd"])
+    if body.session_id:
+        # 跳目录口径（09-22 裁定）之后，历史条目可能属于别的目录：pty 要起在**会话自己的 cwd**，
+        # 否则等于"在技术文档目录里打开一条 agent-hub 的会话"。session_cwd 已校验目录真实存在。
+        cwd = sessions_store.session_cwd(prof["id"], body.session_id, cwd)
     resolved = profiles.which(cmd[0])
     if not resolved:
         raise HTTPException(400, f"命令 {cmd[0]} 未在本机找到")
@@ -174,6 +178,8 @@ async def create_session(body: CreateIn, request: Request):
     _sessions[sid] = sess
     _attach_reader(sess)
     title = (sessions_store.live_titles(prof["id"]) or {}).get(sess.pid, "")
+    if not title and sess.resume_of:     # 刚起来时各 CLI 未必已登记 pid，直接按 id 查盘上标题
+        title = sessions_store.title_for(prof["id"], sess.resume_of, cwd)
     return {"session": dict(sess.to_dict(), title=title)}
 
 

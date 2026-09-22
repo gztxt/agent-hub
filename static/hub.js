@@ -1444,7 +1444,7 @@ async function startAgent(id) {
 }
 /* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
    histOpen 进 localStorage；数据缓存在 HIST —— 30s loadAgents 重绘时不闪空白。 ── */
-const HIST_LIMIT = 3;                                   // D6：每 agent 3 条，不做「显示全部」
+const HIST_LIMIT = 5;                                   // D6 修订（09-22）：每 agent 5 条，跳目录按时间取最近
 const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
 let histOpen = localStorage.getItem('hub.hist') || '';
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
@@ -1455,13 +1455,23 @@ function hhTime(ts) {                                   // 绝对时间：相对
   return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
+/* 跳目录之后，同名会话可能来自不同工程：只在「不属于画像目录」时补一个目录尾名，
+   画像目录本身不标（多数条目都是它，标了反而吵）。 */
+function hhDir(cwd, home) {
+  if (!cwd || !home || cwd === home) return '';
+  const seg = String(cwd).replace(/\/+$/, '').split('/').filter(Boolean);
+  return seg.length ? seg[seg.length - 1] : '';
+}
+
 function histHtml(aid) {
   const h = HIST[aid];
   if (!h || h.loading) return '<div class="nav-hist"><div class="hh-note">读取历史…</div></div>';
   if (h.err) return '<div class="nav-hist"><div class="hh-note">历史读取失败：' + escapeHtml(h.err) + '</div></div>';
   const rows = (h.items || []).map(it =>
     '<div class="hh-row" data-agent="' + escapeHtml(aid) + '" data-sid="' + escapeHtml(it.id) + '"' +
-    ' title="' + escapeHtml(it.title) + '"><span class="hh-t">' + escapeHtml(it.title) + '</span>' +
+    ' title="' + escapeHtml(it.title) + (it.cwd ? ' ｜ ' + escapeHtml(it.cwd) : '') + '">' +
+    '<span class="hh-t">' + escapeHtml(it.title) + '</span>' +
+    '<span class="hh-cw">' + hhDir(it.cwd, h.home) + '</span>' +
     '<span class="hh-ts">' + hhTime(it.ts) + '</span></div>').join('');
   const hd = '<div class="hh-hd">历史会话' + (rows ? '（' + h.items.length + '）' : '') + '</div>';
   // note 在“已经有行”时也要显：截断/降级被吞掉的话，残缺结果看着就像完整清单
@@ -1475,7 +1485,7 @@ function histLoad(aid) {
   HIST[aid] = { items: [], note: '', loading: true, err: '' };
   renderNav();
   api('/api/term/history/' + encodeURIComponent(aid) + '?limit=' + HIST_LIMIT, { headers: termHeaders() })
-    .then(d => { HIST[aid] = { items: d.items || [], note: d.note || '', loading: false, err: '' }; })
+    .then(d => { HIST[aid] = { items: d.items || [], note: d.note || '', home: d.cwd || '', loading: false, err: '' }; })
     .catch(e => { const m = String((e && e.message) || e);
       // 新前端 + 未重启的旧后端＝路由不存在（FastAPI 回 Not Found）。说人话，别抛生涩 404。
       HIST[aid] = { items: [], note: '', loading: false,

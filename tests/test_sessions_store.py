@@ -105,15 +105,24 @@ class TestRealStores(unittest.TestCase):
         d = ss.list_history("hermes", "/home/gztxt", 3)
         self.assertTrue(d["note"], "hermes 不按 cwd 过滤，note 必须写明口径")
 
-    def test_qoder_empty_state_has_note(self):
-        d = ss.list_history("qoder", CWD, 3)
-        self.assertEqual(d["items"], [], "qoder 该目录实测 0 条可续")
-        self.assertTrue(d["note"], "空态必须给中文说明，不得留白")
+    def test_items_carry_their_own_cwd(self):
+        """跳目录之后，条目若不带自己的 cwd，前端就无从标出「这条来自哪个工程」"""
+        seen_other = False
+        for a in ("grok", "claude", "jcode", "qoder", "hermes", "codex"):
+            for i in ss.list_history(a, CWD, 5)["items"]:
+                with self.subTest(agent=a, sid=i["id"][:10]):
+                    self.assertIsInstance(i["cwd"], str)
+                if i["cwd"] and i["cwd"] != CWD:
+                    seen_other = True
+        self.assertTrue(seen_other, "跨目录必须真命中别的目录的条目，否则本次裁定没落地")
 
     def test_missing_dir_degrades_not_raises(self):
+        # 跳目录口径（用户 09-22 裁定）之后，"画像目录不存在"不再等于"无历史"：
+        # 全局最近条目照给，传入的 cwd 只用于画像目录标注。此例断言的是「不许抛」。
         d = ss.list_history("grok", "/no/such/dir", 3)
-        self.assertEqual(d["items"], [])
-        self.assertTrue(d["note"])
+        self.assertIsInstance(d["items"], list)
+        for i in d["items"]:
+            self.assertEqual({"agent", "id", "title", "ts", "cwd"} - set(i), set(), "条目字段不齐")
 
     def test_unknown_agent_degrades(self):
         self.assertEqual(ss.list_history("pi", CWD, 3)["items"], [])
@@ -178,25 +187,28 @@ class TestJcodeWindow(unittest.TestCase):
        技术文档目录下实有 89 条却只剩 1 条可见，前端看着像漏读。"""
 
     def test_limit_is_actually_filled(self):
-        d = ss.list_history("jcode", CWD, 3)
-        self.assertEqual(len(d["items"]), 3, "limit=3 必须填满（该目录实测 89 条）")
+        """产品默认 5 条（HIST_LIMIT）：不得再出现"只要 5 条却给 1 条"的静默缺量"""
+        d = ss.list_history("jcode", CWD, 5)
+        self.assertEqual(len(d["items"]), 5, "limit=5 必须填满")
         d8 = ss.list_history("jcode", CWD, 8)
         self.assertGreaterEqual(len(d8["items"]), 8, "放宽 limit 应真拿到更多，而不是被窗口卡住")
         ids = [i["id"] for i in d8["items"]]
         self.assertEqual(len(ids), len(set(ids)), "不得出现重复条目")
+        ts = [i["ts"] for i in d8["items"]]
+        self.assertEqual(ts, sorted(ts, reverse=True), "必须按时间倒序（跨目录之后仍要单调）")
 
-    def test_fast_wd_equals_json_load(self):
-        """_fast_wd() 是过滤的唯一依据，抠出来的 cwd 必须与整份解析逐字一致"""
-        root = Path.home() / ".jcode" / "sessions"
-        n = 0
-        for p in sorted(root.glob("session_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:25]:
-            try:
-                d = json.load(open(p, errors="ignore"))
-            except Exception:  # noqa: BLE001
+    def test_session_cwd_matches_record(self):
+        """session_cwd() 是 pty 起目录与 qoder -w 的唯一来源，必须与条目自带 cwd 一致，
+           且绝不返回一个不存在的目录（否则 pty 直接起不来）"""
+        for a in ("grok", "claude", "jcode", "qoder"):
+            items = ss.list_history(a, CWD, 3)["items"]
+            if not items:
                 continue
-            self.assertEqual(ss._fast_wd(p), d.get("working_dir"), p.name)
-            n += 1
-        self.assertGreater(n, 10, "样本太少，断言无意义")
+            i = items[0]
+            with self.subTest(agent=a):
+                c = ss.session_cwd(a, i["id"], "FALLBACK")
+                self.assertEqual(c, i["cwd"], "反查与会话记录不一致")
+                self.assertTrue(Path(c).is_dir(), f"返回了不存在的目录：{c}")
 
 
 class TestResumeExists(unittest.TestCase):
@@ -204,14 +216,31 @@ class TestResumeExists(unittest.TestCase):
 
     def test_old_session_beyond_top20_resumable(self):
         root = Path.home() / ".jcode" / "sessions"
+
+        def wd(p):
+            try:
+                return json.load(open(p, errors="ignore")).get("working_dir")
+            except Exception:  # noqa: BLE001
+                return None
         cands = [p for p in sorted(root.glob("session_*.json"),
-                                   key=lambda x: x.stat().st_mtime, reverse=True)
-                 if ss._fast_wd(p) == CWD]
+                                   key=lambda x: x.stat().st_mtime, reverse=True) if wd(p) == CWD]
         if len(cands) <= 25:
             self.skipTest(f"该目录仅 {len(cands)} 条，样本不足")
         old = cands[-5].stem
         self.assertNotIn(old, ss.known_ids("jcode", CWD), "前提：它确实不在 20 条展示清单里")
         self.assertEqual(ss.resume_argv("jcode", old, CWD), ["jcode", "--resume", old])
+
+    def test_qoder_argv_uses_session_cwd(self):
+        """qoder 是唯一把目录写进 argv 的（-w）：跳目录后必须给会话自己的目录，
+           拿画像 cwd 硬套等于「在技术文档里打开 agent-hub 的工程」"""
+        items = ss.list_history("qoder", CWD, 1)["items"]
+        if not items:
+            self.skipTest("qoder 无可续条目")
+        it = items[0]
+        argv = ss.resume_argv("qoder", it["id"], CWD)
+        self.assertEqual(argv[0], "qodercli")
+        self.assertEqual(argv[argv.index("-w") + 1], it["cwd"], "-w 必须是会话自己的目录")
+        self.assertEqual(argv[-2:], ["-r", it["id"]])
 
     def test_absent_id_still_rejected(self):
         with self.assertRaises(ValueError):

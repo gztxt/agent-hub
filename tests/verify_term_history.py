@@ -97,6 +97,25 @@ def replay(sid):
     return got
 
 
+def proc_cwd_of(need):
+    """从 /proc 反查该终端子进程真实 cwd（比信 API 回执更硬：exec 时的 cwd 就是这条会话的目录）"""
+    try:
+        mine = {str(x) for x in os.listdir("/proc") if x.isdigit()}
+    except Exception:  # noqa: BLE001
+        return ""
+    for pid in mine:
+        try:
+            cl = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode("utf8", "ignore")
+        except Exception:  # noqa: BLE001
+            continue
+        if need and need in cl:      # 命令行里必须带「这条会话的 id」，否则可能误读别人的 cwd
+            try:
+                return os.readlink(f"/proc/{pid}/cwd")
+            except Exception:  # noqa: BLE001
+                return ""
+    return ""
+
+
 def wait_title(sid, budget=40):
     """等 list_sessions 里该会话的中文 title 出末（= pid → 盘上会话反查生效）。"""
     t0 = time.time()
@@ -124,8 +143,14 @@ def main():
         chk("标题含中文、非字母编号", bool(re.search(r"[\u4e00-\u9fff]", t)) and not re.match(r"^[0-9a-f]{4}$", t), t[:24])
     chk("limit=3 生效", len(items) <= 3, f"n={len(items)}")
     chk("history 缺 token → 401", call("/api/term/history/grok", headers={})[0] == 401)
-    code, d = call("/api/term/history/qoder?limit=3")
-    chk("qoder 空态有中文 note", code == 200 and bool(d.get("note")), (d.get("note") or "")[:30])
+    code, d = call("/api/term/history/qoder?limit=5")
+    # 口径变更（用户 09-22 裁定）：qoder 在画像目录下确实 0 条，但**跳目录**必有条目，
+    # 且每条要带自己的目录（前端据此打标签）。旧断言「必须是空态 + note」已作废。
+    qi = d.get("items") or []
+    chk("qoder 跳目录有条目且自带目录", bool(qi) and all(i.get("cwd") for i in qi),
+        f"n={len(qi)} 首条目录={str((qi[0] if qi else {}).get('cwd'))[:26]!r}")
+    chk("limit=5 生效（产品默认条数）",
+        len(call("/api/term/history/grok?limit=5")[1].get("items") or []) == 5)
     chk("无仓库 agent(pi) → 400", call("/api/term/history/pi")[0] == 400)
     chk("非法 limit → 422", call("/api/term/history/grok?limit=999")[0] == 422)
 
@@ -151,6 +176,15 @@ def main():
             f"HTTP {code} cmd={str(s.get('cmd',''))[:34]}")
         if s.get("id"):
             chk(f"{agent} 续的是被点那条（argv 带 id）", sid in (s.get("cmd") or ""), f"id={sid[:20]}")
+            # 用户 09-22 追加裁定：不同会话不同目录，续聊时终端必须起在「那条会话自己的目录」
+            want = his[0].get("cwd") or ""
+            chk(f"{agent} pty 起在会话自己的目录", (s.get("cwd") or "") == want,
+                f"会话目录={want[:26]!r} 实得={str(s.get('cwd'))[:26]!r}")
+            real = proc_cwd_of(sid)
+            if real:
+                chk(f"{agent} /proc 实测子进程 cwd 一致", real == want, f"/proc→{real[:26]!r}")
+            else:
+                chk(f"{agent} /proc 实测子进程 cwd 一致", True, "子进程已退出，跳过（不作 FAIL）")
             # 顶栏芯片不得出现 hex sid：pid 反查不到就走 resume_of 直查盘上标题
             t = wait_title(s["id"])
             chk(f"{agent} 顶栏芯片拿到中文标题", bool(t) and bool(re.search(r"[\u4e00-\u9fff]", t)),
