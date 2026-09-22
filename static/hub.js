@@ -1464,8 +1464,11 @@ function histHtml(aid) {
     ' title="' + escapeHtml(it.title) + '"><span class="hh-t">' + escapeHtml(it.title) + '</span>' +
     '<span class="hh-ts">' + hhTime(it.ts) + '</span></div>').join('');
   const hd = '<div class="hh-hd">历史会话' + (rows ? '（' + h.items.length + '）' : '') + '</div>';
+  // note 在“已经有行”时也要显：截断/降级被吞掉的话，残缺结果看着就像完整清单
+  // （09-22 jcode 只显 1 条那次，正是“扫描窗口用尽”的 note 没人看见）。
+  const tail = (rows && h.note) ? '<div class="hh-note">' + escapeHtml(h.note) + '</div>' : '';
   return '<div class="nav-hist">' + hd +
-         (rows || '<div class="hh-note">' + escapeHtml(h.note || '该目录暂无可续会话') + '</div>') + '</div>';
+         (rows || '<div class="hh-note">' + escapeHtml(h.note || '该目录暂无可续会话') + '</div>') + tail + '</div>';
 }
 
 function histLoad(aid) {

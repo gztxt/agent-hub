@@ -19,7 +19,7 @@ from urllib.parse import quote
 HOME = Path.home()
 CACHE_TTL_S = 15          # 菜单 30s 轮询，15s 缓存足够去重
 SCAN_CANDIDATES = 60      # 每 agent 最多扫多少候选（mtime 倒序）：防 grok 88 / jcode 117 扫穿
-SCAN_CANDIDATES_JSON = 20  # jcode 整份 JSON 较大，候选数另设小上限
+SCAN_CANDIDATES_JSON = 400  # jcode 现在扫**全部**候选（不再取“最新20个”，见 _t_jcode），此值只当病态目录的保险顶
 HEAD_CHARS = 262144       # 大 jsonl 只读头部这么多字符找标题（实测 grok 单是 <user_info> 一行就 33KB，64KB 窗口不够）
 HARD_BUDGET_S = 1.5       # 单次 list_history 硬预算，超时返回已读到的 + note
 
@@ -86,6 +86,29 @@ def _load(p: Path):
     """读整份 JSON 并确保关句柄（单测跑出过 ResourceWarning：一次扫 60 个候选会漏 fd）"""
     with open(p, "r", errors="ignore") as f:
         return json.load(f)
+
+
+_WD_KEY = b'"working_dir":"'
+
+
+def _fast_wd(p: Path) -> str:
+    """只从字节里把 working_dir 抠出来，不做整份 JSON 解析。
+       实测：jcode 会话文件最大 7MB，`working_dir` 落在文件中段（偏移最大见 7.3MB 处），
+       值是**原文未转义的 UTF-8**；117 个文件找键 7ms，全量 json.load 134ms（≈18×）。
+       路径里真出现引号会被转义成 `\"` ⇒ 跳过被反斜杠保护的那个引号。"""
+    try:
+        raw = p.read_bytes()
+    except Exception:  # noqa: BLE001
+        return ""
+    i = raw.find(_WD_KEY)
+    if i < 0:
+        return ""
+    j = i + len(_WD_KEY)
+    while j < len(raw):
+        if raw[j:j + 1] == b'"' and raw[j - 1:j] != b"\\":
+            break
+        j += 1
+    return raw[i + len(_WD_KEY):j].decode("utf-8", "ignore")
 
 
 def _text_of(c) -> str:
@@ -202,14 +225,24 @@ def _t_jcode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     if not files:
         return [], "jcode 无会话仓库"
     items: List[dict] = []
-    for p in files[:SCAN_CANDIDATES_JSON]:
+    scanned = 0
+    # 不能“先取最新 N 个再按 cwd 过滤”：jcode 是平铺目录、混着所有 cwd。
+    # 实测 09-22：技术文档目录下实有 89 条会话，但当日 10 条探针（cwd=/tmp 与
+    # /home/gztxt/agent-hub）占满“最新 20 个”窗口 ⇒ 前端只剩 1 条，看着像漏读。
+    # 改成：全量遍历，先用 _fast_wd() 廉价过 cwd（117 个文件 7ms），命中才整份解析。
+    for p in files:
         if time.time() - t0 > HARD_BUDGET_S:
             return items, "扫描超时，仅显示已读到的条目"
+        scanned += 1
+        if scanned > SCAN_CANDIDATES_JSON:
+            return items, "候选文件过多已截断，仅显示已读到的条目"
+        if _fast_wd(p) != cwd:
+            continue
         try:
             d = _load(p)
         except Exception:  # noqa: BLE001
             continue
-        if d.get("working_dir") != cwd:
+        if d.get("working_dir") != cwd:      # 便宜键可能误命中正文，整份解析后定案
             continue
         msgs = d.get("messages") or []
         title = _first_user_text(msgs, jcode=True) or (d.get("title") or "").strip()   # D2：问题原文优先
@@ -302,7 +335,40 @@ def list_history(agent_id: str, cwd: str, limit: int = 3) -> dict:
 
 
 def known_ids(agent_id: str, cwd: str) -> set:
+    """只用于「当前可展示清单」的集合（受 list_history 的 limit≤20 上限制）。
+       ⚠ 不要拿它做续聊存在性校验：第 21 条以后的老会话会被误判 404，走 _exists_on_disk()。"""
     return {i["id"] for i in list_history(agent_id, cwd, 20)["items"]}
+
+
+def _sql_one(db: Path, sql: str, params: tuple):
+    try:
+        with _ro(db) as c:
+            return c.execute(sql, params).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _exists_on_disk(agent_id: str, sid: str, cwd: str) -> bool:
+    """续聊前的「实盘存在」硬校验——按仓库结构直接定位那一条，不看 mtime 排名。
+       实测仓库总量：jcode 技术文档下 89 条、grok 88 条、claude 37 条，而展示清单上限 20 条
+       ⇒ 用 known_ids() 校验会把真实存在的旧会话拒成 404。"""
+    if agent_id == "grok":
+        return (HOME / ".grok" / "sessions" / quote(cwd, safe="") / sid / "summary.json").is_file()
+    if agent_id in ("claude", "qoder"):
+        base = HOME / (".claude" if agent_id == "claude" else ".qoder") / "projects"
+        return (base / _dash_slug(cwd) / f"{sid}.jsonl").is_file()
+    if agent_id == "jcode":
+        f = HOME / ".jcode" / "sessions" / f"{sid}.json"
+        return f.is_file() and _fast_wd(f) == cwd
+    if agent_id == "hermes":
+        # 无 cwd 口径（D7 例外：152/209 条未记 cwd），只认 source=cli
+        return bool(_sql_one(HOME / ".hermes" / "state.db",
+                             "select 1 from sessions where id=? and source='cli'", (sid,)))
+    if agent_id == "codex":
+        return bool(_sql_one(HOME / ".codex" / "state_5.sqlite",
+                             "select 1 from threads where id=? and cwd=? and source='cli' and archived=0",
+                             (sid, cwd)))
+    return False
 
 
 def resume_argv(agent_id: str, session_id: str, cwd: str) -> List[str]:
@@ -312,7 +378,7 @@ def resume_argv(agent_id: str, session_id: str, cwd: str) -> List[str]:
     sid = str(session_id or "")
     if len(sid) > 128 or not st["id_re"].match(sid):
         raise ValueError("session_id 形状非法")
-    if sid not in known_ids(agent_id, cwd):
+    if not _exists_on_disk(agent_id, sid, cwd):
         raise ValueError("session_id 不在实盘清单内")
     argv = [t.replace("{id}", sid).replace("{cwd}", cwd) for t in st["resume"]]
     for t in argv:                                  # 兜底栅栏：id 已过 ^…\Z，这里护住 cwd

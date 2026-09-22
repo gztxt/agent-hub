@@ -1,5 +1,6 @@
 """sessions_store 单测：真磁盘只读断言（无网络、无进程、无 mock）。
    跑法：cd ~/agent-hub && venv/bin/python -m unittest tests.test_sessions_store -v"""
+import json
 import re
 import sys
 import unittest
@@ -169,3 +170,53 @@ class TestTitleFor(unittest.TestCase):
 
     def test_unknown_agent_returns_empty(self):
         self.assertEqual(ss.title_for("pi", "01a0c914-8f95-78e2-8b0f-123456789abc"), "")
+
+
+class TestJcodeWindow(unittest.TestCase):
+    """09-22 实测缺陷回归：jcode 仓库是平铺目录、混着所有 cwd。早期实现只扫「最新 20 个
+       文件」再按 cwd 过滤 —— 当日 10 条探针（cwd=/tmp、/home/gztxt/agent-hub）把窗口占满，
+       技术文档目录下实有 89 条却只剩 1 条可见，前端看着像漏读。"""
+
+    def test_limit_is_actually_filled(self):
+        d = ss.list_history("jcode", CWD, 3)
+        self.assertEqual(len(d["items"]), 3, "limit=3 必须填满（该目录实测 89 条）")
+        d8 = ss.list_history("jcode", CWD, 8)
+        self.assertGreaterEqual(len(d8["items"]), 8, "放宽 limit 应真拿到更多，而不是被窗口卡住")
+        ids = [i["id"] for i in d8["items"]]
+        self.assertEqual(len(ids), len(set(ids)), "不得出现重复条目")
+
+    def test_fast_wd_equals_json_load(self):
+        """_fast_wd() 是过滤的唯一依据，抠出来的 cwd 必须与整份解析逐字一致"""
+        root = Path.home() / ".jcode" / "sessions"
+        n = 0
+        for p in sorted(root.glob("session_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:25]:
+            try:
+                d = json.load(open(p, errors="ignore"))
+            except Exception:  # noqa: BLE001
+                continue
+            self.assertEqual(ss._fast_wd(p), d.get("working_dir"), p.name)
+            n += 1
+        self.assertGreater(n, 10, "样本太少，断言无意义")
+
+
+class TestResumeExists(unittest.TestCase):
+    """续聊存在性校验必须按仓库结构直查，不能走被 limit 截断的展示清单"""
+
+    def test_old_session_beyond_top20_resumable(self):
+        root = Path.home() / ".jcode" / "sessions"
+        cands = [p for p in sorted(root.glob("session_*.json"),
+                                   key=lambda x: x.stat().st_mtime, reverse=True)
+                 if ss._fast_wd(p) == CWD]
+        if len(cands) <= 25:
+            self.skipTest(f"该目录仅 {len(cands)} 条，样本不足")
+        old = cands[-5].stem
+        self.assertNotIn(old, ss.known_ids("jcode", CWD), "前提：它确实不在 20 条展示清单里")
+        self.assertEqual(ss.resume_argv("jcode", old, CWD), ["jcode", "--resume", old])
+
+    def test_absent_id_still_rejected(self):
+        with self.assertRaises(ValueError):
+            ss.resume_argv("jcode", "session_zzzz_1790000000000_0000000000000000", CWD)
+        with self.assertRaises(ValueError):
+            ss.resume_argv("grok", "00000000-0000-4000-8000-000000000000", CWD)
+        with self.assertRaises(ValueError):
+            ss.resume_argv("codex", "00000000-0000-4000-8000-000000000000", CWD)
