@@ -404,7 +404,7 @@ function applyChatMode() {
     ensureTerm();
     // ★ 修复核心：切换实体时解绑异主会话，画面不再残留上一个 Agent
     if (termSid && termSidAgent && termSidAgent !== chatPick) termDetach();
-    termRefreshList().then(() => termAutoAttach());
+    termRefreshList().then(list => termAutoAttach(list));   // 清单直接接力给 autoAttach，一次 GET 就够
   } else {
     openChatSession();
     // 对话工具栏三联动：模型 / 工作目录 / 会话列表
@@ -504,6 +504,31 @@ const TERM_MOUSE_REPORT_RE = /\x1b\[(?:<[0-9]+;[0-9]+;[0-9]+[Mm]|M[\s\S]{3}|[0-9
 const TERM_MOUSE_OFF = '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l'
                      + '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l';
 
+/* ── 回放查询闸门（v0.12.4）───────────────────────────────────────────────
+   ring 里除了画面字节，还夹着上一个 TUI 开机时发过的终端查询：\x1b[c（设备属性）、
+   \x1b[6n / \x1b[5n（光标位置 / 状态）、\x1b]10;? 之类（配色）。xterm 会替终端**自动作答**，
+   答案顺着 onData 灌进 pty，shell 不认这些字节就原样回显成
+   `?1;2c` `1;1R` `0n` `]10;rgb:2424/2727/2b2b` —— 正是用户报的「白色遮挡时还有一串数字字母乱码」。
+   实测（CDP 直查 xterm 5.5）：DA1 / DSR6 / DSR5 / OSC 10 / OSC 11 / OSC 4 六类全部会作答。
+   对策：只在回放那一帧的解析期间把这几类注册成「吞掉不答」，写完 dispose 交还默认实现
+   ⇒ 正在跑的 TUI 现场提问照样能得到答案，只有历史里的过期提问被静音。 */
+const TERM_QUERY_OSC = [4, 10, 11, 12, 52];
+function termWriteReplay(raw) {
+  const gate = [];
+  try {
+    /* CSI 的私有前缀走独立派发表（注册 id 用 prefix 字段，写成 params 不生效——实测踩过）：
+       \x1b[c \x1b[>c（DA1/DA2）、\x1b[6n \x1b[5n \x1b[?6n（DSR）。
+       实测漏掉 `?6n` 就会往 pty 吐一串 `?26;118R`。 */
+    for (const id of [{ final: 'c' }, { prefix: '>', final: 'c' },
+                      { final: 'n' }, { prefix: '?', final: 'n' }])
+      gate.push(term.parser.registerCsiHandler(id, () => true));
+    // OSC 只在「是查询」时吞（带 ? 才是问，带颜色值是设色，不能误杀）
+    for (const code of TERM_QUERY_OSC)
+      gate.push(term.parser.registerOscHandler(code, s => String(s).includes('?')));
+  } catch (e) { /* 注册失败就退回普通写入：宁可多几行乱码，也不能不显示画面 */ }
+  term.write(raw, () => { while (gate.length) { try { gate.pop().dispose(); } catch (e) {} } });
+}
+
 function termScanMouseMode(text) {
   let m;
   TERM_DECSET_RE.lastIndex = 0;
@@ -520,6 +545,59 @@ function termSend(data) {
     if (!payload) return;   // 整帧都是鼠标上报 → 丢弃，别污染 pty
   }
   termWs.send(JSON.stringify({ data: payload }));
+}
+
+/* ── 重新可见 / 尺寸变化的统一出口 ─────────────────────────────────────────
+   两条实测出来的坑：
+   ① 容器被 display:none 藏起来时宽高为 0，此时 fit 会算出 1 行的怪尺寸 ⇒ 一律先判可见；
+   ② pane 从 none→flex 重新显示后，xterm 的 DOM 渲染层不会自己补画 ⇒ 屏幕留白块
+      （用户报的「切页面 / 换会话标签后有白色遮挡」）。重新可见时把全部行 refresh 一遍。
+   ResizeObserver 在 0→实际尺寸那一刻自动进来；浏览器标签页切回来走 visibilitychange。 */
+let termPaintedAt = '';
+function termVisible() {
+  const el = $('termEl');
+  return !!(el && el.clientWidth && el.clientHeight);
+}
+function termRepaint(force) {
+  if (!term || !termFit) return;
+  if (!termVisible()) { termPaintedAt = ''; return; }
+  try { termFit.fit(); } catch (e) {}
+  const size = term.cols + 'x' + term.rows;
+  // pty 那边可能被别的客户端改过尺寸，重连时（force）无条件报一次当前行列
+  if ((size !== termPaintedAt || force) && termWs && termWs.readyState === 1)
+    termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  termPaintedAt = size;
+  try { term.refresh(0, term.rows - 1); } catch (e) {}
+  termHealNow();   // 隐藏期间攒下的「回放只剩半屏」在这里补做
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) termRepaint(); });
+
+/* 连接中反馈：终端区顶部一条 2px 走马灯。不往缓冲区写字，回放到了自然被盖掉。 */
+function termConnecting(on, ws) {
+  if (ws && termWs !== ws) return;   // 迟到的旧连接事件不算数
+  const pane = $('termPane');
+  if (pane) pane.classList.toggle('connecting', !!on);
+}
+
+/* ring 是「最近 64KB 原始输出」，对整屏 TUI 往往只剩最后几帧增量：回放完屏幕大半是空的，
+   而同尺寸 resize 不会让内核发 SIGWINCH ⇒ TUI 永不重画，白块就一直挂着
+   （CDP 实测：换标签 / 离开页面回来后 26 行里 21 行空白，挪一次尺寸立刻满屏）。
+   这里在回放之后确认画面确实空了，才把 pty 尺寸挪一行再挪回来逼它重画整屏。
+   回放落在隐藏态时先挂着（termHealPending），等 termRepaint() 在重新可见时补做。 */
+let termHealPending = false;
+function termHealBlank() { termHealPending = true; setTimeout(termHealNow, 250); }
+function termHealNow() {
+  if (!termHealPending || !term || !termWs || termWs.readyState !== 1 || !termVisible()) return;
+  termHealPending = false;
+  const b = term.buffer.active;
+  let blank = 0;
+  for (let i = 0; i < term.rows; i++) { const l = b.getLine(i); if (!l || !l.translateToString(true).trim()) blank++; }
+  if (blank * 3 < term.rows * 2) return;   // 画面有内容就别去打扰 pty
+  const c = term.cols, r = term.rows;
+  termWs.send(JSON.stringify({ type: 'resize', cols: c, rows: Math.max(1, r - 1) }));
+  setTimeout(() => {
+    if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+  }, 120);
 }
 
 function ensureTerm() {
@@ -547,25 +625,18 @@ function ensureTerm() {
   term.loadAddon(termFit);
   term.open($('termEl'));
   term.onData(termSend);
-  /* 面板隐藏时不 fit：隐藏态容器宽高为 0，fit 会算出行列怪值，显示后画布错位。
-     依赖 ResizeObserver 在 pane 从 none→flex 时补一次（0 → 实际尺寸会触发） */
-  const fit = () => {
-    const el = $('termEl');
-    if (!el || !el.clientWidth || !el.clientHeight) return;
-    try {
-      termFit.fit();
-      if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    } catch (e) {}
-  };
-  window.addEventListener('resize', fit);
-  new ResizeObserver(fit).observe($('termEl'));
-  requestAnimationFrame(fit);
-  setTimeout(fit, 150);
+  /* 回调一律包一层：termRepaint(force) 的形参不能接 addEventListener/ResizeObserver 的事件对象 */
+  window.addEventListener('resize', () => termRepaint());
+  new ResizeObserver(() => termRepaint()).observe($('termEl'));
+  requestAnimationFrame(() => termRepaint());
+  setTimeout(() => termRepaint(), 150);
 }
 
 function termDetach() {
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   termSid = null; termSidAgent = null;
+  termConnecting(false);   // 解绑后 close 事件会被 termWs!==ws 守卫吃掉，连接中状态在这儿自己收
+  termHealPending = false;
 }
 
 /* TERM_TOKEN 鉴权（后端强制校验）：首次用终端时 prompt 一次存 localStorage，之后 header+query 双带 */
@@ -588,7 +659,11 @@ function wsUrl(path) {
 }
 
 function termConnect(sid, agent) {
+  const oldAlive = !!termWs && termWs.readyState === 1;   // 关旧线之前先记下它还活着
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
+  /* 只有「回到同一条会话且旧 socket 还活着」才保留画面。旧 socket 已死时画面里挂着
+     [连接断开] 那行提示，必须清掉——清屏后的空屏由 termHealBlank 逼 pty 重画补回来。 */
+  const keepScreen = (sid === termSid) && oldAlive;
   termSid = sid;
   termSidAgent = agent || termSidAgent;
   /* 行1 芯片的「当前」标记跟着走：点芯片回看另一路时 termConnect 不重绘列表，
@@ -596,27 +671,34 @@ function termConnect(sid, agent) {
   const row = $('termSessList');
   if (row) row.querySelectorAll('.sess-item').forEach(x => x.classList.toggle('cur', x.dataset.sid === sid));
   termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
-  term.clear();
+  termHealPending = false; // 上一条会话攒下的补画请求作废，新连接的回放自己会再挂
+  /* 保留画面时别清屏：清屏 = 先给用户一屏白底，而服务端只回放 ring 里最近 64KB
+     （整屏帧早被增量帧挤出去）⇒ 补不满就一直白着，就是用户报的现象。 */
+  if (!keepScreen) term.clear();
+  termConnecting(true);
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
   ws.binaryType = 'arraybuffer';
   /* 连接后的第一帧 = 服务端的历史回放（term.py 里 ring 是整块 send_bytes 出去的，一帧到底）：
      只回显、不复位也不参与「当前是否需要鼠标」的判定——历史里的 TUI 开关是过期状态。
-     见文件上方「鼠标上报闸门」注释。 */
+     见文件上方「鼠标上报闸门」与「回放查询闸门」注释。 */
   let replayFrame = true;
   ws.onmessage = ev => {
     if (termWs !== ws) return;
     const raw = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
-    term.write(raw);
     if (replayFrame) {
       replayFrame = false;
+      termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
       term.write(TERM_MOUSE_OFF);
+      termHealBlank();   // 回放可能只是 64KB 尾巴里的半屏，见函数注释
       return;
     }
+    term.write(raw);
     termScanMouseMode(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
   };
-  ws.onopen = () => { term.focus(); if (termFit) termFit.fit(); if (termWs === ws) ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); };
+  ws.onopen = () => { termConnecting(false, ws); term.focus(); termRepaint(true); };
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
+    termConnecting(false, ws);
     const gone = ev.code === 4404 || ev.code === 4410;  // 已退出/不存在 → 明确提示并刷新列表
     term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在——点行1 芯片重连，或按「新会话」]' : '[连接断开——点行1 芯片重连或新建]') + '\x1b[0m');
     if (gone) { termDetach(); termRefreshList(); }
@@ -661,15 +743,24 @@ async function termRefreshList() {
       if (term) term.write('\r\n\x1b[90m[当前会话已结束——点「新会话」重新开始]\x1b[0m');
     }
     return live;
-  } catch (e) { return []; }
+  } catch (e) { return null; }
+  // 出错回 null（= 没拿到清单），与「清单为空」分开：空清单才清屏给提示，
+  // 取不到清单不能把好好一块画面抹掉
 }
 
-function termAutoAttach() {
+function termAutoAttach(live) {
   // 只接本实体的活会话；没有就清屏给提示（确保不残留上一实体画面）
-  api('/api/term/sessions', { headers: termHeaders() }).then(d => {
-    const mine = (d.sessions || []).filter(s => s.agent_id === chatPick && s.alive);
+  // live = termRefreshList() 已经拿到的清单，别再为同一件事发第二个 GET
+  const got = live ? Promise.resolve(live)
+    : api('/api/term/sessions', { headers: termHeaders() })
+        .then(d => (d.sessions || []).filter(s => s.agent_id === chatPick && s.alive));
+  got.then(mine => {
     if (mine.length) {
-      termConnect(mine[mine.length - 1].id, chatPick);
+      const last = mine[mine.length - 1].id;
+      /* 已经接在这条会话上就别拆线重连：重连 = 清屏 + 只回放 ring 尾巴，
+         用户看到的「离开当前页再回来就白屏」正是这么来的。补一次重绘即可。 */
+      if (termSid === last && termWs && termWs.readyState === 1) { termRepaint(); return; }
+      termConnect(last, chatPick);
       return;
     }
     // 确保 detached：切换实体时清除旧绑定，避免显示错误会话
@@ -691,8 +782,7 @@ async function termKillOne(sid) {
     await api('/api/term/sessions/' + sid, { method: 'DELETE', headers: termHeaders() });
     toast('会话已销毁', 'ok');
     if (sid === termSid) termDetach();
-    termRefreshList();
-    termAutoAttach();
+    termRefreshList().then(list => termAutoAttach(list));   // 一次 GET：重绘芯片并接上剩下的会话
   } catch (e) {
     toast(e.message, 'err');
     termRefreshList();  // 404 等异常：以服务端真实状态重绘，DOM 不骗人
@@ -1565,7 +1655,9 @@ setInterval(() => {
   if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
   if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();
   // 终端面板可见时轮询会话记录：进程退出/超时/TTL 回收都会让死条目自动消失，无需手动点「会话」
-  if (document.getElementById('termPane').classList.contains('on')) termRefreshList();
+  // 只看 termPane 的 on 不够：整块 page-chat 被 display:none 藏起来时它仍是 on，白轮询
+  if (document.getElementById('page-chat').classList.contains('on')
+      && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
 go(localStorage.getItem('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）

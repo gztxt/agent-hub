@@ -112,11 +112,21 @@ templates_dir = Path(__file__).parent.parent / "templates"
 static_path = Path(__file__).parent.parent / "static"
 templates = Jinja2Templates(directory=str(templates_dir))
 
-# v0.5.2.7 自定义静态资源路由（强制 no-cache，防 .js 改后浏览器用旧 ETag/Last-Modified 304）
-# 替代原 StaticFiles mount（仍保留 fallback）
+# v0.5.2.7 自定义静态资源路由（替代原 StaticFiles mount）；v0.12.4 改口径：
+# 原来是 no-store ⇒ 浏览器每进一次终端页都要重下 290KB 的 vendor/xterm.js，而且从不压缩。
+# 现在 no-cache（每次仍回源校验）+ 自己处理 If-None-Match ⇒ 文件没变只回 304 空响应，
+# 文件一改 ETag 就变 ⇒ 拿不到旧 JS（当初写 no-store 就是怕这个，304 同样防得住）。
 if static_path.exists():
-    from fastapi.responses import FileResponse
+    import gzip
+    import hashlib
+    import mimetypes
     from fastapi import Request
+    from fastapi.responses import FileResponse, Response
+
+    _GZ_SUFFIX = {".js", ".css", ".svg", ".json", ".map"}
+    _GZ_MIN = 1024
+    _gz_cache: dict = {}   # "路径|mtime_ns|size" -> gzip 字节；键随文件变，天然失效
+
     @app.get("/static/{file_path:path}")
     async def _static_no_cache(file_path: str, request: Request):
         f = (static_path / file_path).resolve()
@@ -127,14 +137,25 @@ if static_path.exists():
         if not f.is_file():
             from fastapi import HTTPException
             raise HTTPException(404)
-        return FileResponse(
-            str(f),
-            headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            },
-        )
+        st = f.stat()
+        # 与 FileResponse 同一套算法（md5("mtime-size")）⇒ 升级这次不会白掉一轮缓存
+        etag = '"%s"' % hashlib.md5(f"{st.st_mtime}-{st.st_size}".encode(), usedforsecurity=False).hexdigest()
+        headers = {"Cache-Control": "no-cache", "Pragma": "no-cache", "ETag": etag}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        media = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+        if (f.suffix.lower() in _GZ_SUFFIX and st.st_size >= _GZ_MIN
+                and "gzip" in (request.headers.get("accept-encoding") or "")):
+            key = f"{f}|{st.st_mtime_ns}|{st.st_size}"
+            body = _gz_cache.get(key)
+            if body is None:
+                body = gzip.compress(f.read_bytes(), 6)
+                if len(_gz_cache) > 32:
+                    _gz_cache.clear()
+                _gz_cache[key] = body
+            return Response(content=body, media_type=media,
+                            headers={**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return FileResponse(str(f), headers=headers, media_type=media)
     # 不再 mount StaticFiles；自定义路由接管 /static/
 
 # 子路由（Hook / 记忆 / 指挥官）

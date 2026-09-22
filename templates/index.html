@@ -505,8 +505,19 @@
            的 height 算行数，而它只减去 xterm 自己的 padding、不减父元素的——一旦给任一层加 inset，
            算出的行数就会多出一行，屏幕高度超出内容盒被 overflow:hidden 裁掉（底部遵住）。
            旧实测凭据：父层带 6px padding 时 .xterm 高 468px、#termEl 内容盒仅 459px，底部溢出 9~10px。 */
-        .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; }
+        .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; position: relative; }
         #termEl { flex: 1; min-height: 0; padding: 0; background: var(--term-bg); overflow: hidden; }
+        /* 连接中反馈：终端区顶部一条 2px 走马灯（绝对定位，不进内容流，所以不破上面那条
+           FitAddon 高度口径）。刻意不往终端缓冲区写「连接中…」——那行字回放后仍留在画面里。 */
+        .term-body::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+                             background: linear-gradient(90deg, transparent, var(--text-1), transparent);
+                             background-size: 40% 100%; background-repeat: no-repeat;
+                             opacity: 0; pointer-events: none; }
+        #termPane.connecting .term-body::before { opacity: .5; animation: term-connecting 1.1s linear infinite; }
+        @keyframes term-connecting { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+        @media (prefers-reduced-motion: reduce) {
+            #termPane.connecting .term-body::before { animation: none; opacity: .35; }
+        }
 
         /* ── 移动端自适应（US-001：消除左偏留白/页签换行/两栏错位） ── */
         @media (max-width: 767px) {
