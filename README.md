@@ -26,6 +26,15 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 | 端口管理（枚举+归属+Agent 标注，**只读无 kill**）| ports.rs | src/ports.py |
 | 项目类型自动识别 + 自定义 Agent 注册 | scan_project_dir | src/sources.py + main.py |
 
+### 左侧历史会话下拉（v0.13.0，2026-09-22）
+
+- 点 agent 名＝进工作台 + 展开该 agent 的历史会话（同时只展开一个，再点同一行只收起）
+- 数据源是**各 CLI 自己的盘上仓库**（`src/sessions_store.py` 只读适配层，不写不删不过滤缓存），覆盖 grok / claude / jcode / hermes / codex / qoder；pi 无会话仓库，不进集合
+- 标题＝**用户当初那句问题原文**（非 agent 自生成摘要、非字母 sid），命中口令/长密串则糊为 `<masked>`
+- 默认 3 条，时间统一绝对 `MM-DD HH:MM`（相对时间会破侧栏 DOM diff）
+- 点条目＝终端里 `--resume <id>` 续聊；命令只出自后端模板，客户端最多传一个过正则且实盘存在的 id
+- 顶栏会话芯片同步改中文标题：pid 反查拿不到时走 `resume_of` 直查盘上标题（jcode 只在退出时写 last_pid，codex/qoder 无 pid 登记表）
+
 ## 访问
 
 - 本地: http://127.0.0.1:3102/ ｜ 局域网: http://192.168.5.102:3102/ ｜ Tailscale: http://100.117.232.62:3102/
@@ -40,6 +49,9 @@ POST /api/agents/detect  {dir}        GET  /api/sessions | /api/sessions/{id}/me
 POST /api/agents         {dir,name?}  GET  /api/ports
 DELETE /api/agents/{id}               GET  /api/memory/l1|search|l2|l3|context|l2/rebuild
 POST /telemetry/events/{source}       GET  /telemetry/events | /telemetry/usage/summary
+
+GET  /api/term/history/{agent_id}?limit=3   盘上历史会话（标题＝用户问题原文，需 x-term-token）
+POST /api/term/sessions  {agent_id, session_id?}   带 session_id 即续聊该条历史
 ```
 
 ## 配置（.env）
