@@ -86,10 +86,12 @@
             --lh-tight: 1.35; --lh-base: 1.7; --lh-loose: 1.85;   /* 中文行高比西文松 */
             /* ── 图标系统：单一 SVG sprite（24 网格 / 1.9 描边），四档尺寸 ── */
             --ico-xs: 14px; --ico-sm: 16px; --ico-md: 18px; --ico-lg: 22px; --ico-xl: 26px;
-            /* ── 侧栏菜单行：名称优先完整显示，状态区定宽滚动（v0.12.1）──
-               状态串最长达 8 字（未见异常·模型标识），不封顶会把名称挤成 1~2 个字 */
+            /* ── 侧栏菜单行：名称优先完整显示，状态区定宽滚动（v0.12.1 / v0.12.2）──
+               状态串最长达 9 字（未见异常·模型标识），不封顶会把名称挤成 1~2 个字 */
             --sb-w: 292px;        /* 侧栏展开宽：名称完整显示所需下限 */
-            --nav-st-w: 4.2em;    /* 状态可视窗宽（字号 --fs-xs），超出走横向滚动 */
+            /* v0.12.2：宽屏行内只剩「名称 + 状态」两元素，状态窗放到 9em（117px）⇒ 最长状态串
+               整条可见，不再走横向滚动；窄屏抽屉在 media 段里收回 3.4em */
+            --nav-st-w: 9em;
             /* ── 嵌入式终端：浅色主题。字号 / 字族 / 配色全部走这套 token，hub.js 只读不写死 ──
                ANSI 16 色取语义色的邻近低饱和版本，保证浅底上 ≥ 5:1 可读（终端输出常带 color）；
                字族拉丁等宽在前、CJK 等宽在后：xterm 按首个命中字体量 cell 宽，CJK 在前会把 ASCII 撑宽 */
@@ -167,7 +169,11 @@
         .sidebar { flex: 0 0 var(--sb-w); width: var(--sb-w); background: var(--bg); border-right: 1px solid var(--border);
                    padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
                    position: relative; align-self: stretch; overflow-y: auto;
+                   /* v0.12.2：菜单不出滚动条（用户 09-22 宽屏要求）。overflow-y:auto 保留 ⇒
+                      条目多于可视高度时滚轮/触摸板仍可滚，只是不占位、不画槽。 */
+                   scrollbar-width: none;
                    transition: flex-basis .18s ease, width .18s ease; }
+        .sidebar::-webkit-scrollbar { display: none; }
         .sidebar.collapsed { flex-basis: 48px; width: 48px; padding-left: 4px; padding-right: 4px; }
         .nav-group { display: flex; flex-direction: column; gap: 2px; }
         .nav-group-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); letter-spacing: .04em;
@@ -227,6 +233,32 @@
         @media (prefers-reduced-motion: reduce) {
           .nav-st.mq .st-t { display: block; overflow: hidden; text-overflow: ellipsis; animation: none; }
         }
+        /* ── v0.12.2 菜单行只留「名称 + 状态」（用户 09-22，宽屏与窄屏抽屉同一套） ──────
+           状态方块、端口、行内动作图标（嵌入/终端/▶启动）全部让位：方块与状态文字重复，
+           端口与动作把名称挤到截断。规则限定 :not(.collapsed) 是沿用 v0.12.1 抽屉那条口径
+           （收起态 .nav-acc-body 整体 display:none，行内元素本来就不可见，两种态都不依赖方块）。
+           入口不丢：点行进工作台，嵌入 pane 与终端 pane 同时在场，启动走终端栏「+ 新会话」
+           （实测点 Pi Agent → iframe 正常加载，termNew 按钮在位；模式 tab 自 v0.9 已停用）。 */
+        .sidebar:not(.collapsed) .nav-item .s-badge,
+        .sidebar:not(.collapsed) .nav-item .nav-port,
+        .sidebar:not(.collapsed) .nav-item .nav-acts { display: none; }
+        /* 名称不再撑满整行（上面的 .lbl{flex:1} 会把状态推到行尾，中间空一大截）：收成 0 1 auto，
+           状态紧贴名称末尾，省出的空白留在行尾；行内间隙由 6px 收到 4px。 */
+        .sidebar:not(.collapsed) .nav-item .lbl { flex: 0 1 auto; }
+        .sidebar:not(.collapsed) .nav-item { gap: 4px; }
+        /* v0.12.2 宽屏纵向密度：行内只剩文字后 40px 行高是纯浪费（文字行 21px + 上下 5px = 34px 够点）。
+           实测 1440x900：AGENTS 组 8 行由 320px 收到 272px（整组不再需要滚动）；
+           基础设施 16 行由 640px 收到 544px，加上侧栏间距 10→6px，可滚距离由 338px 降到 214px。
+           窄屏（<768px）不动：抽屉行 40px 是触控目标，且抽屉本身有独立高度预算。 */
+        @media (min-width: 768px) {
+            .nav-item, .side-item { min-height: 34px; padding: 5px 10px; }
+            .sidebar { gap: 6px; }
+        }
+        /* v0.12.2：滚动只发生在菜单列表内部。搜索框 / 总览 / 设置 / 收起 是常驻控件，
+           不该被 16 项基础设施挤出可视区（整栏滚时它们落在折线以下，而滚动条已隐藏、无从指认）。
+           min-height:0 让 #navTree 在 .sidebar 的 flex 列里可压缩，overflow-y:auto 承接滚动。 */
+        #navTree { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+        #navTree::-webkit-scrollbar { display: none; }
         /* 操作按钮组 */
         .nav-acts { display: flex; gap: 1px; flex: none; margin-left: 1px; }
         /* 行内操作按钮：统一 22×22 图形按钮，图标恒为 16px（14px 会把 monitor 这类多细节图形糊成一格）*/
@@ -507,17 +539,10 @@
                                        box-shadow: 4px 0 20px var(--shadow-lg); }
             .sidebar.collapsed .side-toggle .lbl { display: none; }
             .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
-            /* 窄屏抽屉只留「名称 + 状态」：端口、行内动作图标（嵌入/终端/▶启动）、状态方块
-               全部让位。方块在展开态是冗余（状态文字已含同一信息），但收起态的 52px 图标条
-               只有它，所以规则一律限定 :not(.collapsed)。▶ 启动 在工作台终端栏「+ 新会话」
-               （termNew()）有等价入口，功能不丢。腾出的宽度让最长 Agent 名也能单行放下。 */
-            .sidebar:not(.collapsed) .nav-item .nav-port,
-            .sidebar:not(.collapsed) .nav-item .nav-acts,
-            .sidebar:not(.collapsed) .nav-item .s-badge { display: none; }
+            /* v0.12.2：抽屉「只留名称+状态」「状态紧贴名称」两条规则已上移到基础段
+               （见 .sidebar:not(.collapsed) .nav-item 那组），宽窄屏共用一份，此处只留窄屏差异：
+               抽屉宽 236px，状态窗收回 3.4em，超出的部分仍由 hub.js 量位移走横向滚动。 */
             .nav-item { --nav-st-w: 3.4em; }
-            /* 名称不再撑满整行（基础规则 flex:1 会把状态推到行尾，短名与状态之间空出一大截）：
-               抽屉里收成 0 1 auto，状态紧贴名称末尾，省出的空白留在行尾 */
-            .sidebar:not(.collapsed) .nav-item .lbl { flex: 0 1 auto; }
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
             main { max-width: 100%; margin: 0; padding: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
