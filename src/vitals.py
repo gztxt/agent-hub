@@ -600,7 +600,11 @@ class Vitals:
         if rec["verdict"] == "not_installed":
             return False
         m = rec.get("menu_noul")
-        if m is not None and rec.get("source") == "jev":
+        # 2026-09-23 修复：原条件额外要求 source == "jev"，但 source 取 "jev" 需
+        # rt_code != "skipped"，而默认不跑 L4 真请求 → rt_code 恒为 skipped →
+        # source 永远只能是 rule/jev-lowconf，menu_noul 被无条件忽略（门禁形同虚设）。
+        # Noul 与 roundtrip 是两条独立判定，此处只看 Noul 本身；判不出来(m=None)仍保留。
+        if m is not None:
             return m >= MENU_MIN
         return True
 
