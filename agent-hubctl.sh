@@ -25,6 +25,12 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/agent-hub}"
 UNIT="${UNIT:-agent-hub.service}"
+# 自路径必须从 BASH_SOURCE 取。`bash agent-hubctl.sh restart` 时 $0 == "agent-hubctl.sh"
+# （没有 ./ 前缀），拿它当命令执行就是 command not found —— 而它藏在 start/restart 分支的收尾，
+# 主流程（systemctl 委托）已跑完，所以只在末尾安静留一行错误、退出码仍是 0。
+# 09-23 真重启实测到（line 120: agent-hubctl.sh: command not found）。
+# 提示文案里的 `$0 status` 保留：那是给人看的示例，不是执行路径。
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 PORT="${PORT_CHECK:-3102}"
 PID_FILE="$APP_DIR/data/agent-hub.pid"          # 历史遗留，只用于体检，不再作为判据
 BASE="http://127.0.0.1:$PORT"
@@ -102,11 +108,11 @@ ACTION="${1:-status}"
 case "$ACTION" in
   start)
     if ! have_unit; then c_bad "未找到 systemd 用户单元 $UNIT —— 拒绝退回 nohup（那正是本次要消灭的双头）。"; exit 2; fi
-    if [ "$(unit_state)" = "active" ]; then c_ok "已在运行（unit active），不重复启动。"; $0 status; exit 0; fi
+    if [ "$(unit_state)" = "active" ]; then c_ok "已在运行（unit active），不重复启动。"; bash "$SELF" status; exit 0; fi
     if [ "$DRY" = "1" ]; then echo "[dry] systemctl --user start $UNIT"; exit 0; fi
     systemctl --user start "$UNIT"
     for _ in $(seq 1 15); do
-      [ "$(json_get "$BASE/health" status)" = "ok" ] && { c_ok "✅ 已启动并通过 /health"; $0 status; exit 0; }
+      [ "$(json_get "$BASE/health" status)" = "ok" ] && { c_ok "✅ 已启动并通过 /health"; bash "$SELF" status; exit 0; }
       sleep 1
     done
     c_bad "❌ 15s 内 /health 未就绪 —— 看 journalctl --user -u $UNIT -n 50"; exit 1
@@ -117,7 +123,7 @@ case "$ACTION" in
     if [ "$DRY" = "1" ]; then echo "[dry] systemctl --user $ACTION $UNIT"; exit 0; fi
     systemctl --user "$ACTION" "$UNIT"
     c_ok "已委托 systemd 执行 $ACTION（状态见 $0 status）"
-    [ "$ACTION" = "restart" ] && sleep 2 && $0 status || true
+    [ "$ACTION" = "restart" ] && sleep 2 && bash "$SELF" status || true
     ;;
   status)
     if ! have_unit; then c_warn "无 systemd 单元（本脚本不做 nohup 兜底）"; fi
