@@ -63,6 +63,14 @@ RT_NEG_STREAK = int(os.getenv("VITALS_NEG_STREAK", "2"))
 RT_MODEL = os.getenv("VITALS_RT_MODEL", "agnes/agnes-2.0-flash")
 # 实测一轮真请求耗时：claude 14s / jcode 9s / grok 19s / hermes 21s，40s 够宽容抖。
 RT_TIMEOUT = float(os.getenv("VITALS_RT_TIMEOUT", "40"))
+# L4 探活预算（2026-09-23 用户裁定：「探活测试 2 次即结束，不要反复频繁探测」）：
+# 外部条件失败态在一个 RT_TTL 窗内最多真跑这么多次，用完即停到窗过期。
+# 改前该态完全不设保鲜 ⇒ 每 SWEEP_EVERY(900s) 重烧一次 ⇒ 96 轮/天/家；实测 09-22 16:45
+# →09-23 07:37 单 claude 一家连烧 68 次，单次峰值 RSS 270MB（L4 并发 2 ⇒ 540MB），
+# 而本机 swap 已用 90% ⇒ 抖动期必然演成内存尖峰风暴。上限走 env，不写死在代码里。
+RT_MAX_TRIES = int(os.getenv("VITALS_RT_MAX_TRIES", "2"))
+# 归为「外部条件」的态：可重试，但**计入预算**（区别于 answered / blocked_by_account）
+RT_RETRYABLE = ("timeout", "rate_limited", "model_unsupported", "no_output")
 TRANSIENT = ("unknown", "broken", "pending")
 STATE_PATH = Path(os.getenv("VITALS_STATE",
                             str(Path(__file__).resolve().parent.parent / "data" / "vitals.json")))
@@ -505,17 +513,24 @@ class Vitals:
                     for k in sorted(self._by_sha, key=lambda k: self._by_sha[k]["checked_at"])[:100]:
                         self._by_sha.pop(k, None)
         if do_roundtrip:                # 应答历史：仅供展示与保鲜复用
+            # 预算记账（跳 needs_rt 的用户裁定）：成功即归零；跳窗算新一轮从 1 起；窗内失败累加
+            now = time.time()
+            answered = rec.get("rt_state") == "answered"
+            new_window = (not rt) or (now - rt.get("at", 0)) >= self.RT_TTL
+            tries = 0 if answered else (1 if new_window else int(rt.get("tries") or 0) + 1)
             with self._lock:
                 self._rt[aid] = {"rt_state": rec.get("rt_state"),
+                                 "tries": tries,
                                  "run_note": (ev.get("run_note") or "")[:150],
                                  "run_model": ev.get("run_model"),
                                  "menu_noul": rec.get("menu_noul"),
-                                 "source": rec.get("source"), "at": time.time()}
+                                 "source": rec.get("source"), "at": now}
         if not do_roundtrip and rt and (time.time() - rt.get("at", 0)) < self.RT_TTL:
             rec = dict(rec)
             rec["rt_state"] = rt.get("rt_state") or rec.get("rt_state")
             rec["rt_at"], rec["rt_note"] = rt.get("at"), rt.get("run_note")
             rec["rt_model"] = rt.get("run_model")
+            rec["rt_tries"] = int(rt.get("tries") or 0)   # 供 UI/排查看“本轮已烧几次”
             if rec["rt_state"] in ("timeout", "rate_limited", "model_unsupported"):
                 rec["rt_flaky"] = True  # 外部条件，不是本机故障，不固化成坏结论
         with self._lock:
@@ -533,7 +548,12 @@ class Vitals:
 
     # ── 慢周期：先全量 L1/L2（不碰模型），再按保鲜窗补 L4
     def needs_rt(self, prof: dict, ev: dict) -> bool:
-        """本轮是否该花一次真请求：声明了 verify_argv + 自检过关 + 上次应答态已过期"""
+        """本轮是否该花一次真请求：verify_argv + 自检过关 + 预算未用完 + 已过保鲜窗
+
+        2026-09-23 用户裁定「探活测试 2 次即结束，不要反复频繁探测」：外部条件失败态
+        仍要重试（免得一次抖动被固化成永久坏情报），但一个 RT_TTL 窗内最多 RT_MAX_TRIES
+        次；用完即停到窗过期，窗过再给一整轮——既不自愈断线，也不每 15min 无限重烧。
+        """
         if not (RT_IN_SWEEP and prof.get("verify_argv")):
             return False
         if ev.get("agent_shape") != "terminal-cli" or not ev.get("resolved"):
@@ -543,10 +563,11 @@ class Vitals:
         with self._lock:
             rt = self._rt.get(prof["id"]) or {}
         age = time.time() - rt.get("at", 0)
-        # 外部条件（限流 / 超时 / 模型标识不对 / 空输出）不配 24h 保鲜：下一轮必须重试，
-        # 免得一次抖动被固化成永久情报。只有 answered 与 blocked_by_account 值得记住。
-        if rt.get("rt_state") in ("timeout", "rate_limited", "model_unsupported", "no_output"):
-            return True
+        if rt.get("rt_state") in RT_RETRYABLE:
+            if age >= self.RT_TTL:
+                return True                    # 新窗 ⇒ 预算重新给满
+            return int(rt.get("tries") or 0) < RT_MAX_TRIES
+        # answered / blocked_by_account / probe_rejected / skipped：吃保鲜，到点再探
         return age >= self.RT_TTL
 
     def sweep(self, profs: List[dict]) -> dict:

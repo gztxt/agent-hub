@@ -50,6 +50,20 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 - 取证（09-23 线上实吐）：`--term-bg:#000000 --term-fg:#ffffff --term-cursor:#ffffff --term-sel:#b0d0ff40`，
   且 `hub.js` 兜底 `T('bg','#000000')/T('fg','#ffffff')`
 
+### L4 探活预算：一轮最多 2 次即停（v0.13.4，2026-09-23 用户裁定）
+
+- 裁定原话：「**探活测试 2 次即结束，不要反复频繁探测**」
+- 改前缺陷：失败态（`timeout` / `rate_limited` / `model_unsupported` / `no_output`）**完全不设保鲜**，
+  而 `SWEEP_EVERY=900s` ⇒ **96 轮/天/家**都在重烧真请求。实测 09-22 16:45→09-23 07:37 约 15 小时，
+  单 claude 一家连烧 **68 次**；单次峰值 RSS 270MB（L4 并发 2 ⇒ 540MB），而本机 swap 已用 90%
+  ⇒ 抖动期必然演成内存尖峰风暴（CPU 不是问题：全天 ≤ 0.17%）
+- 现口径：一个 `VITALS_RT_TTL`（24h）窗内最多真跑 `VITALS_RT_MAX_TRIES`（默认 **2**）次，
+  用完即**停到窗过期**；窗过重新给满预算（自愈不断线，但不风暴）。成功（`answered`）归零并转保鲜；
+  `blocked_by_account` 不占预算也不重烧；假卡/坏卡连首次都不给。预算**跳重启不失忆**（`tries` 随 state 落盘）
+- 根因另记：探针默认 `RT_MODEL=agnes/agnes-2.0-flash` 是 CCR **免费池成员** ⇒ 按共享配置军规第 4 条
+  必然周期性失效（本裁定只封住重试风暴，未动模型选择；选稳定模型 ID 另需在线清单取证）
+- 验证：`tests/test_vitals_retry.py` 17 条（全量 48 条）+ `tests/verify_rt_budget.py` 真 CLI A/B 实测
+
 ## 访问
 
 - 本地: http://127.0.0.1:3102/ ｜ 局域网: http://192.168.5.102:3102/ ｜ Tailscale: http://100.117.232.62:3102/
