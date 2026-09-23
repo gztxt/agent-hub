@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（09-23） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 126 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 136 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 26 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（18 只里 11 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 18 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（19 只里 12 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
 
 ## 怎么跑
 
@@ -85,7 +85,7 @@ $ venv/bin/python tests/verify_replay_gate.py
 
 ## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
 
-> 计数口径：上面表格里的 18 是**文件数**（09-23 19:5x 实测，旧写的 16 已漂）。
+> 计数口径：上面表格里的 19 是**文件数**（09-23 22:4x 实测）。
 > 其内 7 只走“抽函数 + 本地最小页”（不需服务），9 只需服务在跑（含 `3102`），
 > 有重叠 ⇒ 不拿一个数字兼两个口径。
 
@@ -102,7 +102,13 @@ $ venv/bin/python tests/verify_replay_gate.py
 6. **报障为「点不动 / 被盖住」时必须真点一次**：`elementFromPoint` 只回答「此刻谁在最上面」，
    不回答「用户那一下落在哪、之后残留了哪一层」。09-23 在这上面连吃三轮「探针全绿 + 用户说还是
    坏的」—— 必须用 `Input.dispatchMouseEvent` 按坐标点，并断言**导航之后**浮层为空。
-7. **浮层必须唯一且可逃生**：同一时刻最多一个抽屉是 `on`；任何导航都要清掉抽屉；遮罩只有一个
+7. **闸门必须自证「能抓住已知事故」**：红基线优先用 `Fetch.fulfillRequest` 把**修复前的 git 版本**
+   喂进同一页面（不往生产目录写文件）。只在修好的代码上跑绿不算数 —— 还必须证明**这条路径真的被
+   执行过**（本次靠服务端 `term/history` 命中定案，而不是靠面板自证）。
+   另：**改了缓存策略会打穿自己的闸门** —— v0.13.11 上 `immutable` 后 Chrome 对已缓存
+   的 `hub.js` 连请求都不发 ⇒ `Fetch` 无事件可拦 ⇒ 红况**静默变绿**（实测第二次跑就栽在
+   这里）。凡红绿靠请求拦截，必须**冷档案**（`tempfile.mkdtemp()` 作 user-data-dir）。
+8. **浮层必须唯一且可逃生**：同一时刻最多一个抽屉是 `on`；任何导航都要清掉抽屉；遮罩只有一个
    计算出口，且点它一次关干净（手机上没有 ESC，点空白是唯一逃生路径）。
 
 | 探针 | 钉住的缺陷 | 对照组实测 | 实验组实测 |
@@ -116,6 +122,7 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `verify_overlay_exclusion.py` | 窄屏「设置」抽屉（`min(400px,92vw)`/`z:60`）盖掉 92% 画面且**永不随导航关闭**：`#btnSettings` 用 inline `onclick` 旁路了侧栏事件委托（而“点完收抽屉”只写在委托里）+ `go()` 不清抽屉 + 遮罩只看侧栏态不看抽屉态 ⇒ 手机上「整页白板、完全点不动」且无逃生路径 | 红基线在 `test_overlay_exclusion.py` L1：git 内容搜到 `bd0f84a8`（HTML 带 `onclick="openSettings()"`、无 `data-settings`）与 `119f1c7b`（hub.js 无 `openOverlay`/`closeDrawers`） | 真鼠标 16/16 PASS：★点「总览」后残留层=`[]`、中心命中 `div.hs`、`pageOn=page-classroom`；点遮罩留白一次关干净；桌面无回退 |
 | `probe_sidebar_width_sweep.py` | 通用诊断（不钉缺陷）：320→1920 **宽度轴**一次扫完侧栏几何/可见按钮数/中心接住者/JS 异常 | 320~767：收起 48px、6 按钮、0 列表项（图标条设计如此） | 768+：展开 240px、14 按钮；**全带无空白** ⇒ 把方向从“布局/几何”逼到“事件与浮层残留” |
 | `verify_page_fallback.py` | `go()` 直接吃 `localStorage.getItem('hub.page')`，而这个值可能是**跨版本已改名的页名**（09-20 界面统一改过一批）⇒ 认不出时 `toggle('on', s.id === 'page-' + page)` 把**所有页面一起关掉** ⇒ 正文整块空白、页内零个可点元素。而 localStorage **按 origin 隔离** ⇒ 同一份代码『局域网那个源正常、Tailscale 那个源空白』 | 9 个取值里 7 个（dashboard/manager/agents/watch/terminal/乱写/overview）→ `section.page.on=(无)`、可点数=0 | 修后 9/9 全部落到 `page-classroom` 且有可点元素 ⇒ 退出码 0 |
+| `test_tdz_order.py`(L0) + `verify_hist_tdz.py` | **顶层 IIFE 早于 `let` 声明 ⇒ TDZ**：`histBootstrap()` → `histLoad()` → `renderNav()` 读到 1861 行才声明的 `_navHtml` ⇒ hub.js 当场死亡（菜单空白 + `initSidebar` 从未执行 + 抽屉停在展开态遮住正文）。门闩 = `histOpen ∈ TERM_HIST_AGENTS` **且 localStorage 有 `hub.term.token`** ⇒ 手机那份有、浏览器那份没有 ⇒ 这才是「浏览器正常/APP 异常」「局域网正常/Tailscale 异常」的真判据 | 红：**用 `Fetch.fulfillRequest` 把修复前的 HEAD 版喂进同一页面**（不往生产 static 目录写文件），逐字符复现 `JS异常 @ hub.js:1907` + `navTree子项=0` + `collapsed=false` | 绿 14/14，且主动调 `histLoad('claude')` 返回 DRIVE-OK、服务端确有 `/api/term/history` 命中（第一版只注入 localStorage 就报 8/8 绿，被日志否证为**空转**） |
 | `verify_diag_panel.py` | 端侧自检面板 `?diag=1` **自身失效**就等于永远拿不到端侧事实（本机对手机/APP 零探针是长期缺口）。给它做红绿：绿=如实报『异常清单: 无』；红=**同一条 CDP 连接**掐断 `hub.js` | 红况面板精确报「资源加载失败 …/hub.js」+ `go函数=undefined` + `navTree子项=0` + **`侧栏collapsed=false`（证明 JS 不跑时抽屉停在展开态遮住正文）** | 绿 8/8 + 红 6/6 + 无 `?diag` 时面板不存在 ⇒ 17/17 |
 
 ### 真页面探针的另一条硬规定：CDP 必须有常驻读线程

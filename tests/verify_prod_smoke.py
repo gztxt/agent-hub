@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -134,7 +135,9 @@ def main():
     print("\n[2] 静态闸门")
     baks = sorted(REPO.glob("static/*.bak-*"), key=lambda p: p.stat().st_mtime, reverse=True)
     if baks:
-        code, _, _ = http("/static/" + baks[0].name)
+        # 必须百分号编码：09-23 起备份说明允许中文（-重建前存底），未编码会让
+        # urlopen 抛 UnicodeEncodeError ⇒ code=None ⇒ 产品面没问题却被记成 FAIL。
+        code, _, _ = http("/static/" + urllib.parse.quote(baks[0].name))
         check("磁盘上真实存在的 .bak 在 /static/ 下 404", code == 404,
               f"{baks[0].name[:28]}… → HTTP {code}")
     else:

@@ -37,3 +37,38 @@ def resolve_serveable(static_root: Path, file_path: str) -> Optional[Path]:
     if ".bak" in f.name:                 # 备份件永不从 Web 口读
         return None
     return f
+
+
+# ---------------------------------------------------------------- 缓存策略判据
+# 为什么也放这里：09-23 事故证明"能不能回 304"和"许不许服务"是同一类判断，
+# 必须同样可单测（内联在路由里就测不到，历史三版判据都是这么漂过去的）。
+import hashlib
+from typing import Tuple
+
+_tok_cache: dict = {}     # "路径|mtime_ns|size" -> md5[:8]；键随文件变，天然失效
+
+
+def content_token(f: Path) -> str:
+    """产物内容的短哈希（md5 前 8 位）。构建脚本用它写模板的 ?v= 提手。"""
+    st = f.stat()
+    key = f"{f}|{st.st_mtime_ns}|{st.st_size}"
+    tok = _tok_cache.get(key)
+    if tok is None:
+        tok = hashlib.md5(f.read_bytes(), usedforsecurity=False).hexdigest()[:8]
+        if len(_tok_cache) > 64:
+            _tok_cache.clear()
+        _tok_cache[key] = tok
+    return tok
+
+
+def cache_policy(vtoken: str, f: Path) -> Tuple[str, str]:
+    """返回 ("immutable"|"revalidate", 该用的 token)。
+
+    immutable 的**唯一准入条件**：URL 上的 ?v= 等于文件当前内容哈希。
+    这样提手写错/忘了改时自动退回 revalidate（no-cache + ETag），
+    绝不会把端侧永久钉在旧体上 —— 比"只要带 ?v= 就 immutable"保守一档。
+    """
+    want = content_token(f)
+    if vtoken and vtoken == want:
+        return "immutable", want
+    return "revalidate", want

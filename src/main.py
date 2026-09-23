@@ -58,7 +58,7 @@ import staticguard
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.6"
+VERSION = "0.13.11"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -145,13 +145,25 @@ if static_path.exists():
         if f is None:
             raise HTTPException(404)
         st = f.stat()
-        # 与 FileResponse 同一套算法（md5("mtime-size")）⇒ 升级这次不会白掉一轮缓存
-        etag = '"%s"' % hashlib.md5(f"{st.st_mtime}-{st.st_size}".encode(), usedforsecurity=False).hexdigest()
-        headers = {"Cache-Control": "no-cache", "Pragma": "no-cache", "ETag": etag,
-                   # 304 分支此前漏了 Vary：共享缓存可能把 gzip 版回给不接受 gzip 的客户端
-                   "Vary": "Accept-Encoding"}
-        if request.headers.get("if-none-match") == etag:
-            return Response(status_code=304, headers=headers)
+        # 与 FileResponse 同一套算法（md5("mtime-size")）仅用于 revalidate 分支。
+        # 判据在 staticguard.cache_policy（纯函数、可单测）：URL 的 ?v= 等于文件内容哈希
+        # 才许 immutable。09-23 自研 APP 事故的根治——旧口径下 ETag 由 mtime+size 算出，
+        # 与 query、与 content-encoding 都无关 ⇒ 不同 ?v= 与 gzip/identity 共用同一个 ETag，
+        # 条件请求可让端侧继续执行旧体（实测手机对 hub.js 先 200 后 304，且 ?v=22c 与 ?v=23a
+        # 同 ETag）。immutable 分支不发校验器、永不回 304：换新体的唯一途径是 URL 变化本身。
+        policy, want_tok = staticguard.cache_policy(
+            (request.query_params.get("v") or "").strip(), f)
+        headers = {"Vary": "Accept-Encoding", "X-Asset-Token": want_tok}
+        if policy == "immutable":
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            etag = '"%s"' % hashlib.md5(
+                f"{st.st_mtime}-{st.st_size}".encode(),
+                usedforsecurity=False).hexdigest()
+            headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache", "ETag": etag})
+            # 304 分支此前漏了 Vary：共享缓存可能把 gzip 版回给不接受 gzip 的客户端
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers=headers)
         media = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
         if (f.suffix.lower() in _GZ_SUFFIX and st.st_size >= _GZ_MIN
                 and "gzip" in (request.headers.get("accept-encoding") or "")):

@@ -226,6 +226,15 @@ async function startAgent(id) {
 /* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
    histOpen 进 localStorage；数据缓存在 HIST —— 30s loadAgents 重绘时不闪空白。 ── */
 const HIST_LIMIT = 5;                                   // D6 修订（09-22）：每 agent 5 条，跳目录按时间取最近
+/* ⚠ 声明位置是硬约束，不许往下挪：下面 histBootstrap() 是**顶层 IIFE**，会同步走
+histLoad() → renderNav() → 读本变量。09-23 自研 APP 事故就是顺序被破坏：手机那份
+localStorage 有 hub.term.token ⇒ 早期路径被激活，而 let 声明在 renderNav 之后 ⇒
+抛 ReferenceError: Cannot access '_navHtml' before initialization（hub.js:1907），
+hub.js 当场死亡 ⇒ 菜单空白 + initSidebar 从未执行 + 抽屉停在展开态遮住正文。
+浏览器那份没有 hub.term.token，走不到这条路 ⇒ 这就是「局域网正常/Tailscale 异常」
+的真判据（不是缓存、不是网络、不是 origin 的 IP 段）。
+闸门：tests/test_tdz_order.py（静态扫同类顺序违规；红基线取修复前的 git 版本）。 */
+let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
 let histOpen = localStorage.getItem('hub.hist') || '';
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
@@ -302,7 +311,6 @@ async function termResume(agentId, sid) {
 /* 菜单行 = 实体行本体 + （命中展开项时）历史块。renderNav 的三分支 map 统一走这里。 */
 function navRow(a) { return navItemHtml(a) + (a.id === histOpen ? histHtml(a.id) : ''); }
 
-let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 function renderNav() {
   const box = $('navTree');
   if (!box) return;
