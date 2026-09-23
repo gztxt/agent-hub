@@ -72,8 +72,11 @@ def _check_rate(subject: str) -> None:
 
 
 def _acl_check(agent_id: Optional[str], server_id: str, tool: str) -> None:
-    if not agent_id:
-        return
+    # 改前：`if not agent_id: return` —— agent_id 来自**请求体自报**，留空就跳过整套 ACL。
+    # 后果：LAN 上一条不带 agent_id 的 POST /mcp/call 可命中任何 server 的任何工具（含 stdio 起本地进程），
+    # 而那 4 条 ACL 规则（guest 全拒 / * 对 ekko 全拒）看起来"已配置"，实际全是装饰。
+    # 现在：缺省身份一律折算成 anon，让它老老实实受 `*` 规则约束（无规则时仍保留"首次接入零摩擦"）。
+    agent_id = (agent_id or "anon").strip() or "anon"
     rows = db.query("SELECT * FROM mcp_acl WHERE agent_id IN (?, '*')", (agent_id,))
     if not rows:
         return  # 无规则 = 默认放行（首次接入零摩擦）

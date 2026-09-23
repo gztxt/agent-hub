@@ -90,6 +90,30 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
   **未装 git hook**（会影响同仓并行的其他会话）；要长期生效自行
   `ln -sf ../../scripts/prepush.sh .git/hooks/pre-push`。
 
+### 写端点统一闸门（v0.13.6，2026-09-23，P1-7 扩展）
+
+`src/writeauth.py` 以**中间件**形式覆盖全部写类路由（实测 34 条：32 条受闸门、2 条显式豁免且各自自带鉴权）。
+做成中间件而非往 handler 里插 34 行，理由与红基线（改动前生产实测，匿名空 body）：
+
+```
+状态码分布 {422:16, 404:8, 400:2, 200:6, 401:2}   ⇒ 34 条里只有 2 条拒了，6 条对匿名写直接办成
+```
+
+凭据口径：`x-hub-token` / `x-term-token` / `?token=`，值取 `TERM_TOKEN` 或 `HUB_PASSCODE`；
+**未配置任何凭据时返 503 而不是放行**（"没设口令"不等于"不用口令"）。
+豁免只有两条且各带理由：`/api/settings/term-token`（自校验口令，拦了会自锁死）、
+`/telemetry/events/*`（`hook.py` 自带 Bearer/回环方案）。白名单里若躺一条对不上任何路由的前缀，
+`tests/test_writeauth.py` 直接判红（防永久盲点）。
+
+顺带堵掉 MCP 网关一个更隐蔽的问题：`_acl_check` 原写法 `if not agent_id: return`，而 `agent_id`
+是**请求体自报**字段 —— 留空即整套 ACL 形同装饰。现在缺省身份折算成 `anon` 受 `*` 规则约束。
+
+事故记录（不写就会重犯）：本次取证用匿名空 body 打生产做红基线，`POST /api/memory/l2/rebuild`
+返回 200 并重写了用户手写的 L2 记忆；已按 09-06 在册副本逐字回滚（338 字复核一致）。
+结论：**红基线只能在影子树上打**，生产上只允许"无凭据 ⇒ 401"这种可证明在 handler 前短路的探测
+（`tests/verify_write_gate.py --safe`）。
+
+
 ### 自证与生命周期收口（v0.13.5，2026-09-23）
 
 - **P0-1 修好一个静默三天的 500**：`POST /api/agents/{id}/chat` 自 v0.10.0（commit `2cf96fa`）起每请求必 500

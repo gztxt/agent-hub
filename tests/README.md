@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 93 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 11 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 12 |
 
 ## 怎么跑
 
@@ -124,3 +124,27 @@ $ venv/bin/python tests/verify_replay_gate.py
    别在第二个文件里发明第二种）。
 
 `--no-chat` 可跳过那一次真 LLM 调用；不带则该脚本共 19 项。
+
+
+## `verify_write_gate.py`：一条**只能有一半在生产上跑**的探针
+
+写端点闸门（32 条被拒 / 2 条自带鉴权）的取证有个硬约束：**"带凭据逐条打写端点"这一腿
+在生产上做不得**。09-23 就是拿匿名空 body 打生产做红基线，`POST /api/memory/l2/rebuild`
+回 200 并把用户手写的 L2 记忆重写了（已按 09-06 在册副本逐字回滚）。所以本探针分两模式：
+
+- `--safe`：只打无凭据那一腿。401 由中间件在 handler **之前**返回 ⇒ 可证明零副作用，生产可跑。
+- 默认（影子树）：无凭据 401 + **带凭据非 401** 两腿都打。缺后一腿就是假绿 ——
+  一个把所有请求一律 401 的闸门同样能让 `--safe` 全绿。
+
+影子树起法与隔离核验（`fd` 指向自己的 DATA_DIR、指向真库必须 0）：
+
+```bash
+mkdir -p /tmp/ah-gate/data /tmp/ah-gate/log && cp -r src static templates /tmp/ah-gate/
+cd /tmp/ah-gate && DATA_DIR=... TERM_TOKEN=gate-shadow-token nohup <repo>/venv/bin/python -m uvicorn src.main:app --port 3197 &
+```
+不复制 `.env` ⇒ 凭据只来自命令行，影子树里根本没有生产口令。
+
+两处期望是**故意放宽**的（放宽方向经过判断，不是将就）：
+`/api/settings/term-token` 在未配 `HUB_PASSCODE` 时返 503 —— 那是 fail-closed 的正确行为，
+记成失败会诱导后人"为了让探针绿去给影子塞口令"；`/telemetry/events/{source}` 空 body 先撞
+Pydantic 校验返 422，其鉴权在 handler 内（`hook.py` 的 Bearer/回环方案），不归本闸门。

@@ -105,10 +105,16 @@ if ALLOW_WRITE:
     def hub_memory_add(content: str, category: str = "fact", layer: str = "L1") -> str:
         """写入一条 hub 记忆。默认不注册——需 HUB_MCP_ALLOW_WRITE=1 才启用。
         category 可填 fact|decision|constraint|preference。"""
+        # v0.13.6：写端点统一要凭据（writeauth 闸门）。本工具默认不注册（HUB_MCP_ALLOW_WRITE=1 才有），
+        # 但若哪天打开，不带 token 就是"功能静默 401"——所以这里就把凭据带上。
+        _h = {"Content-Type": "application/json"}
+        _t = os.getenv("TERM_TOKEN", "")
+        if _t:
+            _h["x-hub-token"] = _t
         req = urllib.request.Request(
             f"{HUB_URL}/api/memory/l1",
             data=json.dumps({"content": content, "category": category, "layer": layer}).encode(),
-            headers={"Content-Type": "application/json"}, method="POST")
+            headers=_h, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
                 return resp.read().decode("utf-8")

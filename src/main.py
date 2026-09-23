@@ -41,6 +41,7 @@ from discovery import AgentDiscovery, AgentInfo
 from ports import list_listeners, port_in_use
 from sources import detect_project
 import scanner
+from writeauth import write_gate
 from registry import build_adapters, get_adapter
 import hook as hook_mod
 import memory as memory_mod
@@ -109,6 +110,12 @@ async def api_rate_limit(request: Request, call_next):
                     {"detail": f"API 限流：超过 {API_RATE_PER_MIN}/min"}, status_code=429)
             window.append(time.monotonic())
     return await call_next(request)
+
+
+# ── P1-7 扩展：写端点鉴权闸门（实测 34 条写路由里 32 条此前不设防，6 条对匿名写回 200）。
+#    Starlette 里后注册的中间件在最外层 ⇒ 本闸门先于 api_rate_limit：被拒的请求既不该占限流预算，
+#    更不该走到 handler 里产生副作用（rebuild 重写记忆就是这类副作用）。 ──
+app.middleware("http")(write_gate)
 
 templates_dir = Path(__file__).parent.parent / "templates"
 static_path = Path(__file__).parent.parent / "static"

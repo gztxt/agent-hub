@@ -31,8 +31,26 @@ let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
 
+/* v0.13.6 P1-7：写端点服务端强制凭据。**只有写操作才索取 token** ——
+   GET 也 prompt 的话，用户一打开页面就被口令框糊脸（读路径本来不需要）。 */
+const WRITE_METHODS = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
+function isWriteMethod(m) { return !!WRITE_METHODS[String(m || 'GET').toUpperCase()]; }
 async function api(path, opt) {
-  const r = await fetch(path, opt);
+  const o = opt || {};
+  if (isWriteMethod(o.method)) {
+    const tk = termToken();
+    if (tk) o.headers = Object.assign({}, o.headers, { 'x-hub-token': tk });
+  }
+  let r = await fetch(path, o);
+  if (r.status === 401 && isWriteMethod(o.method)) {
+    // 存量口令失效（比如刚在设置里换过 token）：清掉再问一次，只重试一次，不循环
+    localStorage.removeItem('hub.term.token');
+    const again = termToken();
+    if (again) {
+      o.headers = Object.assign({}, o.headers, { 'x-hub-token': again });
+      r = await fetch(path, o);
+    }
+  }
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
