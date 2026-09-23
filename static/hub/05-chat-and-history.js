@@ -1,0 +1,355 @@
+function jobKindChange() {
+  const k = $('jobKind').value;
+  $('jobAgent').style.display = k === 'agent_prompt' ? '' : 'none';
+  $('jobPayload').placeholder = k === 'shell' ? '白名单命令，如 echo hello' : k === 'agent_prompt' ? '发给 Agent 的 Prompt' : 'http://127.0.0.1:3102/health';
+}
+async function loadJobs() {
+  try {
+    const d = await api('/api/jobs');
+    $('jobAllow').textContent = 'shell 白名单: ' + (d.shell_allow || []).join(', ');
+    $('jobsBody').innerHTML = (d.jobs || []).map(j =>
+      '<tr><td><b>' + escapeHtml(j.name) + '</b><br><span class="hint">' + j.id + '</span></td>' +
+      '<td style="font-family:var(--font-mono)">' + j.cron + '</td><td>' + j.kind + '</td>' +
+      '<td><button class="btn sm ' + (j.enabled ? '' : 'ghost') + '" onclick="toggleJob(\'' + j.id + '\',' + (j.enabled ? 0 : 1) + ')">' + (j.enabled ? '✔ 启用' : '‖ 停用') + '</button></td>' +
+      '<td class="hint">' + (j.last_run || '').slice(5, 16).replace('T', ' ') + '</td>' +
+      '<td>' + (j.last_status === 'success' ? ico('check-circle', 'xs') : j.last_status === 'fail' ? ico('alert', 'xs') : '-') + '</td>' +
+      '<td style="max-width:220px"><details><summary class="hint">' + escapeHtml((j.last_result || '').slice(0, 30)) + '</summary><pre style="font-size:var(--fs-sm);white-space:pre-wrap">' + escapeHtml(j.last_result || '') + '</pre></details></td>' +
+      '<td style="white-space:nowrap"><button class="btn sm ghost" onclick="runJobNow(\'' + j.id + '\')">' + ico('play', 'xs') + '立即</button> ' +
+      '<button class="btn sm danger" onclick="delJob(\'' + j.id + '\')">' + ico('x') + '</button></td></tr>').join('') ||
+      '<tr><td colspan="8" class="hint">暂无任务</td></tr>';
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function toggleJob(id, en) { try { await api('/api/jobs/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !!en }) }); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+async function runJobNow(id) { toast('执行中…'); try { const d = await api('/api/jobs/' + id + '/run', { method: 'POST' }); toast(d.status === 'success' ? '执行成功: ' + (d.result || '').slice(0, 60) : '执行失败: ' + (d.result || ''), d.status === 'success' ? 'ok' : 'err'); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+async function delJob(id) { if (!confirm('删除任务 ' + id + '？')) return; try { await api('/api/jobs/' + id, { method: 'DELETE' }); loadJobs(); } catch (e) { toast(e.message, 'err'); } }
+
+/* ── S4 MCP 网关 ──────────────────────────────────── */
+
+let mcpToolSel = null;
+
+async function addServer() {
+  const body = { name: $('mcName').value.trim(), transport: $('mcTransport').value };
+  const argsRaw = $('mcArgs').value.trim();
+  if (!body.name) return toast('名称必填', 'err');
+  if (body.transport === 'stdio') {
+    if (!$('mcCmd').value.trim()) return toast('stdio 需 command', 'err');
+    body.command = $('mcCmd').value.trim();
+    body.args = argsRaw ? argsRaw.split(/\s+/) : [];
+  } else {
+    if (!argsRaw) return toast('http 需 URL', 'err');
+    body.url = argsRaw;
+  }
+  try { await api('/mcp/servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); toast('已注册，聚合刷新中…', 'ok'); $('mcName').value = $('mcCmd').value = $('mcArgs').value = ''; loadMcp(); } catch (e) { toast(e.message, 'err'); }
+}
+async function probeServer() {
+  const cmd = $('mcCmd').value.trim();
+  if (!cmd) return toast('先填 command', 'err');
+  $('mcProbe').style.display = 'block'; $('mcProbe').textContent = '连接探测…';
+  try {
+    const d = await api('/mcp/servers/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: cmd, args: $('mcArgs').value.trim() ? $('mcArgs').value.trim().split(/\s+/) : [] }) });
+    $('mcProbe').textContent = JSON.stringify(d.tools, null, 1);
+  } catch (e) { $('mcProbe').textContent = '探测失败: ' + e.message; }
+}
+async function delServer(id) {
+  if (!confirm('删除 MCP server: ' + id + '？（聚合工具列表将随之刷新）')) return;
+  try { await api('/mcp/servers/' + id, { method: 'DELETE' }); loadMcp(); } catch (e) { toast(e.message, 'err'); }
+}
+async function loadMcp() {
+  try {
+    const s = await api('/mcp/servers');
+    $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
+      (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
+        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">' + ico('x') + '</button></td></tr>').join('') +
+      '</tbody></table>';
+    $('mcTools').innerHTML = '聚合工具中（stdio 会临时拉起进程）…';
+    const t = await api('/mcp/tools');
+    const errs = Object.entries(t.errors || {});
+    $('mcTools').innerHTML = (t.tools || []).map(x =>
+      '<div class="mem-item" style="cursor:pointer" onclick="pickTool(\'' + x.server + '\',\'' + x.name + '\')" id="mt_' + x.server + '_' + x.name + '"><span class="tag agent">' + escapeHtml(x.server_name) + '</span><p><b>' + x.name + '</b> <span class="hint">' + escapeHtml(x.description) + '</span></p></div>').join('') ||
+      '<div class="hint">无工具——注册 server 后此处聚合</div>' +
+      (errs.length ? '<div class="hint" style="color:var(--danger-text)">异常 server: ' + errs.map(x => x[0] + '(' + x[1].slice(0, 40) + ')').join('; ') + '</div>' : '');
+  } catch (e) { $('mcTools').innerHTML = '<span style="color:var(--danger-text)">' + e.message + '</span>'; }
+}
+function pickTool(server, tool) {
+  mcpToolSel = { server: server, tool: tool };
+  document.querySelectorAll('[id^=mt_]').forEach(el => el.style.background = '');
+  const el = document.getElementById('mt_' + server + '_' + tool);
+  if (el) el.style.background = 'var(--surface-2)';
+}
+
+/* ── T3 MCP ACL 管理（契约见 src/mcpgw.py：POST {agent_id, tool_pattern, server_id?, allow}；GET {rules:[{id,agent_id,server_id,tool_pattern,allow}]}；DELETE /mcp/acl/{id}）── */
+async function loadAcl() {
+  const el = $('aclList');
+  if (!el) return;
+  try {
+    const d = await api('/mcp/acl');
+    el.innerHTML = (d.rules || []).map(r =>
+      '<div class="mem-item"><span class="tag ' + (r.allow ? 'fact' : 'constraint') + '">' + (r.allow ? 'allow' : 'deny') + '</span>' +
+      '<p><b>' + escapeHtml(r.agent_id) + '</b> · <code>' + escapeHtml(r.tool_pattern) + '</code>' +
+      (r.server_id ? ' · server=' + escapeHtml(r.server_id) : ' · 任意server') + '</p>' +
+      '<button class="btn sm danger" aria-label="删除规则 ' + r.id + '" onclick="delAcl(' + r.id + ')">' + ico('x') + '</button></div>').join('') ||
+      '<div class="hint">暂无规则——无规则 = 所有 agent 默认放行（首次接入零摩擦）</div>';
+  } catch (e) { el.innerHTML = '<span style="color:var(--danger-text)">' + escapeHtml(e.message) + '</span>'; }
+}
+async function addAcl() {
+  const body = {
+    agent_id: $('aclAgent').value.trim(),
+    tool_pattern: $('aclPattern').value.trim(),
+    allow: $('aclAllow').value === '1'
+  };
+  const sid = $('aclServer').value.trim();
+  if (sid) body.server_id = sid;  // 后端按 id 或 name 解析（mcpgw.add_acl）
+  if (!body.agent_id || !body.tool_pattern) return toast('agent_id 与工具模式必填', 'err');
+  try {
+    await api('/mcp/acl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    toast('ACL 规则已添加', 'ok');
+    $('aclAgent').value = $('aclPattern').value = $('aclServer').value = '';
+    loadAcl();
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function delAcl(id) {
+  try { await api('/mcp/acl/' + id, { method: 'DELETE' }); toast('规则已删除', 'ok'); loadAcl(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function callToolSel() {
+  if (!mcpToolSel) return toast('先点击选择一个工具', 'err');
+  let args = {};
+  const raw = $('mcCallArgs').value.trim();
+  if (raw) { try { args = JSON.parse(raw); } catch (e) { return toast('args 需为 JSON', 'err'); } }
+  $('mcCallOut').style.display = 'block'; $('mcCallOut').textContent = '调用中…';
+  try {
+    const d = await api('/mcp/call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ server: mcpToolSel.server, tool: mcpToolSel.tool, args: args, agent_id: 'manager' }) });
+    $('mcCallOut').textContent = JSON.stringify(d, null, 1);
+  } catch (e) { $('mcCallOut').textContent = '失败: ' + e.message; }
+}
+
+/* ── T8 命令面板（⌘K/Ctrl+K）：搜实体直达工作台 ── */
+function openCmd() {
+  $('cmdMask').classList.add('on');
+  const i = $('cmdInput');
+  i.value = '';
+  renderCmdList('');
+  i.focus();
+}
+function closeCmd() { $('cmdMask').classList.remove('on'); }
+function renderCmdList(q) {
+  const box = $('cmdList');
+  const ql = q.toLowerCase();
+  const items = AGENTS.filter(a => !ql || a.id.toLowerCase().includes(ql) || (a.name || '').toLowerCase().includes(ql)).slice(0, 12);
+  box.innerHTML = items.map(a =>
+    '<div class="cmd-item" onclick="cmdGo(\'' + a.id + '\')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
+    '<div class="hint" style="padding:8px">无匹配实体</div>';
+}
+function cmdGo(id) { closeCmd(); gotoChat(id); }
+
+/* ── 启动 ─────────────────────────────────────────── */
+
+/* ── v0.7 左侧手风琴导航：单开模式 + 搜索 + 展开态持久化 ──
+   20 个实体全部收拢进左栏（AGENTS 8 / 基础设施 12），系统功能仍走 go(page) ── */
+const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统' };
+const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders' };   // 收起成图标条时仍可辨认（sprite id）
+const NAV_ORDER = ['agents', 'infra', 'system'];
+const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
+const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
+                   ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow']];
+const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
+const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
+                      memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
+const navOpenStored = localStorage.getItem('hub.nav.open');
+let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
+let curPage = '';
+/* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
+const NAV_RANK = { error: 0, running: 1, installed: 2, stopped: 3 };
+function navRank(a) { return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status]; }
+function navMatch(a, q) {
+  const ql = q.toLowerCase();
+  return String(a.name || '').toLowerCase().includes(ql) ||
+         String(a.id || '').toLowerCase().includes(ql) ||
+         String(a.port || '').includes(q);
+}
+// 搜索词高亮
+function hlMatch(text, q) {
+  if (!q) return escapeHtml(text);
+  const escaped = escapeHtml(text);
+  const ql = q.toLowerCase();
+  const lower = text.toLowerCase();
+  let result = '', last = 0;
+  let idx = lower.indexOf(ql);
+  while (idx !== -1) {
+    result += escaped.slice(last, idx) + '<mark>' + escaped.slice(idx, idx + q.length) + '</mark>';
+    last = idx + q.length;
+    idx = lower.indexOf(ql, last);
+  }
+  return result + escaped.slice(last);
+}
+function navItemHtml(a) {
+  const st = seatStateOf(a);
+  const on = (curPage === 'chat' && a.id === chatPick) ? ' on' : '';
+  // 窄栏里名称会截断，title 里给全量信息（名称 · 状态 · 端口 · 描述）
+  const tip = a.name + ' · ' + seatLabelOf(a) + (a.port ? ' · :' + a.port : '') +
+    (a.verdict_reason ? '\n' + a.verdict_reason : '') +
+    (a.description ? '\n' + a.description : '');
+  // 搜索高亮：名称用 hlMatch，ID 和端口保持原样
+  const nameHtml = hlMatch(a.name || a.id, ($('navSearch') ? $('navSearch').value.trim() : ''));
+  // 操作按钮：按 entries 类型渲染（最多3个）
+  const es = a.entries || [];
+  const actBtns = [];
+  if (es.some(e => e.type === 'embed')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'embed\')" title="嵌入会话">' + ico('monitor') + '</span>');
+  if (es.some(e => e.type === 'term')) actBtns.push('<span class="act-btn" onclick="event.stopPropagation();gotoChat(\'' + a.id + '\',\'term\')" title="终端">' + ico('terminal') + '</span>');
+  /* v0.10.1：删掉「对话」图标。智管对话（hub 自带会话页）已在 v0.10 移除，profile 里残留的
+     chat entry 实测为死入口：claude / jcode 两个实体 POST /api/agents/{id}/chat 均 HTTP 500。
+     留着它 = 坏入口（比没入口更糟），且让无 Web UI 的 Agent 行多出第三个图标。 */
+  // 启动按钮：installed/stopped 状态的 agent
+  if (a.kind === 'agent' && (st === 'installed' || st === 'stopped') && es.some(e => e.type === 'term')) {
+    actBtns.push('<span class="act-btn start-btn" onclick="event.stopPropagation();startAgent(\'' + a.id + '\')" title="启动">' + ico('play') + '</span>');
+  }
+  const actsHtml = actBtns.length ? '<span class="nav-acts">' + actBtns.join('') + '</span>' : '';
+  return '<button class="nav-item' + on + '" data-entity="' + escapeHtml(a.id) + '"' +
+    ' title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(a.name + ' ' + seatLabelOf(a)) + '">' +
+    '<span class="s-badge ' + st + '"></span>' +
+    '<span class="lbl">' + nameHtml + '</span>' +
+    (a.port ? '<span class="nav-port">:' + a.port + '</span>' : '') +
+    actsHtml + '</button>';
+}
+/* v0.12.3：行内状态文字（.nav-st）与其横向滚动窗（rollNavStatus / st-roll）已按用户要求整体删除。
+   行内只留 .s-badge 方块表达在线/离线；完整状态串在上面的 tip（hover）与工作台卡片里给。 */
+// 启动 agent：创建新的终端会话
+async function startAgent(id) {
+  try {
+    const d = await api('/api/term/sessions', { method: 'POST', headers: termHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ agent_id: id }) });
+    toast('已拉起 ' + id + ' 终端', 'ok');
+    gotoChat(id, 'term');
+    setTimeout(() => termConnect(d.session.id, id, { user: true }), 100);
+  } catch (e) { toast(e.message, 'err'); }
+}
+/* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
+   histOpen 进 localStorage；数据缓存在 HIST —— 30s loadAgents 重绘时不闪空白。 ── */
+const HIST_LIMIT = 5;                                   // D6 修订（09-22）：每 agent 5 条，跳目录按时间取最近
+const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
+let histOpen = localStorage.getItem('hub.hist') || '';
+const HIST = {};                                        // agent_id -> {items,note,loading,err}
+
+function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
+  if (!ts) return '';
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/* 跳目录之后，同名会话可能来自不同工程：只在「不属于画像目录」时补一个目录尾名，
+   画像目录本身不标（多数条目都是它，标了反而吵）。 */
+function hhDir(cwd, home) {
+  if (!cwd || !home || cwd === home) return '';
+  const seg = String(cwd).replace(/\/+$/, '').split('/').filter(Boolean);
+  return seg.length ? seg[seg.length - 1] : '';
+}
+
+function histHtml(aid) {
+  const h = HIST[aid];
+  if (!h || h.loading) return '<div class="nav-hist"><div class="hh-note">读取历史…</div></div>';
+  if (h.err) return '<div class="nav-hist"><div class="hh-note">历史读取失败：' + escapeHtml(h.err) + '</div></div>';
+  const rows = (h.items || []).map(it =>
+    '<div class="hh-row" data-agent="' + escapeHtml(aid) + '" data-sid="' + escapeHtml(it.id) + '"' +
+    ' title="' + escapeHtml(it.title) + (it.cwd ? ' ｜ ' + escapeHtml(it.cwd) : '') + '">' +
+    '<span class="hh-t">' + escapeHtml(it.title) + '</span>' +
+    '<span class="hh-cw">' + hhDir(it.cwd, h.home) + '</span>' +
+    '<span class="hh-ts">' + hhTime(it.ts) + '</span></div>').join('');
+  const hd = '<div class="hh-hd">历史会话' + (rows ? '（' + h.items.length + '）' : '') + '</div>';
+  // note 在“已经有行”时也要显：截断/降级被吞掉的话，残缺结果看着就像完整清单
+  // （09-22 jcode 只显 1 条那次，正是“扫描窗口用尽”的 note 没人看见）。
+  const tail = (rows && h.note) ? '<div class="hh-note">' + escapeHtml(h.note) + '</div>' : '';
+  return '<div class="nav-hist">' + hd +
+         (rows || '<div class="hh-note">' + escapeHtml(h.note || '该目录暂无可续会话') + '</div>') + tail + '</div>';
+}
+
+function histLoad(aid) {
+  HIST[aid] = { items: [], note: '', loading: true, err: '' };
+  renderNav();
+  api('/api/term/history/' + encodeURIComponent(aid) + '?limit=' + HIST_LIMIT, { headers: termHeaders() })
+    .then(d => { HIST[aid] = { items: d.items || [], note: d.note || '', home: d.cwd || '', loading: false, err: '' }; })
+    .catch(e => { const m = String((e && e.message) || e);
+      // 新前端 + 未重启的旧后端＝路由不存在（FastAPI 回 Not Found）。说人话，别抛生涩 404。
+      HIST[aid] = { items: [], note: '', loading: false,
+                    err: /not\s*found|404/i.test(m) ? '后端未更新：需重启 agent-hub.service 后生效' : m }; })
+    .then(() => renderNav());                            // 无 finally 依赖：老 Safari 也走得到
+}
+
+/* 刷新后 histOpen 会从 localStorage 复原，但 HIST 缓存是空的——不补一次拉取，下拉就
+   永远停在「读取历史…」（实测 reload 必现）。没存过 token 时干脆收起：留个展开空壳更误导，
+   而且 termToken() 会在每次刷新都弹一次口令框。 */
+(function histBootstrap() {
+  if (!histOpen) return;
+  if (!TERM_HIST_AGENTS.includes(histOpen) || !localStorage.getItem('hub.term.token')) {
+    histOpen = '';
+    localStorage.removeItem('hub.hist');
+    return;
+  }
+  histLoad(histOpen);
+})();
+
+async function termResume(agentId, sid) {
+  try {
+    const d = await api('/api/term/sessions', { method: 'POST',
+      headers: termHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ agent_id: agentId, session_id: sid }) });
+    toast('已在终端里续聊该历史会话', 'ok');
+    gotoChat(agentId, 'term');
+    termConnect(d.session.id, agentId, { user: true });
+    termRefreshList();
+  } catch (e) { toast('续聊失败：' + e.message, 'err'); }
+}
+
+/* 菜单行 = 实体行本体 + （命中展开项时）历史块。renderNav 的三分支 map 统一走这里。 */
+function navRow(a) { return navItemHtml(a) + (a.id === histOpen ? histHtml(a.id) : ''); }
+
+let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
+function renderNav() {
+  const box = $('navTree');
+  if (!box) return;
+  const q = ($('navSearch') ? $('navSearch').value.trim() : '').toLowerCase();
+  const all = AGENTS.filter(a => a.kind === 'agent');
+  const infra = AGENTS.filter(a => a.kind !== 'agent');
+  const lists = {
+    agents: q ? all.filter(a => navMatch(a, q)) : all.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
+    infra: q ? infra.filter(a => navMatch(a, q)) : infra.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
+    system: q ? [] : SYS_PAGES,
+  };
+  // 搜索结果计数
+  let totalMatch = 0;
+  if (q) {
+    totalMatch = all.filter(a => navMatch(a, q)).length + infra.filter(a => navMatch(a, q)).length;
+  }
+  const html = NAV_ORDER.map(g => {
+    const list = lists[g];
+    if (q && !list.length) return '';
+    const open = q ? true : navOpen === g;
+    let body = '';
+    if (g === 'infra') {
+      NAV_SUB_KINDS.forEach(([k, label]) => {
+        const sub = list.filter(a => a.kind === k);
+        if (sub.length) body += '<div class="nav-sub">' + label + '</div>' + sub.map(navRow).join('');
+      });
+      const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
+      if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navRow).join('');
+    } else if (g === 'system') {
+      body = list.map(([p, label, ic]) =>
+        '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
+        ico(ic) + '<span class="lbl">' + label + '</span></button>').join('');
+    } else {
+      body = list.map(navRow).join('');
+    }
+    if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
+    return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
+      '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+      ico(open ? 'chevron-down' : 'chevron-right', null, 'caret') +
+      ico(NAV_ICONS[g], 'md') +
+      '<span class="lbl">' + NAV_GROUPS[g] + '</span>' +
+      '<span class="badge">' + list.length + '</span></button>' +
+      '<div class="nav-acc-body">' + body + '</div></div>';
+  }).join('');
+  /* 内容没变就不重写 DOM —— loadAgents 每 30s 刷一次，重写会把 #navTree 的滚动位置弹回顶部 */
+  if (html !== _navHtml) { box.innerHTML = html; _navHtml = html; }
+  // 搜索结果计数提示
+  const countEl = $('navSearchCount');
+  if (countEl) countEl.textContent = q ? ' 共 ' + totalMatch + ' 项' : '';
+}
