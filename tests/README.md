@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（09-23） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 76 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 93 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（例外：`verify_replay_gate.py` 要的是 **chromium** 而非服务） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 7 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 10 |
 
 ## 怎么跑
 
@@ -81,3 +81,28 @@ $ venv/bin/python tests/verify_replay_gate.py
   PASS  实验组零应答（闸门真的吞掉了）   [实得 0 包：[]]
   全部通过 ✅   退出码 0
 ```
+
+
+## 浏览器探针（四个）：前端解析层的缺陷只有真引擎能作证
+
+共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
+
+1. **被测代码从 `static/hub.js` 原样抽取**（`tests/_hub_extract.py`），不手抄 —— 手抄的
+   副本会在重构时静默失联，抽取版则"函数被改名/删行"直接把探针判红。
+2. **对照组与实验组必须在同一份产物里**：每个探针都同时跑"改前写法"与"改后写法"，
+   并断言改前**确实坏**。只证明改后能用 = 零信息（可能那条件根本不触发）。
+3. **测线上字节，不测文档式间距**：`ESC P $ q "q ESC \` 里 `$` 后带空格，intermediates
+   就成了 `"$ "` 而非 `"$"` —— 按 README 里的写法造样本会造出一个永不匹配的探针。
+
+| 探针 | 钉住的缺陷 | 对照组实测 | 实验组实测 |
+|---|---|---|---|
+| `verify_replay_gate.py` | 回放历史时替终端作答查询码：ring 里躺着的 `DECRQPS`（`DCS $ q`）会被 xterm 应答并**注回 pty**，成为可见垃圾。改前的闸门只列 DA1/DA2，**DA3  `{prefix:'?',final:'c'}` 在本机 vendor 版里根本不存在**（grep 实测），真正漏的是 DCS 族 | 直接 write → xterm 回 2 个 DCS 包 + DSR | 经 `termWriteReplay` → **0 包** |
+| `verify_term_heal_viewport.py` | 白屏自愈按**缓冲区绝对行**数空行：`getLine(0)` 是 scrollback 最老一行，有历史时读到的是早已滚出屏幕的内容 ⇒ 判"画面不空"⇒ **自愈在长会话里永不触发** | 60 行历史 + ED2 清屏：旧口径 blank=**0**（被误抑制） | 同一现场新口径 blank=10/10（会自愈）；无 scrollback 时两口径一致（防回归） |
+| `verify_stream_decode.py` | 每帧 `new TextDecoder()`：UTF-8 多字节被 WS 帧劈开时**必然**吐 U+FFFD；`[?1003h` 跨帧时两帧都匹配不上正则 ⇒ `termMouseLive` 记不下 ⇒ 滚轮上报被闸门吃掉 | '中文终端输出…' 在第 2 字节劈帧 → `'??文终端输出…'`；DECSET 跨帧逐帧扫 → `termMouseLive=false` | 共用解码器 + 24 字符尾巴 → 逐字相等 / `true` |
+| `verify_key_focus_guard.py` | 全局 keydown 无 target 守卫：终端里敲 `/` 被 `preventDefault` + 焦点跳搜索框；`term.focus()` 无条件执行 ⇒ 手机自动挂载必弹软键盘 | 真事件冒泡到 document 且 `e.target.closest('.xterm')` 命中（**证明旧写法必劫持**） | `keyTargetIsEditing` 8 个输入位 true / 2 个普通元素 false；`termFocusWanted` 只认 `user:true` |
+
+对应的**结构性**护栏（不需要浏览器、进 L0 常规跑）在 `tests/test_term_focus_policy.py`：
+它守的是"位置"而非"存在" —— `term.focus()` 只能出现在 `termFocusWanted(opts)` 之后同一行、
+`if (editing) return` 必须排在 `/` 与 Ctrl+K 分支之前、四个用户主动入口与两个自动路径的
+`user:true` 数量与身份钉死。变异检验已做：把守卫挪到分支之后 / 给自动挂载补 `user:true`，
+两条各自变红。

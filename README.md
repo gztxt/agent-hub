@@ -111,6 +111,39 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
   （`TERM_REAP_INTERVAL`，默认 60s）由 `startup()` 挂后台，单轮异常不致死循环。
   端侧实测：建会话后**只读 /health**（它不调 `_reap`），TTL=8s 下会话自行归零。
 
+### Batch C 收口：补终端鉴权 + 四处只在真浏览器/真帧序里才现形的缺陷（v0.13.6，2026-09-23）
+
+**鉴权（P1-7）**：`GET /api/term/sessions` 与 `DELETE /api/term/sessions/{sid}` 此前**免鉴权**，
+而 `POST`（建会话）与 WS 早已要 token —— 三者拼起来就是一条完整的局域网攻击链：
+**列（拿到 sid/agent/cmd/cwd/alive）→ 杀**。现两端点补 `_check_term_token`
+（`x-term-token` 头或 `?token=`，与建会话同口径）。生产实测：免 token `GET` 由 200 变 **401**、
+免 token `DELETE` 由 404 变 **401**（404 本身就在泄露"这个 sid 不存在"）。
+前端六个调用点已全部走 `termHeaders()`，并在 `termRefreshList()` 补 401 Explicit 提示 ——
+改前它把所有错误吞成 `return null`，用户改了 token 只会看到"终端列表莫名其妙空了"。
+
+**四处缺陷的共性：单测与服务指标全绿也照样坏，必须拿真浏览器 + 真帧序取证。**
+
+| 项 | 缺陷（一句话） | 实测红→绿 |
+|---|---|---|
+| P2-12 改判 | 回放历史时 xterm 会替终端应答 `DECRQPS`（`DCS $ q`），应答注回 pty 变成可见垃圾；原计划写的 DA3 `{prefix:'?',final:'c'}` 经 grep 本机 vendor 版**根本不存在**，假设作废 | 对照组回 2 个 DCS 包 + DSR → 实验组 0 包 |
+| P2-8 | 白屏自愈按 `getLine(0..rows)` 数空行，那是**缓冲区绝对行**（scrollback 最老一行）。有历史时读到的是早已滚出屏幕的旧行 ⇒ 判"画面不空" ⇒ 自愈**在长会话里永不触发**，而它恰在每次重连回放后各跑一次 | 60 行历史 + 清屏：旧口径 blank=0（误抑制）→ 新口径 10/10（会自愈） |
+| P2-9 | 每帧 `new TextDecoder()` 拿不到"半个字符"的跨帧状态：UTF-8 被 WS 帧劈开处**固定**吐 U+FFFD（"偶尔变方块"的锅一直错记给 TUI/字体）；`[?1003h` 跨帧时两帧都匹配不上正则 ⇒ `termMouseLive` 记不下 ⇒ 滚轮上报被闸门吃掉 | 第 2 字节劈帧 → `'??文终端…'`；改后逐字相等；跨帧 DECSET false → true |
+| P2-10/11 | 全局 keydown 无 target 守卫：终端里敲 `/`（一天几百次）被 `preventDefault` + 焦点跳搜索框，之后所有输入都进了搜索框；bash 的 `Ctrl+K`(kill-line) 被拿去开命令面板；`ws.onopen` 无条件 `term.focus()` ⇒ 手机自动挂载每次弹软键盘 | 真事件冒泡到 document 且 `closest('.xterm')` 命中（证明旧写法必劫持）→ 守卫 8 输入位 true / 2 普通元素 false；`termFocusWanted` 只认 `user:true` |
+
+**两层护栏**：行为层是四个 chromium 探针（`tests/verify_{replay_gate,term_heal_viewport,
+stream_decode,key_focus_guard}.py`，硬规定见 `tests/README.md`：代码从 `hub.js` 原样抽取、
+对照组与实验组同产物、测线上字节而非文档式间距）；结构层是 `tests/test_term_focus_policy.py`
+（L0，7 例）—— 它守的是**位置**：`term.focus()` 只能跟在 `termFocusWanted(opts)` 同一行、
+`if (editing) return` 必须排在 `/` 与 Ctrl+K 之前、4 个用户入口与 2 个自动路径的 `user:true`
+钉死。变异检验：守卫挪到分支之后 / 给自动挂载补 `user:true`，各自变红。
+
+**规模**：L0 93 例 + L1 21 例，0 skip 0 fail；推前闸门 `scripts/prepush.sh` 9 步。
+
+**改判记录（不留痕就会重犯）**：原计划 P2-9 记的是"性能微优化"、P2-12 记的是"DA3 残留乱码"。
+两条都被实测推翻 —— 前者是**正确性**缺陷（稳定乱码），后者的根因在本机 vendor 版本里不存在。
+计划文本不能当事实来源，版本相关的结论一律绑定取证日期与版本号。
+
+
 ## 访问
 
 - 本地: http://127.0.0.1:3102/ ｜ 局域网: http://192.168.5.102:3102/ ｜ Tailscale: http://100.117.232.62:3102/
