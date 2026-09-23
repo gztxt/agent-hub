@@ -69,8 +69,12 @@ class Session:
         self.created = time.time()
         self.last_io = time.time()
         self.cols, self.rows = 80, 24
-        self.outputs: asyncio.Queue = asyncio.Queue(maxsize=2000)
-        self.viewers: set = set()
+        # 每个观看者一条**独立**队列（P1-5）。
+        # 旧做法：全会话共用一个 outputs 队列，而每个 WS 连接的 pump 都在同一个队列上 get()
+        # ⇒ 两台设各（桌面 + 手机）同时看同一会话时，两个消费者会**互相偷字节**，
+        #   各自只拿到一半输出（流被劈成两半，不是「少看到一些」而是内容永久错乱）。
+        self.viewers: Dict[str, asyncio.Queue] = {}
+        self.dropped: Dict[str, int] = {}   # 观看者 -> 累计丢弃字节（慢消费者必须可见）
         self.ring = bytearray()  # 输出环形缓冲：重连回放，避免"重挂后白屏"
         self._cleaned = False    # 资源回收幂等守卫
         self.resume_of = ""     # v0.13.0：非空 = 由某条磁盘历史续聊而来
@@ -278,17 +282,19 @@ def _attach_reader(sess: Session):
                 sess.ring.extend(data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]
-                for q in list(sess.outputs.values()) if isinstance(sess.outputs, dict) else [sess.outputs]:
+                for vid, q in list(sess.viewers.items()):
                     try:
                         q.put_nowait(data)
                     except asyncio.QueueFull:
-                        pass
+                        # 不静默丢：丢多少字节记账，由该观看者的 pump 把提示发回终端
+                        sess.dropped[vid] = sess.dropped.get(vid, 0) + len(data)
         except (OSError, BlockingIOError) as e:
             if isinstance(e, OSError) and e.errno in (errno.EIO, errno.EBADF):
                 sess.alive = False
                 sess._cleanup()  # 摘 reader + 关 fd + 收尸（幂等，替代原散落逻辑）
                 try:
-                    sess.outputs.put_nowait("\x1b[?25h\r\n[会话结束]".encode())
+                    for q in list(sess.viewers.values()):
+                        q.put_nowait("\x1b[?25h\r\n[会话结束]".encode())
                 except asyncio.QueueFull:
                     pass
 
@@ -313,7 +319,12 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         await ws.close(code=4410)
         return
     await ws.accept()
-    sess.viewers.add(ws)
+    # 每个观看者一条**独立**队列（P1-5）。旧做法全会话共用一个 outputs 队列，
+    # 而每条 WS 的 pump 都在同一个队列上 get() ⇒ 桌面 + 手机同看一条会话时，
+    # 两个消费者会互相偷字节，各自只拿到一半流（内容永久错乱，不是“少看几行”）。
+    vid = uuid.uuid4().hex[:8]
+    vq: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    sess.viewers[vid] = vq
     # 回放最近输出（重连不白屏）
     if sess.ring:
         try:
@@ -324,11 +335,19 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
     async def pump():
         while True:
             try:
-                data = await asyncio.wait_for(sess.outputs.get(), timeout=2.0)
+                data = await asyncio.wait_for(vq.get(), timeout=2.0)
             except asyncio.TimeoutError:
                 if not sess.alive:
                     break
                 continue
+            # 慢消费者必须可见（P1-5）：丢了就明说，绝不静默吞字节
+            lost = sess.dropped.pop(vid, 0)
+            if lost:
+                try:
+                    await ws.send_bytes(("\r\n\x1b[90m[hub: 输出过快，已丢弃 %d 字节]\x1b[0m\r\n"
+                                          % lost).encode())
+                except Exception:  # noqa: BLE001
+                    break
             # 真正修：send_bytes 必须 try（手机断网/切网络 → WS 已断 → 1006）
             try:
                 await ws.send_bytes(data)
@@ -359,6 +378,14 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                         fcntl.ioctl(sess.fd, termios.TIOCSWINSZ,
                                     struct.pack("HHHH", sess.rows, sess.cols, 0, 0))
                         continue
+                    if j.get("type") == "hb":
+                        # 应用层心跳（P1-1 前端自愈靠它识半开连接）：只回执，
+                        # **绕不写进 pty** —— 否则每秒往终端里灌垃圾。
+                        try:
+                            await ws.send_text(json.dumps({"type": "hb", "t": time.time()}))
+                        except Exception:  # noqa: BLE001
+                            break
+                        continue
                     data = str(j.get("data", "")).encode()
                 except (json.JSONDecodeError, KeyError):
                     data = msg["text"].encode()
@@ -373,7 +400,8 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         pass
     finally:
         pump_task.cancel()
-        sess.viewers.discard(ws)
+        sess.viewers.pop(vid, None)
+        sess.dropped.pop(vid, None)
 
 
 def kill_all():

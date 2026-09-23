@@ -131,17 +131,27 @@ if static_path.exists():
     @app.get("/static/{file_path:path}")
     async def _static_no_cache(file_path: str, request: Request):
         f = (static_path / file_path).resolve()
-        # 路径安全：必须在 static_path 下
-        if not str(f).startswith(str(static_path.resolve())):
+        # 路径安全：必须在 static_path 下。
+        # 原写法用 `str(f).startswith(str(static_path))` —— 前缀不是目录边界，
+        # 一个名为 `static_backup/` 的**兄弟目录**能完整通过该检查。改用 is_relative_to。
+        if not f.is_relative_to(static_path.resolve()):
             from fastapi import HTTPException
             raise HTTPException(404)
         if not f.is_file():
             from fastapi import HTTPException
             raise HTTPException(404)
+        # 只服务真资源（P1-8）：仓里按备份铁律躺着 50+ 个 hub.js.bak-*，此前全部
+        # 可被 HTTP 直取（实测 GET /static/hub.js.bak-20260922_133021-replay-query-gate
+        # → 200 / 88779B）。备份留在磁盘供回滚，但不能从 Web 口读。
+        if ".bak" in f.name:
+            from fastapi import HTTPException
+            raise HTTPException(404)
         st = f.stat()
         # 与 FileResponse 同一套算法（md5("mtime-size")）⇒ 升级这次不会白掉一轮缓存
         etag = '"%s"' % hashlib.md5(f"{st.st_mtime}-{st.st_size}".encode(), usedforsecurity=False).hexdigest()
-        headers = {"Cache-Control": "no-cache", "Pragma": "no-cache", "ETag": etag}
+        headers = {"Cache-Control": "no-cache", "Pragma": "no-cache", "ETag": etag,
+                   # 304 分支此前漏了 Vary：共享缓存可能把 gzip 版回给不接受 gzip 的客户端
+                   "Vary": "Accept-Encoding"}
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         media = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
