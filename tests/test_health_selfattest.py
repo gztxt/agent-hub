@@ -116,5 +116,134 @@ class TestSnapshot(unittest.TestCase):
         selfattest.set_repo(None)
 
 
+class TestWorktreeProvenance(unittest.TestCase):
+    """补 code_stale 的半个盲区：工作区未提交改动在生产跑时不得自称「跑的是 HEAD」。
+       全部是纯函数表驱动用例，不碰盘、不起 git（L0 hermetic）。"""
+
+    def setUp(self):
+        selfattest._dirty_cache.update({"at": 0.0, "counts": None})
+        selfattest.set_repo(None)
+
+    def test_interpret_classifies_by_runtime_impact(self):
+        cases = [
+            ([], (0, 0, 0), "干净树"),
+            ([" M src/main.py"], (1, 0, 0), "已跟踪的 src"),
+            (["M  VERSION"], (1, 0, 0), "VERSION 算运行时"),
+            ([" M static/hub.js"], (1, 0, 0), "static 会被服务"),
+            ([" D templates/index.html"], (1, 0, 0), "删除模板也是改"),
+            (["AM src/deep/nested/x.py"], (1, 0, 0), "暂存+再改"),
+            ([" M README.md"], (0, 1, 0), "文档不进运行时"),
+            ([" M src/main.py", "?? data/hub.db"], (1, 0, 0), "未跟踪 db 不算"),
+            (["?? src/newmod.py"], (0, 0, 1), "新增未跟踪模块可能被 import"),
+            (["?? static/evil.js"], (0, 0, 1), "未跟踪 static 会被直接服务"),
+            (["?? templates/p.html"], (0, 0, 1), "未跟踪模板会被渲染"),
+            (["?? src/main.py.bak-20260923_x"], (0, 0, 0), "src 下的备份件不算"),
+            (["?? static/hub.js.bak-20260923_x"], (0, 0, 0), "static 备份件已被 P1-8 闸门 404"),
+            (["?? src/notes.txt"], (0, 0, 0), "未跟踪非 py 不進模块"),
+            (["R  src/a.py -> src/b.py"], (1, 0, 0), "重命名取新路径"),
+            (["R  docs/a.md -> README.md"], (0, 1, 0), "文档重命名归 other"),
+            (["!! src/gitignored.py"], (1, 0, 0), "xy 未识别时保守归入运行时"),
+            (["?? docs/x.py"], (0, 0, 0), "docs 下的 py 不会被 import"),
+        ]
+        for lines, want, why in cases:
+            with self.subTest(why=why, lines=lines):
+                c = selfattest._interpret_status(lines)
+                self.assertEqual(
+                    (c["runtime_dirty_files"], c["other_dirty_files"], c["untracked_code_files"]),
+                    want)
+
+    def test_matches_head_only_when_provable(self):
+        S = "a" * 40
+        clean = {"runtime_dirty_files": 0, "other_dirty_files": 3, "untracked_code_files": 0}
+        dirty = {"runtime_dirty_files": 1, "other_dirty_files": 0, "untracked_code_files": 0}
+        newmod = {"runtime_dirty_files": 0, "other_dirty_files": 0, "untracked_code_files": 1}
+        cases = [
+            ((S, S, clean), True, "同 sha + 运行时干净（文档脏不影响声称）"),
+            ((S, S, dirty), False, "有未提交运行时改动 ⇒ 不得自称是 HEAD"),
+            ((S, S, newmod), False, "src 下有未跟踪新模块 ⇒ 不得自称"),
+            ((S, S, None), False, "git 不可用时 fail-closed"),
+            ((S, "b" * 40, clean), False, "sha 不同"),
+            (("", "", clean), False, "取不到 sha 就不肯定声称"),
+        ]
+        for args, want, why in cases:
+            with self.subTest(why=why):
+                self.assertEqual(selfattest.matches_head(*args), want)
+
+    def test_snapshot_without_probe_never_shells_out(self):
+        """单测/低开销路径：probe_dirty=False 必须一次 git 都不起。"""
+        orig = selfattest._run_status
+        selfattest._run_status = lambda base: self.fail("probe_dirty=False 不应该起 git 子进程")
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                selfattest.set_repo(Path(td))
+                snap = selfattest.snapshot(probe_dirty=False)
+                self.assertIsNone(snap["code_matches_head"])   # 没探就不声称
+                self.assertNotIn("runtime_dirty_files", snap)
+        finally:
+            selfattest._run_status = orig
+            selfattest.set_repo(None)
+
+    def test_git_failure_is_fail_closed(self):
+        """git 挂了/超时 ⇒ 计数 None，且绝不能 True（不可虚报）。"""
+        orig = selfattest._run_status
+        selfattest._run_status = lambda base: None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                (repo / ".git").mkdir()
+                (repo / ".git" / "HEAD").write_text("b" * 40 + "\n", encoding="utf-8")
+                selfattest.set_repo(repo)
+                selfattest.boot()
+                snap = selfattest.snapshot()
+                self.assertIsNone(snap["runtime_dirty_files"])
+                self.assertFalse(snap["code_matches_head"])
+        finally:
+            selfattest._run_status = orig
+            selfattest.set_repo(None)
+
+    def test_snapshot_never_shells_out_even_with_probe(self):
+        """/health 是生命线端点：即使 probe_dirty=True 也只能读缓存。
+           一旦把 git 子进程放进请求路径，一次挂住就能把健康检查拖到超时。"""
+        orig = selfattest._run_status
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / ".git").mkdir()
+            (repo / ".git" / "HEAD").write_text("d" * 40 + "\n", encoding="utf-8")
+            selfattest.set_repo(repo)
+            selfattest._run_status = lambda base: [" M src/main.py"]
+            try:
+                selfattest.boot()                      # 启动路径可以起 git
+                selfattest._run_status = lambda base: self.fail(
+                    "snapshot() 不得起子进程，只能读 refresh() 刷过的缓存")
+                snap = selfattest.snapshot()
+                self.assertEqual(snap["runtime_dirty_files"], 1, "读的是缓存里的旧值")
+                self.assertIn("dirty_age_s", snap, "陈旧程度必须可见，不能伪装成现测")
+                self.assertFalse(snap["code_matches_head"])
+            finally:
+                selfattest._run_status = orig
+                selfattest.set_repo(None)
+
+    def test_dirty_tree_beats_stale_flag(self):
+        """本例是这次修正的全部理由：sha 两边一视（code_stale=False）
+           但工作区有未提交代码时，新字段必须报 False。"""
+        orig = selfattest._run_status
+        selfattest._run_status = lambda base: [" M src/term.py"]
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                (repo / ".git").mkdir()
+                sha = "c" * 40
+                (repo / ".git" / "HEAD").write_text(sha + "\n", encoding="utf-8")
+                selfattest.set_repo(repo)
+                selfattest.boot()
+                snap = selfattest.snapshot()
+                self.assertFalse(snap["code_stale"], "旧字段确实看不出问题")
+                self.assertEqual(snap["runtime_dirty_files"], 1)
+                self.assertFalse(snap["code_matches_head"], "新字段必须拒称「跑的是 HEAD」")
+        finally:
+            selfattest._run_status = orig
+            selfattest.set_repo(None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

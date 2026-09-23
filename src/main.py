@@ -629,7 +629,21 @@ async def _get_pi_sessions(limit: int) -> list:
 _embed_proxy = None      # 外框注入代理句柄（EMBED_UNIFY=0 时保持 None）
 
 
-async def vitals_loop():
+async def prov_loop():
+    """代码溯源刷新：每 30s 一次 git status（走线程，不进任何请求路径）。
+
+    为什么不搭 vitals 的慢拍：VITALS_SWEEP_SEC 默认 900s，而“工作区改了没”是
+    健康台账里最想要分钟级响应的字段；搭慢拍会让它在 15 分钟里拿着旧值讲现测。
+    """
+    while True:
+        try:
+            await asyncio.to_thread(selfattest.refresh)
+        except Exception as e:  # noqa: BLE001
+            print("[prov] 溯源刷新异常（下轮重试）%s: %s" % (
+                type(e).__name__, str(e)[:160]), flush=True)
+        await asyncio.sleep(float(os.getenv("HUB_PROV_SEC", "30")))
+
+
     """可用心跳慢周期：首轮延后 2s（先让 hub 开接请求），之后每 VITALS_SWEEP_SEC 一轮。
     只跑 L1/L2（which / 文件头 / --version / --help / 端点探活），不碰模型；
     任何异常都不打死循环（否则一次偶发就把菜单永久冻在旧结论上）。"""
@@ -657,6 +671,7 @@ async def startup():
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
     asyncio.create_task(tasks_mod.sweep_stale_tasks())
     asyncio.create_task(vitals_loop())
+    asyncio.create_task(prov_loop())   # 代码溯源（工作区脏度）刷新
     # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
     asyncio.create_task(term_mod.reap_loop())
     mcpgw_mod.ensure_schema()
