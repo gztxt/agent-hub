@@ -582,6 +582,32 @@ function termWriteReplay(raw) {
   term.write(raw, () => { while (gate.length) { try { gate.pop().dispose(); } catch (e) {} } });
 }
 
+/* 每帧 new TextDecoder() 是**正确性**问题，不只是浪费：
+   UTF-8 多字节字符（中文、box-drawing、emoji）常被 WS 帧从中间劈开，
+   独立解码器无法携带"半个字符"的状态 ⇒ 断点处固定吐出 U+FFFD。
+   共用一个实例 + {stream:true} 才能把尾巴留到下一帧。
+   每条新连接重置一次：上一连接残留的半个字符不该污染新会话的画面。 */
+let termDecoder = new TextDecoder();
+let termScanTail = '';
+function termDecodeReset() { termDecoder = new TextDecoder(); termScanTail = ''; }
+function termDecodeFrame(raw) {
+  if (typeof raw === 'string') return raw;
+  return termDecoder.decode(raw, { stream: true });
+}
+
+/* DECSET 扫描的两个便宜招：
+   ① 预筛 —— 绝大多数帧里没有 `\x1b[?`，不必动那条全局正则；
+   ② 带尾巴 —— `\x1b[?1003h` 恰好跨帧时（旧实现两帧都匹配不上，
+      结果实时 TUI 开了鼠标跟踪却没被记下来，滚轮上报被闸门吃掉），
+      把上一帧尾部 24 字符接在当前帧前面一起扫；同一条被扫到两次只是
+      重复赋同一个值，幂等。 */
+function termScanMouseFrame(text) {
+  const chunk = termScanTail + text;
+  termScanTail = text.slice(-24);
+  if (chunk.indexOf('\x1b[?') < 0) return;
+  termScanMouseMode(chunk);
+}
+
 function termScanMouseMode(text) {
   let m;
   TERM_DECSET_RE.lastIndex = 0;
@@ -875,6 +901,7 @@ function termConnect(sid, agent, opts) {
      （整屏帧早被增量帧挤出去）⇒ 补不满就一直白着，就是用户报的现象。 */
   if (!keepScreen) term.clear();
   termConnecting(true);
+  termDecodeReset();   // 上一连接可能残留半个 UTF-8 字符，别带进新会话
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));
   ws.binaryType = 'arraybuffer';
   /* 连接后的第一帧 = 服务端的历史回放（term.py 里 ring 是整块 send_bytes 出去的，一帧到底）：
@@ -894,7 +921,7 @@ function termConnect(sid, agent, opts) {
       return;
     }
     term.write(raw);
-    termScanMouseMode(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
+    termScanMouseFrame(termDecodeFrame(raw));
   };
   /* 重连成功后必须跑的仍是原来那三件事（收连接中灯 + 聚焦 + force 重绘报行列），
      之后额外挂上这条线自己的心跳。 */
