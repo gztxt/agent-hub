@@ -8,6 +8,60 @@ const hubNarrow = () => HUB_NARROW_MQ.matches;
 
 'use strict';
 
+/* ── localStorage 守卫（v0.13.13，2026-09-24）──────────────────────────────────
+   为什么要这一层：全站原有 45 处**裸**读写 localStorage，任何一处抛异常都会打断启动链。
+   本项已有过两次“顶层语句抛异常 ⇒ 整段 hub.js 当场死亡 ⇒ 端侧看起来随机坏”的事故
+   （09-23 TDZ、09-23 响应体被截断）。会抛的三种真实场景：
+     ① 隐私模式 / WebView 禁 DOM Storage —— 连取 window.localStorage 本身都抛；
+     ② 配额满（QuotaExceededError / NS_ERROR_DOM_QUOTA_REACHED）—— setItem 抛；
+     ③ 跨源 iframe 被策略拦下 —— 读写都抛。
+   口径：**只加兜底，不改语义**。取不到给 fallback（默认 null，与浏览器原生「键不存在」
+   返回值一致）；写失败返回 false，**不假装写进去了**；异常一律计数 + 留最后一条摘要，
+   经 window.__lsDiag 上 ?diag=1 面板 ⇒ 端侧能自证“是不是存储被禁了”。
+   位置必须在 01 最前面：02/05/06 都有顶层语句直接读存储（let chatPick = …  /
+   const navOpenStored = …  /  go(lsGet('hub.page'))），顺序由 tests/test_ls_guard.py 钉住。
+   两个计数助手自带初始化：这层存在的理由就是「不许抛」，它自己更不能抛。 */
+window.__lsDiag = { fails: 0, ok: 0, lastErr: '' };
+function lsDiagStore() {
+  return window.__lsDiag || (window.__lsDiag = { fails: 0, ok: 0, lastErr: '' });
+}
+function lsDiagHit() { lsDiagStore().ok++; }
+function lsDiagFail(op, key, e) {
+  const d = lsDiagStore();
+  d.fails++;
+  d.lastErr = op + ' ' + key + ': ' + String((e && (e.name || e.message)) || e).slice(0, 90);
+}
+function lsGet(key, fallback) {
+  try {
+    const v = window.localStorage.getItem(key);
+    lsDiagHit();
+    return v === null ? (fallback === undefined ? null : fallback) : v;
+  } catch (e) {
+    lsDiagFail('get', key, e);
+    return fallback === undefined ? null : fallback;
+  }
+}
+function lsSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    lsDiagHit();
+    return true;
+  } catch (e) {
+    lsDiagFail('set', key, e);
+    return false;      // ★调用方可以选择察觉；写失败不静默假装成功
+  }
+}
+function lsRemove(key) {
+  try {
+    window.localStorage.removeItem(key);
+    lsDiagHit();
+    return true;
+  } catch (e) {
+    lsDiagFail('rm', key, e);
+    return false;
+  }
+}
+
 /* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────
    sprite 定义在 index.html（24 网格 / stroke=currentColor / 粗细由 CSS 统一）。
    尺寸只允许 xs|sm(默认)|md|lg|xl 五档，任何地方都不要再给图标写 font-size。
@@ -50,7 +104,7 @@ async function api(path, opt) {
   let r = await fetch(path, o);
   if (r.status === 401 && isWriteMethod(o.method)) {
     // 存量口令失效（比如刚在设置里换过 token）：清掉再问一次，只重试一次，不循环
-    localStorage.removeItem('hub.term.token');
+    lsRemove('hub.term.token');
     const again = termToken();
     if (again) {
       o.headers = Object.assign({}, o.headers, { 'x-hub-token': again });
@@ -133,7 +187,7 @@ function go(page) {
     if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   document.querySelectorAll('section.page').forEach(s => s.classList.toggle('on', s.id === 'page-' + page));
-  localStorage.setItem('hub.page', page);  // T9：记忆上次所在页，刷新后回落
+  lsSet('hub.page', page);  // T9：记忆上次所在页，刷新后回落
   renderNav();            // v0.7：同步左侧手风琴（实体/系统项的选中态）
   renderPageCrumb(page);  // v0.7：系统页面包屑（实体页由 renderModeBar 接管）
   if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
@@ -314,7 +368,7 @@ function openSettings() {
   openOverlay('settingsDrawer');
 }
 function closeSettings() { closeOverlay('settingsDrawer'); }
-function settingsPasscode() { return localStorage.getItem('hub.passcode') || ''; }
+function settingsPasscode() { return lsGet('hub.passcode') || ''; }
 
 async function settingsViewToken() {
   let pc = settingsPasscode();
@@ -328,7 +382,7 @@ async function settingsViewToken() {
       headers: { 'Content-Type': 'application/json', 'X-HUB-PASSCODE': pc },
       body: JSON.stringify({ passcode: pc })
     });
-    localStorage.setItem('hub.passcode', pc);  // 验证通过才缓存
+    lsSet('hub.passcode', pc);  // 验证通过才缓存
     const box = $('settingsTokenBox');
     box.style.display = 'block';
     $('settingsTokenVal').dataset.token = d.term_token || '';
@@ -336,7 +390,7 @@ async function settingsViewToken() {
     $('settingsToggleShow').textContent = '隐藏';
     if (!d.set) toast('服务端未显式配置 TERM_TOKEN', 'err');
   } catch (e) {
-    localStorage.removeItem('hub.passcode');  // 口令错/失效则不缓存
+    lsRemove('hub.passcode');  // 口令错/失效则不缓存
     $('settingsTokenBox').style.display = 'none';
     toast(e.message, 'err');
   }
@@ -359,12 +413,12 @@ function settingsCopyToken() {
 function settingsApplyToken() {
   const t = $('settingsTokenVal').dataset.token || '';
   if (!t) return toast('无 token 可应用', 'err');
-  localStorage.setItem('hub.term.token', t);
+  lsSet('hub.term.token', t);
   toast('已应用到终端（本浏览器后续自动携带）', 'ok');
 }
 
 function settingsClearPasscode() {
-  localStorage.removeItem('hub.passcode');
+  lsRemove('hub.passcode');
   $('settingsTokenBox').style.display = 'none';
   toast('已清除本机缓存口令，下次查看需重新输入', 'ok');
 }

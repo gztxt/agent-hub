@@ -8,6 +8,60 @@ const hubNarrow = () => HUB_NARROW_MQ.matches;
 
 'use strict';
 
+/* ── localStorage 守卫（v0.13.13，2026-09-24）──────────────────────────────────
+   为什么要这一层：全站原有 45 处**裸**读写 localStorage，任何一处抛异常都会打断启动链。
+   本项已有过两次“顶层语句抛异常 ⇒ 整段 hub.js 当场死亡 ⇒ 端侧看起来随机坏”的事故
+   （09-23 TDZ、09-23 响应体被截断）。会抛的三种真实场景：
+     ① 隐私模式 / WebView 禁 DOM Storage —— 连取 window.localStorage 本身都抛；
+     ② 配额满（QuotaExceededError / NS_ERROR_DOM_QUOTA_REACHED）—— setItem 抛；
+     ③ 跨源 iframe 被策略拦下 —— 读写都抛。
+   口径：**只加兜底，不改语义**。取不到给 fallback（默认 null，与浏览器原生「键不存在」
+   返回值一致）；写失败返回 false，**不假装写进去了**；异常一律计数 + 留最后一条摘要，
+   经 window.__lsDiag 上 ?diag=1 面板 ⇒ 端侧能自证“是不是存储被禁了”。
+   位置必须在 01 最前面：02/05/06 都有顶层语句直接读存储（let chatPick = …  /
+   const navOpenStored = …  /  go(lsGet('hub.page'))），顺序由 tests/test_ls_guard.py 钉住。
+   两个计数助手自带初始化：这层存在的理由就是「不许抛」，它自己更不能抛。 */
+window.__lsDiag = { fails: 0, ok: 0, lastErr: '' };
+function lsDiagStore() {
+  return window.__lsDiag || (window.__lsDiag = { fails: 0, ok: 0, lastErr: '' });
+}
+function lsDiagHit() { lsDiagStore().ok++; }
+function lsDiagFail(op, key, e) {
+  const d = lsDiagStore();
+  d.fails++;
+  d.lastErr = op + ' ' + key + ': ' + String((e && (e.name || e.message)) || e).slice(0, 90);
+}
+function lsGet(key, fallback) {
+  try {
+    const v = window.localStorage.getItem(key);
+    lsDiagHit();
+    return v === null ? (fallback === undefined ? null : fallback) : v;
+  } catch (e) {
+    lsDiagFail('get', key, e);
+    return fallback === undefined ? null : fallback;
+  }
+}
+function lsSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    lsDiagHit();
+    return true;
+  } catch (e) {
+    lsDiagFail('set', key, e);
+    return false;      // ★调用方可以选择察觉；写失败不静默假装成功
+  }
+}
+function lsRemove(key) {
+  try {
+    window.localStorage.removeItem(key);
+    lsDiagHit();
+    return true;
+  } catch (e) {
+    lsDiagFail('rm', key, e);
+    return false;
+  }
+}
+
 /* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────
    sprite 定义在 index.html（24 网格 / stroke=currentColor / 粗细由 CSS 统一）。
    尺寸只允许 xs|sm(默认)|md|lg|xl 五档，任何地方都不要再给图标写 font-size。
@@ -50,7 +104,7 @@ async function api(path, opt) {
   let r = await fetch(path, o);
   if (r.status === 401 && isWriteMethod(o.method)) {
     // 存量口令失效（比如刚在设置里换过 token）：清掉再问一次，只重试一次，不循环
-    localStorage.removeItem('hub.term.token');
+    lsRemove('hub.term.token');
     const again = termToken();
     if (again) {
       o.headers = Object.assign({}, o.headers, { 'x-hub-token': again });
@@ -133,7 +187,7 @@ function go(page) {
     if (b.getAttribute('role') === 'tab') b.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   document.querySelectorAll('section.page').forEach(s => s.classList.toggle('on', s.id === 'page-' + page));
-  localStorage.setItem('hub.page', page);  // T9：记忆上次所在页，刷新后回落
+  lsSet('hub.page', page);  // T9：记忆上次所在页，刷新后回落
   renderNav();            // v0.7：同步左侧手风琴（实体/系统项的选中态）
   renderPageCrumb(page);  // v0.7：系统页面包屑（实体页由 renderModeBar 接管）
   if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
@@ -314,7 +368,7 @@ function openSettings() {
   openOverlay('settingsDrawer');
 }
 function closeSettings() { closeOverlay('settingsDrawer'); }
-function settingsPasscode() { return localStorage.getItem('hub.passcode') || ''; }
+function settingsPasscode() { return lsGet('hub.passcode') || ''; }
 
 async function settingsViewToken() {
   let pc = settingsPasscode();
@@ -328,7 +382,7 @@ async function settingsViewToken() {
       headers: { 'Content-Type': 'application/json', 'X-HUB-PASSCODE': pc },
       body: JSON.stringify({ passcode: pc })
     });
-    localStorage.setItem('hub.passcode', pc);  // 验证通过才缓存
+    lsSet('hub.passcode', pc);  // 验证通过才缓存
     const box = $('settingsTokenBox');
     box.style.display = 'block';
     $('settingsTokenVal').dataset.token = d.term_token || '';
@@ -336,7 +390,7 @@ async function settingsViewToken() {
     $('settingsToggleShow').textContent = '隐藏';
     if (!d.set) toast('服务端未显式配置 TERM_TOKEN', 'err');
   } catch (e) {
-    localStorage.removeItem('hub.passcode');  // 口令错/失效则不缓存
+    lsRemove('hub.passcode');  // 口令错/失效则不缓存
     $('settingsTokenBox').style.display = 'none';
     toast(e.message, 'err');
   }
@@ -359,12 +413,12 @@ function settingsCopyToken() {
 function settingsApplyToken() {
   const t = $('settingsTokenVal').dataset.token || '';
   if (!t) return toast('无 token 可应用', 'err');
-  localStorage.setItem('hub.term.token', t);
+  lsSet('hub.term.token', t);
   toast('已应用到终端（本浏览器后续自动携带）', 'ok');
 }
 
 function settingsClearPasscode() {
-  localStorage.removeItem('hub.passcode');
+  lsRemove('hub.passcode');
   $('settingsTokenBox').style.display = 'none';
   toast('已清除本机缓存口令，下次查看需重新输入', 'ok');
 }
@@ -399,9 +453,9 @@ async function registerAgent() {
 
 /* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
-let chatPick = localStorage.getItem('hub.chat.pick') || 'claude';
+let chatPick = lsGet('hub.chat.pick') || 'claude';
 // 刷新后回落「该实体上次所用形态」（与 pickChatEntity/gotoChat 同一套记忆键），否则会退成对话面板
-let chatMode = localStorage.getItem('hub.chatmode.' + chatPick) || 'chat';
+let chatMode = lsGet('hub.chatmode.' + chatPick) || 'chat';
 function sessKey(id) { return 'hub.sess.' + id; }
 
 function entityById(id) { return AGENTS.find(a => a.id === id); }
@@ -413,10 +467,10 @@ function defaultModeOf(a) {
 }
 function gotoChat(id, mode) {
   chatPick = id;
-  localStorage.setItem('hub.chat.pick', id);  // T9：记忆上次实体
+  lsSet('hub.chat.pick', id);  // T9：记忆上次实体
   const a = entityById(id);
-  chatMode = mode || localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
-  localStorage.setItem('hub.chatmode.' + id, chatMode);
+  chatMode = mode || lsGet('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
+  lsSet('hub.chatmode.' + id, chatMode);
   go('chat');
   renderChatSide();
 }
@@ -438,9 +492,9 @@ function renderChatSide() {
 
 function pickChatEntity(id) {
   chatPick = id;
-  localStorage.setItem('hub.chat.pick', id);
+  lsSet('hub.chat.pick', id);
   // T9：模式记忆优先——每实体上次用过的形态，无记录才回落默认
-  chatMode = localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(entityById(id));
+  chatMode = lsGet('hub.chatmode.' + id) || defaultModeOf(entityById(id));
   renderChatSide();
 }
 
@@ -453,7 +507,7 @@ function applyChatMode() {
   // 记忆的模式对该实体已失效（entry 被删/改）：回落到默认形态，否则三个 pane 会全 off → 右侧空白
   if (!(a.entries || []).some(e => e.type === chatMode)) {
     chatMode = defaultModeOf(a) || 'chat';
-    localStorage.setItem('hub.chatmode.' + chatPick, chatMode);
+    lsSet('hub.chatmode.' + chatPick, chatMode);
   }
   $('embedPane').classList.toggle('on', chatMode === 'embed');
   $('termPane').classList.toggle('on', chatMode === 'term');
@@ -495,7 +549,7 @@ function renderModeBar(a) {
 }
 function switchMode(m) {
   chatMode = m;
-  localStorage.setItem('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
+  lsSet('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
   applyChatMode();
 }
 
@@ -928,10 +982,10 @@ function termDetach() {
 
 /* TERM_TOKEN 鉴权（后端强制校验）：首次用终端时 prompt 一次存 localStorage，之后 header+query 双带 */
 function termToken() {
-  let t = localStorage.getItem('hub.term.token');
+  let t = lsGet('hub.term.token');
   if (!t) {
     t = prompt('请输入终端鉴权 TERM_TOKEN（也可在右上角「设置」查看后一键应用）') || '';
-    if (t) localStorage.setItem('hub.term.token', t);
+    if (t) lsSet('hub.term.token', t);
   }
   return t;
 }
@@ -940,7 +994,7 @@ function termHeaders(extra) {
 }
 
 function wsUrl(path) {
-  const t = localStorage.getItem('hub.term.token');
+  const t = lsGet('hub.term.token');
   const sep = path.includes('?') ? '&' : '?';
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path + (t ? sep + 'token=' + encodeURIComponent(t) : '');
 }
@@ -1141,14 +1195,14 @@ async function openChatSession() {
   box.innerHTML = '';
   chatSessLoad();
   chatCwdLoad();
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) { box.innerHTML = '<div class="hint" style="margin:auto">开始新会话（' + escapeHtml(chatPick) + '）</div>'; return; }
   try {
     const d = await api('/api/sessions/' + encodeURIComponent(sid) + '/messages');
     for (const m of d.messages || []) {
       box.appendChild(renderChatMsg(m));
     }
-  } catch (e) { localStorage.removeItem(sessKey(chatPick)); }
+  } catch (e) { lsRemove(sessKey(chatPick)); }
 }
 
 function renderChatMsg(m) {
@@ -1169,8 +1223,8 @@ async function chatSend() {
   const me = document.createElement('div');
   me.className = 'msg user'; me.textContent = msg;
   box.appendChild(me); box.scrollTop = box.scrollHeight;
-  let sid = localStorage.getItem(sessKey(chatPick));
-  if (!sid) { sid = Math.random().toString(36).slice(2, 14); localStorage.setItem(sessKey(chatPick), sid); }
+  let sid = lsGet(sessKey(chatPick));
+  if (!sid) { sid = Math.random().toString(36).slice(2, 14); lsSet(sessKey(chatPick), sid); }
   const busy = document.createElement('div');
   busy.className = 'msg assistant'; busy.textContent = '回复中…';
   box.appendChild(busy);
@@ -1207,7 +1261,7 @@ async function loadChatModels(force) {
     }
   }
   // 当前 agent 默认 model（localStorage 记忆）
-  const saved = localStorage.getItem('hub.model.' + chatPick) || '';
+  const saved = lsGet('hub.model.' + chatPick) || '';
   // 按 vendor 分组
   const groups = (CHAT_MODELS._groups) || {};
   const groupedKeys = Object.keys(groups);
@@ -1234,7 +1288,7 @@ async function loadChatModels(force) {
   sel.innerHTML = html;
 }
 $('chatModel')?.addEventListener?.('change', e => {
-  localStorage.setItem('hub.model.' + chatPick, e.target.value);
+  lsSet('hub.model.' + chatPick, e.target.value);
 });
 
 /* ── 工作目录（CWD 选择器）── */
@@ -1246,7 +1300,7 @@ function chatCwdLoad() {
   const a = entityById(chatPick);
   const profCwd = a && a.working_dir;
   // 2) localStorage 历史选择
-  const saved = localStorage.getItem('hub.cwd.' + chatPick) || '';
+  const saved = lsGet('hub.cwd.' + chatPick) || '';
   // 3) 合并去重
   const seen = new Set();
   const list = [];
@@ -1263,12 +1317,12 @@ function chatCwdCustom() {
   const v = prompt('自定义工作目录（绝对路径）', cur);
   if (v && v.trim()) {
     $('chatCwd').value = v.trim();
-    localStorage.setItem('hub.cwd.' + chatPick, v.trim());
+    lsSet('hub.cwd.' + chatPick, v.trim());
     toast('已设 cwd: ' + v.trim(), 'ok');
   }
 }
 $('chatCwd')?.addEventListener?.('change', e => {
-  localStorage.setItem('hub.cwd.' + chatPick, e.target.value);
+  lsSet('hub.cwd.' + chatPick, e.target.value);
 });
 
 /* ── 会话管理 ── */
@@ -1276,7 +1330,7 @@ let CHAT_SESSIONS = [];
 async function chatSessLoad() {
   const sel = $('chatSessList');
   if (!sel) return;
-  const cur = localStorage.getItem(sessKey(chatPick)) || '';
+  const cur = lsGet(sessKey(chatPick)) || '';
   try {
     const d = await api('/api/sessions?agent_id=' + encodeURIComponent(chatPick) + '&limit=30');
     CHAT_SESSIONS = d.sessions || [];
@@ -1292,12 +1346,12 @@ async function chatSessLoad() {
   } catch (e) { /* ignore */ }
 }
 function chatSessNew() {
-  localStorage.removeItem(sessKey(chatPick));
+  lsRemove(sessKey(chatPick));
   openChatSession();
   toast('已开新会话', 'ok');
 }
 async function chatSessRename() {
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) return toast('当前无会话', 'err');
   const cur = CHAT_SESSIONS.find(s => s.id === sid);
   const title = prompt('新标题', (cur && cur.title) || '');
@@ -1313,17 +1367,17 @@ $('chatSessList')?.addEventListener?.('change', async e => {
   const v = e.target.value;
   if (v === '__new__') { chatSessNew(); return; }
   if (!v) return;
-  localStorage.setItem(sessKey(chatPick), v);
+  lsSet(sessKey(chatPick), v);
   openChatSession();
 });
 // T7：删除当前会话（后端 DELETE /api/sessions/{id} 连同消息一并清理）
 async function chatSessDel() {
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) return toast('当前无会话', 'err');
   if (!confirm('删除当前会话 ' + sid.slice(0, 8) + ' 及其全部消息？不可恢复。')) return;
   try {
     await api('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
-    localStorage.removeItem(sessKey(chatPick));
+    lsRemove(sessKey(chatPick));
     openChatSession();
     toast('会话已删除', 'ok');
   } catch (e) { toast(e.message, 'err'); }
@@ -1718,7 +1772,7 @@ const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activi
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
-const navOpenStored = localStorage.getItem('hub.nav.open');
+const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
 /* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
@@ -1803,7 +1857,7 @@ const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder']
 // 09-23 23:3x 四格实测 —— hist 空 ⇒ 点 agent 名称只展开列表、侧栏不收起；
 // hist='claude' ⇒ 点名称即收起侧栏。两个 origin 各自一致、彼此不同 ⇒ 差异纯属存量，
 // 与网络/Tailscale 无关。闸门：tests/verify_collapse_symmetry.py。
-let histOpen = hubNarrow() ? '' : (localStorage.getItem('hub.hist') || '');
+let histOpen = hubNarrow() ? '' : (lsGet('hub.hist') || '');
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
 
 function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
@@ -1855,9 +1909,9 @@ function histLoad(aid) {
    而且 termToken() 会在每次刷新都弹一次口令框。 */
 (function histBootstrap() {
   if (!histOpen) return;
-  if (!TERM_HIST_AGENTS.includes(histOpen) || !localStorage.getItem('hub.term.token')) {
+  if (!TERM_HIST_AGENTS.includes(histOpen) || !lsGet('hub.term.token')) {
     histOpen = '';
-    localStorage.removeItem('hub.hist');
+    lsRemove('hub.hist');
     return;
   }
   histLoad(histOpen);
@@ -1930,7 +1984,7 @@ function renderNav() {
 }
 function toggleGroup(g) {
   navOpen = (navOpen === g) ? '' : g;   // 单开：展开一个自动收起其他
-  localStorage.setItem('hub.nav.open', navOpen);
+  lsSet('hub.nav.open', navOpen);
   renderNav();
 }
 /* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶） */
@@ -2000,6 +2054,12 @@ const sidebarPrefKey = () => mqNarrow.matches ? 'hub.sidebar.narrow' : 'hub.side
 function sidebarWantCollapsed(narrow, stored, legacy) {
   if (stored !== null) return stored === '1';
   if (!narrow && legacy !== null) return legacy === '1';
+  /* 窄档无存档时的默认值 = 收起（48px 图标条）——用户 2026-09-24 裁定。
+     本次没改行为：实测（冷 profile + 清 localStorage，390x768）本来就是
+     collapsed=true / offsetWidth=48，故只把这行**钉成断言**：
+     tests/verify_narrow_default_iconbar.py（附两格灵敏度对照：本档存过 '0' → 必须展开；
+     掐 hub.js → collapsed 必须 false，证明闸门能判红、不是 stuck-true 假绿）。
+     谁要把这行改成 false，先去看那两格为什么红。 */
   return narrow;
 }
 
@@ -2010,7 +2070,7 @@ function initSidebar() {
   const apply = (c, persist) => {
     sb.classList.toggle('collapsed', c);
     btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
-    if (persist !== false) localStorage.setItem(sidebarPrefKey(), c ? '1' : '0');
+    if (persist !== false) lsSet(sidebarPrefKey(), c ? '1' : '0');
     if (window.syncOverlayMask) syncOverlayMask();   // 遮罩不在这里算，统一走下面那个出口
   };
   /* ③ 遮罩的唯一计算出口（浮层唯一性）：窄屏 且（侧栏抽屉展开 或 任一抽屉浮层在开）
@@ -2027,8 +2087,8 @@ function initSidebar() {
   window.collapseSidebar = () => { if (mqNarrow.matches && !sb.classList.contains('collapsed')) apply(true); };
   window.isNarrow = () => mqNarrow.matches;   // 断点单一真源：外面只准问这个，不准再写 767
   // 首屏解析档位偏好：persist=false ⇒ 加载本身不再写盘（老代码正是在这一步把宽屏的"展开"存成全局值）
-  const resolve = () => apply(sidebarWantCollapsed(narrow(), localStorage.getItem(sidebarPrefKey()),
-                                                   localStorage.getItem('hub.sidebar')), false);
+  const resolve = () => apply(sidebarWantCollapsed(narrow(), lsGet(sidebarPrefKey()),
+                                                   lsGet('hub.sidebar')), false);
   resolve();
   btn.onclick = () => apply(!sb.classList.contains('collapsed'));
   // 跨断点（转屏/窗口拖窄/桌面缩放）重新解析本档偏好；老代码只重画终端，抽屉状态永远停在加载那一刻
@@ -2051,7 +2111,7 @@ function initSidebar() {
       if (TERM_HIST_AGENTS.includes(aid)) {
         if (histOpen === aid) histOpen = '';              // 再点当前行 = 只收起，不离开页面
         else { histOpen = aid; histLoad(aid); }           // 展开新的（自动收起上一个）
-        localStorage.setItem('hub.hist', histOpen);
+        lsSet('hub.hist', histOpen);
         renderNav();
       }
       openEntity(aid);                                    // 进工作台照旧（A：两件事一次点击）
@@ -2063,7 +2123,7 @@ function initSidebar() {
       // 收起态下点组图标 = 先展开侧栏并定位到该组（否则手风琴体被 display:none，点了没反应）
       if (sb.classList.contains('collapsed')) {
         navOpen = el.dataset.group;
-        localStorage.setItem('hub.nav.open', navOpen);
+        lsSet('hub.nav.open', navOpen);
         apply(false);
         renderNav();
       } else toggleGroup(el.dataset.group);
@@ -2180,4 +2240,4 @@ setInterval(() => {
       && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
-go(localStorage.getItem('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）
+go(lsGet('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）

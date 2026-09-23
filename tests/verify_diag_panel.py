@@ -15,7 +15,7 @@
 CDP 纪律（本轮踩过的真坑）：`Fetch` 域是**按 session 启用**的，所以 `failRequest` 必须
 用**同一个连接**发出；另开一条 CDP 去 enable 再拿旧连接去应答 ⇒ "Fetch domain is not enabled"。
 """
-import json, re, sys, time
+import json, re, sys, tempfile, time
 sys.path.insert(0, "/home/gztxt/agent-hub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
@@ -35,15 +35,20 @@ def fields(t):
     d = {}
     for k in ("origin", "UA", "视口", "窄屏档", "hub.js标签", "go函数",
               "initSidebar跑过(遮罩出口)", "navTree子项", "侧栏可见按钮", "侧栏collapsed",
-              "在显示的页", "localStorage键", "就绪"):
+              "在显示的页", "localStorage键", "localStorage异常", "就绪"):
         m = re.search(r"(?:^|\n)%s=([^\n]*)" % re.escape(k), t or "")
         d[k] = m.group(1).strip() if m else None
     d["_raw"] = t or ""
     return d
 
 
-proc = launch_chrome(BASE + "/?diag=1", PORT, "/tmp/hub_diag2", 390, 844)
+proc = launch_chrome(BASE + "/?diag=1", PORT, tempfile.mkdtemp(prefix="hub_diag_"), 390, 844)
 time.sleep(3.0)
+# ↑ 冷 profile（tempfile）：上一轮留下的缓存会把下面的红测整段假绿
+# —— 实测：hub.js 从 v0.13.11 起带 `cache-control: public, max-age=31536000, immutable`，
+#   同一 renderer 里第二次导航根本不发请求 ⇒ Fetch.requestPaused 不触发 ⇒
+#   “掐断 hub.js” 拦截次数=0，整块红测静默空转（本轮发现的既存缺陷）。
+#   光靠新 profile 不够（内存缓存仍在），必须显式 Network.setCacheDisabled。
 
 state = {"blocked": 0}
 
@@ -64,6 +69,8 @@ def main_paused(params, cli):
 
 c = CDP(page_target(PORT))
 c.send("Page.enable"); c.send("Runtime.enable")
+c.send("Network.enable")
+c.send("Network.setCacheDisabled", cacheDisabled=True)   # ★不让 immutable 吃掉红测
 c.send("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
 
 
@@ -88,6 +95,9 @@ chk("遮罩出口存在（initSidebar 跑过）", f.get("initSidebar跑过(遮�
 chk("navTree 有 3 个分组", f.get("navTree子项") == "3", f.get("navTree子项", ""))
 chk("侧栏已收起（窄屏默认图标条）", f.get("侧栏collapsed") == "true", f.get("侧栏collapsed", ""))
 chk("异常清单为「无」", "异常清单: 无" in f["_raw"], "")
+# v0.13.13：localStorage 守卫的可观测行（端侧自证“存储是不是被禁了”）
+chk("★守卫行存在且计数为 0", (f.get("localStorage异常") or "").startswith("0 "),
+    f.get("localStorage异常", ""))
 
 print("\n== 红：同一条连接里启用 Fetch 并掐断 hub.js ==")
 c.send("Fetch.enable", patterns=[{"urlPattern": "*static/hub.js*"}])
@@ -105,6 +115,9 @@ chk("遮罩出口消失", f2.get("initSidebar跑过(遮罩出口)") == "undefine
 chk("navTree 零子项（=菜单空白）", f2.get("navTree子项") == "0", f2.get("navTree子项", ""))
 chk("★JS 不跑时抽屉停在展开态（=遮挡正文）", f2.get("侧栏collapsed") == "false",
     "collapsed=%s 可见按钮=%s" % (f2.get("侧栏collapsed"), f2.get("侧栏可见按钮")))
+chk("★守卫行在 JS 死亡时自报「守卫未加载」",
+    (f2.get("localStorage异常") or "").startswith("守卫未加载"),
+    f2.get("localStorage异常", ""))
 
 print("\n== 不带 ?diag：面板不应存在 ==")
 c.send("Fetch.disable")

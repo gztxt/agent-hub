@@ -98,8 +98,15 @@ class TestSnapshot(unittest.TestCase):
             # 模拟「boot 之后又提交了代码，但服务没重启」
             (root / ".git" / "refs" / "heads" / "master").write_text(OTHER + "\n", encoding="utf-8")
             snap2 = selfattest.snapshot()
-            self.assertTrue(snap2["code_stale"], "sha 变了必须 code_stale=true")
+            # ★09-24 改语义：commit 指针变了**不再**等于"需要重启"。漂移仍然必须可见，
+            #   但由溯源字段负责；`code_stale` 现在只在有 boot 内容指纹时才给结论，
+            #   这个合成仓里 src/ 是空的 ⇒ 必须 None→False + 写明原因，不许拿 sha 差冒充结论。
+            self.assertNotEqual(snap2["git_sha_boot"], snap2["git_sha_now"],
+                                "指针漂移必须在字段里看得见（这是本例原本钉的东西）")
             self.assertEqual(selfattest.short(OTHER), snap2["git_sha_now"])
+            self.assertFalse(snap2["code_stale"],
+                             "无 boot 内容指纹时不得声称需要重启（宁可不可判定）")
+            self.assertIn("code_stale_reason", snap2)
             self.assertIsInstance(snap2["uptime_s"], int)
 
     def test_survives_no_repo(self):

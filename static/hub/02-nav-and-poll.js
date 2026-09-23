@@ -12,9 +12,9 @@ async function registerAgent() {
 
 /* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
-let chatPick = localStorage.getItem('hub.chat.pick') || 'claude';
+let chatPick = lsGet('hub.chat.pick') || 'claude';
 // 刷新后回落「该实体上次所用形态」（与 pickChatEntity/gotoChat 同一套记忆键），否则会退成对话面板
-let chatMode = localStorage.getItem('hub.chatmode.' + chatPick) || 'chat';
+let chatMode = lsGet('hub.chatmode.' + chatPick) || 'chat';
 function sessKey(id) { return 'hub.sess.' + id; }
 
 function entityById(id) { return AGENTS.find(a => a.id === id); }
@@ -26,10 +26,10 @@ function defaultModeOf(a) {
 }
 function gotoChat(id, mode) {
   chatPick = id;
-  localStorage.setItem('hub.chat.pick', id);  // T9：记忆上次实体
+  lsSet('hub.chat.pick', id);  // T9：记忆上次实体
   const a = entityById(id);
-  chatMode = mode || localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
-  localStorage.setItem('hub.chatmode.' + id, chatMode);
+  chatMode = mode || lsGet('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
+  lsSet('hub.chatmode.' + id, chatMode);
   go('chat');
   renderChatSide();
 }
@@ -51,9 +51,9 @@ function renderChatSide() {
 
 function pickChatEntity(id) {
   chatPick = id;
-  localStorage.setItem('hub.chat.pick', id);
+  lsSet('hub.chat.pick', id);
   // T9：模式记忆优先——每实体上次用过的形态，无记录才回落默认
-  chatMode = localStorage.getItem('hub.chatmode.' + id) || defaultModeOf(entityById(id));
+  chatMode = lsGet('hub.chatmode.' + id) || defaultModeOf(entityById(id));
   renderChatSide();
 }
 
@@ -66,7 +66,7 @@ function applyChatMode() {
   // 记忆的模式对该实体已失效（entry 被删/改）：回落到默认形态，否则三个 pane 会全 off → 右侧空白
   if (!(a.entries || []).some(e => e.type === chatMode)) {
     chatMode = defaultModeOf(a) || 'chat';
-    localStorage.setItem('hub.chatmode.' + chatPick, chatMode);
+    lsSet('hub.chatmode.' + chatPick, chatMode);
   }
   $('embedPane').classList.toggle('on', chatMode === 'embed');
   $('termPane').classList.toggle('on', chatMode === 'term');
@@ -108,7 +108,7 @@ function renderModeBar(a) {
 }
 function switchMode(m) {
   chatMode = m;
-  localStorage.setItem('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
+  lsSet('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
   applyChatMode();
 }
 

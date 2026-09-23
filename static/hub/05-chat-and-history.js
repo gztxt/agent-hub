@@ -156,7 +156,7 @@ const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activi
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
-const navOpenStored = localStorage.getItem('hub.nav.open');
+const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
 /* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
@@ -241,7 +241,7 @@ const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder']
 // 09-23 23:3x 四格实测 —— hist 空 ⇒ 点 agent 名称只展开列表、侧栏不收起；
 // hist='claude' ⇒ 点名称即收起侧栏。两个 origin 各自一致、彼此不同 ⇒ 差异纯属存量，
 // 与网络/Tailscale 无关。闸门：tests/verify_collapse_symmetry.py。
-let histOpen = hubNarrow() ? '' : (localStorage.getItem('hub.hist') || '');
+let histOpen = hubNarrow() ? '' : (lsGet('hub.hist') || '');
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
 
 function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
@@ -293,9 +293,9 @@ function histLoad(aid) {
    而且 termToken() 会在每次刷新都弹一次口令框。 */
 (function histBootstrap() {
   if (!histOpen) return;
-  if (!TERM_HIST_AGENTS.includes(histOpen) || !localStorage.getItem('hub.term.token')) {
+  if (!TERM_HIST_AGENTS.includes(histOpen) || !lsGet('hub.term.token')) {
     histOpen = '';
-    localStorage.removeItem('hub.hist');
+    lsRemove('hub.hist');
     return;
   }
   histLoad(histOpen);

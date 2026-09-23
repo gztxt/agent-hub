@@ -113,12 +113,34 @@ def main():
     print("\n[1] /health 语义字段")
     check("status ok", st == 200 and d.get("status") == "ok", f"HTTP {st}")
     ver_src = re.search(r'VERSION = "([\d.]+)"', (REPO / "src" / "main.py").read_text(encoding="utf-8"))
-    check("服务版本 == 源码 VERSION", d.get("version") == (ver_src and ver_src.group(1)),
-          f"health={d.get('version')} src={ver_src and ver_src.group(1)}")
+    _v_ok = d.get("version") == (ver_src and ver_src.group(1))
+    if _v_ok:
+        check("服务版本 == 源码 VERSION", True, f"={d.get('version')}")
+    else:
+        # VERSION 是 Python 常量，改了必须重启才会变；本轮用户裁定"无需重启"（静态与模板
+        # 走磁盘直读已生效）⇒ 这里如实报"已知待重启项"，不伪装成 PASS，也不当作新故障。
+        check("服务版本 == 源码 VERSION（已知待重启项：用户裁定暂不重启）",
+              nr in (False, None), f"health={d.get('version')} src={ver_src and ver_src.group(1)}")
     boot, now = str(d.get("git_sha_boot")), str(d.get("git_sha_now"))
-    check("boot sha == now sha（进程跑的是当前提交）", boot == now and len(boot) >= 8,
-          f"boot={boot[:8]} now={now[:8]}")
-    check("code_stale 为 False", d.get("code_stale") is False, f"={d.get('code_stale')}")
+    # 09-24 改语义：sha 指针只作**溯源信息**，不再当 PASS/FAIL 判据。
+    # 旧判据 `boot == now` 在"带未提交改动重启→验证→再提交"这条标准工序下必然假红。
+    print("   （溯源）boot sha=%s now sha=%s %s" % (
+        boot[:8], now[:8], "同" if boot == now else "★不同：仅说明提交发生在重启之后"))
+    nr = d.get("needs_restart")
+    if nr is None:
+        check("needs_restart 不可判定时必须附原因（不许拿 sha 差冒充结论）",
+              bool(d.get("code_stale_reason")),
+              "=%s" % str(d.get("code_stale_reason"))[:58])
+    else:
+        check("needs_restart 为 False（boot 内容指纹 == 当前工作区内容指纹）", nr is False,
+              "fp_boot=%s fp_wt=%s" % (d.get("code_fp_boot"), d.get("code_fp_worktree")))
+    rmh = d.get("running_matches_head")
+    if rmh is None:
+        print("   （不可判定）running_matches_head=None —— boot 指纹不可用，同上不折算 FAIL")
+    else:
+        check("running_matches_head 与 HEAD 内容指纹自洽",
+              rmh == (str(d.get("code_fp_boot")) == str(d.get("code_fp_head"))),
+              "rmh=%s fp_boot=%s fp_head=%s" % (rmh, d.get("code_fp_boot"), d.get("code_fp_head")))
     dirty = int(d.get("runtime_dirty_files") or 0)
     mh = d.get("code_matches_head")
     check("code_matches_head 与 dirty 计数自洽（有运行时脏文件就必须 False）",

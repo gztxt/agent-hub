@@ -1067,7 +1067,20 @@
           + '侧栏可见按钮=' + vis + '\n'
           + '侧栏collapsed=' + (sb ? sb.classList.contains('collapsed') : '?') + '\n'
           + '在显示的页=' + (pages.join(',') || '★无（正文整块空白）') + '\n'
-          + 'localStorage键=' + (Object.keys(localStorage).join('|') || '(空)') + '\n'
+          + 'localStorage键=' + (function () {
+              // 存储被禁时 `localStorage` 本身会抛 —— 不兜住的话整块 probe() 直接死，
+              // 下面那行“异常计数”就永远打印不出来（恰好在最需要它的环境里）
+              try { return Object.keys(localStorage).join('|') || '(空)'; }
+              catch (e) { return '★读不到:' + String(e && (e.name || e) || '').slice(0, 60); }
+            })() + '\n'
+          + 'localStorage异常=' + (function () {
+              try {
+                var g = window.__lsDiag;
+                if (!g) return '守卫未加载(hub.js未执行)';
+                return (g.fails || 0) + ' 成功读写=' + (g.ok || 0)
+                  + (g.fails ? ' 最后错误=' + String(g.lastErr || '?').slice(0, 80) : '');
+              } catch (e) { return '取不到:' + e; }
+            })() + '\n'
           + '就绪=' + document.readyState + ' 已运行=' + (Date.now() - T0) + 'ms\n'
           // 端侧真实拿到的字节：Resource Timing 由浏览器自己填，伪造不了
           + '脚本实况=' + (function () {
@@ -1118,6 +1131,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=d72e626d"></script>
+    <script src="/static/hub.js?v=4e67ab4f"></script>
 </body>
 </html>

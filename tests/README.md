@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 136 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 26 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（20 只里 13 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（23 只里 16 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
 
 ## 怎么跑
 
@@ -85,8 +85,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 
 ## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
 
-> 计数口径：上面表格里的 20 是**文件数**（09-23 23:5x 实测）。
-> 其内 7 只走“抽函数 + 本地最小页”（不需服务），10 只需服务在跑（含 `3102`），
+> 计数口径：上面表格里的 23 是**文件数**（09-24 00:5x 实测）。
+> 其内 7 只走“抽函数 + 本地最小页”（不需服务），13 只需服务在跑（含 `3102`），
 > 有重叠 ⇒ 不拿一个数字兼两个口径。
 
 共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
@@ -121,6 +121,15 @@ $ venv/bin/python tests/verify_replay_gate.py
    在 `01-core-boot.js`，不变量 3），**不要**再自己 `matchMedia` 或比 `innerWidth`。
 
 
+10. **改作用域的活必须起真服务测**：09-24 两次假动作都是 `ast.parse` 通过、逻辑已废——
+    ① 以 0 缩进往 `if static_path.exists():` 里插类，把该块截断，`_GZ_SUFFIX` 与路由函数
+    一起掉进类的命名空间 ⇒ `/static` 全 500；② 覆写 `FileResponse.set_headers`，而本
+    Starlette 版本没有这个钩子（真钩子是 `set_stat_headers`，在 `__call__` stat 后才调）
+    ⇒ 方法是死代码，头照发。**判据：新闸门 `verify_static_headers_matrix.py` 用影子实例
+    （随机端口 + 隔离 `DATA_DIR`）跑响应头矩阵，并带红臂自证裸 FileResponse 确实补 etag。**
+    推论：覆写第三方类的私有/半私有方法前，必须先确认该方法在本版本里真的存在被调用。
+
+
 | 探针 | 钉住的缺陷 | 对照组实测 | 实验组实测 |
 |---|---|---|---|
 | `verify_replay_gate.py` | 回放历史时替终端作答查询码：ring 里躺着的 `DECRQPS`（`DCS $ q`）会被 xterm 应答并**注回 pty**，成为可见垃圾。改前的闸门只列 DA1/DA2，**DA3  `{prefix:'?',final:'c'}` 在本机 vendor 版里根本不存在**（grep 实测），真正漏的是 DCS 族 | 直接 write → xterm 回 2 个 DCS 包 + DSR | 经 `termWriteReplay` → **0 包** |
@@ -135,6 +144,9 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `test_tdz_order.py`(L0) + `verify_hist_tdz.py` | **顶层 IIFE 早于 `let` 声明 ⇒ TDZ**：`histBootstrap()` → `histLoad()` → `renderNav()` 读到 1861 行才声明的 `_navHtml` ⇒ hub.js 当场死亡（菜单空白 + `initSidebar` 从未执行 + 抽屉停在展开态遮住正文）。门闩 = `histOpen ∈ TERM_HIST_AGENTS` **且 localStorage 有 `hub.term.token`** ⇒ 手机那份有、浏览器那份没有 ⇒ 这才是「浏览器正常/APP 异常」「局域网正常/Tailscale 异常」的真判据 | 红：**用 `Fetch.fulfillRequest` 把修复前的 HEAD 版喂进同一页面**（不往生产 static 目录写文件），逐字符复现 `JS异常 @ hub.js:1907` + `navTree子项=0` + `collapsed=false` | 绿 14/14，且主动调 `histLoad('claude')` 返回 DRIVE-OK、服务端确有 `/api/term/history` 命中（第一版只注入 localStorage 就报 8/8 绿，被日志否证为**空转**） |
 | `verify_diag_panel.py` | 端侧自检面板 `?diag=1` **自身失效**就等于永远拿不到端侧事实（本机对手机/APP 零探针是长期缺口）。给它做红绿：绿=如实报『异常清单: 无』；红=**同一条 CDP 连接**掐断 `hub.js` | 红况面板精确报「资源加载失败 …/hub.js」+ `go函数=undefined` + `navTree子项=0` + **`侧栏collapsed=false`（证明 JS 不跑时抽屉停在展开态遮住正文）** | 绿 8/8 + 红 6/6 + 无 `?diag` 时面板不存在 ⇒ 17/17 |
 | `verify_collapse_symmetry.py` | 窄屏「点 agent 名称后是否自动收起侧栏」**依赖 `hub.hist` 存量** ⇒ 同一动作在局域网 / Tailscale 两个 origin 上分叉（用户报「Tailscale 好像不行」） | 改前四格矩阵：hist 空→`collapsed=False`、hist='claude'→`collapsed=True`（两 origin 各自一致、彼此不同） | 改后四格全 `collapsed=False`，对称性成立 ✅ |
+| `verify_narrow_default_iconbar.py` | 窄屏首屏是否**图标条**（用户 09-24 裁定的默认态） | C 格掐断 hub.js ⇒ `collapsed=False`(236px 铺满) | A 格无存档 ⇒ `collapsed=True`(48px 图标条)；B 格本档存 `'0'` ⇒ `False`（证明非 stuck-true） |
+| `verify_ls_guard_live.py` | `localStorage` 抛异常/quota 满/存储被禁 ⇒ 启动链断裂 | CDP 注入 `0822164` 旧字节 + setItem 抛 ⇒ `navTree=0` + `Uncaught SecurityError` | 新字节下三种破坏仍 `navTree=3 collapsed=true fails>0` 且零未捕获异常 (23/23) |
+| `verify_static_headers_matrix.py` | immutable 分支带 `etag`/`last-modified` ⇒ 端侧可拿 304 复用"提手对不上"的旧副本；及改作用域后 `/static` 全 500 而语法检查放过 | 红臂：裸 `FileResponse` 构造同文件 ⇒ 头里确实有 `etag=`（判据有力度） | 影子实例 18/18：immutable 无校验器且永不 304、revalidate 保留 ETag+304、gzip 侧同样干净、服务出参与磁盘逐字节一致、生产 pid/version 未变 |
 
 ### 真页面探针的另一条硬规定：CDP 必须有常驻读线程
 

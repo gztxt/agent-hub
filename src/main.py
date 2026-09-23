@@ -58,7 +58,7 @@ import staticguard
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.12"
+VERSION = "0.13.13"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -176,6 +176,16 @@ if static_path.exists():
                 _gz_cache[key] = body
             return Response(content=body, media_type=media,
                             headers={**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        # 09-24：immutable 分支**不走 FileResponse**。它会在 __call__ 里 stat 并调
+        # `set_stat_headers()`，自动补 `etag`/`last-modified`——两者都是 mtime+size 的函数，
+        # 与 URL 上的内容哈希提手无关 ⇒ 客户端可能拿 304 复用"提手对不上"的旧副本
+        # （09-23 APP 事故实测：?v=…22c 与 ?v=…23a 共用同一 ETag，先 200 后 304）。
+        # 曾试图覆写 FileResponse.set_headers —— 那个钩子在本 Starlette 版本里不存在，
+        # 方法永不执行（假动作，影子实测当场抓出）。这里直接给全量字节，与 gzip 分支同一做法，
+        # 不依赖任何私有方法名。代价：不支持 Range；静态资源最大约 300KB，可接受。
+        if policy == "immutable":
+            return Response(content=f.read_bytes(), headers=headers, media_type=media)
+        # revalidate 分支照旧：发 ETag、可回 304（提手不对/没提手时的安全阀）。
         return FileResponse(str(f), headers=headers, media_type=media)
     # 不再 mount StaticFiles；自定义路由接管 /static/
 

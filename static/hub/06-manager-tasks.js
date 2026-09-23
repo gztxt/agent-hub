@@ -1,6 +1,6 @@
 function toggleGroup(g) {
   navOpen = (navOpen === g) ? '' : g;   // 单开：展开一个自动收起其他
-  localStorage.setItem('hub.nav.open', navOpen);
+  lsSet('hub.nav.open', navOpen);
   renderNav();
 }
 /* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶） */
@@ -70,6 +70,12 @@ const sidebarPrefKey = () => mqNarrow.matches ? 'hub.sidebar.narrow' : 'hub.side
 function sidebarWantCollapsed(narrow, stored, legacy) {
   if (stored !== null) return stored === '1';
   if (!narrow && legacy !== null) return legacy === '1';
+  /* 窄档无存档时的默认值 = 收起（48px 图标条）——用户 2026-09-24 裁定。
+     本次没改行为：实测（冷 profile + 清 localStorage，390x768）本来就是
+     collapsed=true / offsetWidth=48，故只把这行**钉成断言**：
+     tests/verify_narrow_default_iconbar.py（附两格灵敏度对照：本档存过 '0' → 必须展开；
+     掐 hub.js → collapsed 必须 false，证明闸门能判红、不是 stuck-true 假绿）。
+     谁要把这行改成 false，先去看那两格为什么红。 */
   return narrow;
 }
 
@@ -80,7 +86,7 @@ function initSidebar() {
   const apply = (c, persist) => {
     sb.classList.toggle('collapsed', c);
     btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
-    if (persist !== false) localStorage.setItem(sidebarPrefKey(), c ? '1' : '0');
+    if (persist !== false) lsSet(sidebarPrefKey(), c ? '1' : '0');
     if (window.syncOverlayMask) syncOverlayMask();   // 遮罩不在这里算，统一走下面那个出口
   };
   /* ③ 遮罩的唯一计算出口（浮层唯一性）：窄屏 且（侧栏抽屉展开 或 任一抽屉浮层在开）
@@ -97,8 +103,8 @@ function initSidebar() {
   window.collapseSidebar = () => { if (mqNarrow.matches && !sb.classList.contains('collapsed')) apply(true); };
   window.isNarrow = () => mqNarrow.matches;   // 断点单一真源：外面只准问这个，不准再写 767
   // 首屏解析档位偏好：persist=false ⇒ 加载本身不再写盘（老代码正是在这一步把宽屏的"展开"存成全局值）
-  const resolve = () => apply(sidebarWantCollapsed(narrow(), localStorage.getItem(sidebarPrefKey()),
-                                                   localStorage.getItem('hub.sidebar')), false);
+  const resolve = () => apply(sidebarWantCollapsed(narrow(), lsGet(sidebarPrefKey()),
+                                                   lsGet('hub.sidebar')), false);
   resolve();
   btn.onclick = () => apply(!sb.classList.contains('collapsed'));
   // 跨断点（转屏/窗口拖窄/桌面缩放）重新解析本档偏好；老代码只重画终端，抽屉状态永远停在加载那一刻
@@ -121,7 +127,7 @@ function initSidebar() {
       if (TERM_HIST_AGENTS.includes(aid)) {
         if (histOpen === aid) histOpen = '';              // 再点当前行 = 只收起，不离开页面
         else { histOpen = aid; histLoad(aid); }           // 展开新的（自动收起上一个）
-        localStorage.setItem('hub.hist', histOpen);
+        lsSet('hub.hist', histOpen);
         renderNav();
       }
       openEntity(aid);                                    // 进工作台照旧（A：两件事一次点击）
@@ -133,7 +139,7 @@ function initSidebar() {
       // 收起态下点组图标 = 先展开侧栏并定位到该组（否则手风琴体被 display:none，点了没反应）
       if (sb.classList.contains('collapsed')) {
         navOpen = el.dataset.group;
-        localStorage.setItem('hub.nav.open', navOpen);
+        lsSet('hub.nav.open', navOpen);
         apply(false);
         renderNav();
       } else toggleGroup(el.dataset.group);
@@ -250,4 +256,4 @@ setInterval(() => {
       && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
-go(localStorage.getItem('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）
+go(lsGet('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）

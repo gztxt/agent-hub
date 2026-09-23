@@ -10,10 +10,24 @@
   「代码已改但服务没重启」与「服务在跑最新代码」⇒ 版本漂移完全不可见。
   这正是本项目踩过的「全绿但功能层已死」形态（同 P0-1：/health 200 而对话端点必 500）。
 
-口径：
-  code_stale = 当前 HEAD 与启动时记下的 HEAD 不一致 ⇒ 有代码改了没重启。
-  取不到 sha（非 git 环境/拷出来的树）一律 **不** 报 stale —— 宁可少报，不可虚报。
+口径（**09-24 改语义**：比内容，不比 commit 指针）：
+  needs_restart        = 启动那一刻的工作区内容指纹 != 当前工作区内容指纹  ⇒ 真需要重启。
+  running_matches_head = 启动那一刻的内容指纹 == HEAD 里同批文件的内容指纹 ⇒ 跑的就是 HEAD 的内容。
+  code_stale           = needs_restart 的**兼容别名**（老消费方字段名不变）。
+  git_sha_boot/git_sha_now 保留，但只作溯源信息，**不再参与任何判定**。
+
+为什么必须改（实测事故，09-23→09-24）：旧语义比的是 commit 指针，而本机工序是
+「带未提交改动重启 → 实弹验证 → 通过才提交」⇒ 每次提交后 boot 指针必然落后一格，
+`code_stale` 长期假红（09-23 就为此产生 3 例 verify_prod_smoke 假 FAIL，实为记账口径）。
+
+**为什么 static/templates 不进指纹**：这两类每次请求从磁盘直读，改完不必重启即生效
+（实测：进程 boot 在更早的 commit，而服务出参 hub.js 的 md5 与磁盘逐字节相等）。
+算进去就等于永久假红。
+
+取不到证据一律不肯定声称：boot 指纹为空（进程启动于本机制之前、非 git 环境、拷出来的树）
+⇒ `needs_restart`/`running_matches_head` 给 **None** + `code_stale_reason`，绝不给 False 蒙人。
 """
+import hashlib   # 09-24 内容指纹层需要；本模块原先没有（第一次跑闸门就炸出 NameError）
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -26,6 +40,7 @@ _boot_sha: str = ""
 _boot_mono: float = 0.0
 _boot_wall: Optional[datetime] = None
 _pid: int = 0
+_boot_fp: str = ""   # 启动那一刻运行时文件的内容指纹（09-24 新增）
 
 
 def set_repo(base: Optional[Path]) -> None:
@@ -170,6 +185,124 @@ def matches_head(boot_sha: str, now_sha: str, counts) -> bool:
     return counts["runtime_dirty_files"] == 0 and counts["untracked_code_files"] == 0
 
 
+_fp_cache = {"at": 0.0, "wt": None, "head": None}   # 内容指纹缓存（与 _dirty_cache 同一节奏刷）
+
+
+def runtime_paths(base: Path) -> list:
+    """进指纹的文件清单：只有 `src/**.py`（会被 import 进进程、改了必须重启的那些）。
+
+    刻意**不含** static/ 与 templates/ —— 它们每次请求从磁盘直读，不需要重启。
+    """
+    out = []
+    for p in sorted((base / "src").rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        out.append(p.relative_to(base).as_posix())
+    return out
+
+
+def git_blob_sha(data: bytes) -> str:
+    """按 git 的 hash-object 语义算 blob sha ⇒ 与 `git ls-tree` 给的 objectname 同一坐标系。"""
+    h = hashlib.sha1()
+    h.update(b"blob %d\0" % len(data))
+    h.update(data)
+    return h.hexdigest()
+
+
+def worktree_blobs(base: Path) -> dict:
+    """当前工作区每个运行时文件的 blob sha。读不动（权限/竞态删文件）⇒ 该路径记 "unreadable"，
+    宁可让指纹变化可见，也不静默当成"没改"。"""
+    out = {}
+    for rel in runtime_paths(base):
+        try:
+            out[rel] = git_blob_sha((base / rel).read_bytes())
+        except Exception:  # noqa: BLE001
+            out[rel] = "unreadable"
+    return out
+
+
+def head_blobs(base: Path) -> Optional[dict]:
+    """HEAD 里同批文件的 blob sha（一条 ls-tree 拿全，**不** cat-file 读历史对象）。
+       非 git 环境 / git 不可用 / 超时 ⇒ None（调用方按 fail-closed 处理）。"""
+    if not base or not _git_dir(Path(base)):
+        return None
+    import subprocess
+    try:
+        # ★不用 `--format`：git 的 --format 不解释 	（实测输出成字面 "src/a.py\tb917..."），
+        #   按真 tab 切会全部跳过 ⇒ head_fp 永远为空 ⇒ running_matches_head 永远"不可判定"，
+        #   而且长得像"设计如此"。默认输出 `mode type sha	path` 里的 tab 是真的（cat -A 见 ^I）。
+        r = subprocess.run(["git", "-C", str(base), "ls-tree", "-r", "HEAD", "--", "src"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:  # noqa: BLE001
+        return None
+    if r.returncode != 0:
+        return None
+    return _parse_ls_tree(r.stdout)
+    return out
+
+
+STALE_UNKNOWN_REASON = ("boot 内容指纹不可用（进程启动于本机制之前，或不在 git 环境里）"
+                       "⇒ 需下次重启后才可判，这里不给 False 蒙人")
+
+
+def _parse_ls_tree(text: str) -> dict:
+    """解析 `git ls-tree -r HEAD -- src` 的**默认输出**：`mode type sha	路径`。
+
+    只收 blob + `.py` + 排除 `__pycache__`。分隔符必须是真 tab —— git 的 `--format` 不解释
+    `	`（实测输出字面 "src/a.py\tb917..."），那种写法会让本函数返回 {}，从而让
+    running_matches_head 永远"不可判定"且看起来像设计如此（09-24 实测抓到过）。
+    """
+    out = {}
+    for line in (text or "").splitlines():
+        if "	" not in line:
+            continue
+        meta, path = line.split("	", 1)
+        parts = meta.split()
+        if len(parts) != 3:
+            continue
+        _mode, typ, sha = parts
+        if typ != "blob" or not path.endswith(".py") or "__pycache__" in path:
+            continue
+        out[path] = sha
+    return out
+
+
+def needs_restart(boot_fp: str, wt_fp: str, head_fp: str) -> Optional[bool]:
+    """真"需要重启"：boot 时的运行时字节 != 当前工作区字节。
+
+    返回 None = 不可判定（没有 boot 指纹），**绝不**因为 commit 指针动了就报 True。
+    """
+    if not boot_fp:
+        return None
+    if not wt_fp:
+        return None          # 当前工作区指纹也拿不到 ⇒ 同样不可判定，不猜
+    return wt_fp != boot_fp
+
+
+def running_matches_head(boot_fp: str, head_fp: str) -> Optional[bool]:
+    """肯定式声称：跑着的字节内容 == HEAD 的内容。缺任一证据 ⇒ None（不可虚报）。"""
+    if not boot_fp or not head_fp:
+        return None
+    return boot_fp == head_fp
+
+
+def content_fp(blobs) -> str:
+    """把 {路径: blob sha} 压成一个短指纹。**顺序无关**（排序后拼接），空清单 ⇒ ""。"""
+    if not blobs:
+        return ""
+    h = hashlib.sha1()
+    for k in sorted(blobs):
+        h.update(("%s\0%s\n" % (k, blobs[k])).encode())
+    return h.hexdigest()[:12]
+
+
+def fp_age_s() -> Optional[int]:
+    if _fp_cache["wt"] is None and _fp_cache["at"] == 0.0:
+        return None
+    import time as _t
+    return int(_t.monotonic() - _fp_cache["at"])
+
+
 def _run_status(base):
     """跑一次 git status。失败/超时 ⇒ None（调用方按 fail-closed 处理）。"""
     import subprocess
@@ -197,6 +330,11 @@ def refresh(base: Optional[Path] = None) -> Optional[dict]:
     lines = _run_status(root)
     counts = None if lines is None else _interpret_status(lines)
     _dirty_cache.update(at=_t.monotonic(), counts=counts)
+    # 内容指纹与脏度同节奏刷新（都在 to_thread 里，绝不在 /health 请求路径上算）
+    try:
+        _fp_cache.update(at=_t.monotonic(), wt=worktree_blobs(root), head=head_blobs(root))
+    except Exception:  # noqa: BLE001  指纹拿不到就报 None，不影响脏度字段
+        _fp_cache.update(at=_t.monotonic(), wt=None, head=None)
     return counts
 
 
@@ -216,11 +354,14 @@ def dirty_age_s() -> Optional[int]:
 
 def boot(base: Optional[Path] = None) -> dict:
     """服务启动时调用：记下启动那一刻的 sha 与时钟。"""
-    global _boot_sha, _boot_mono, _boot_wall, _pid
+    global _boot_sha, _boot_mono, _boot_wall, _pid, _boot_fp
     import time as _t
     if base is not None:
         set_repo(Path(base))
     _boot_sha = head_sha()
+    # ★记的是**启动那一刻工作区字节**的指纹，不是 commit 指针。这样"带未提交改动重启、
+    #   之后再提交"就不会被误报成 stale（09-24 改语义的全部动机）。
+    _boot_fp = content_fp(worktree_blobs(Path(_repo))) if _repo else ""
     _boot_mono = _t.monotonic()
     _boot_wall = datetime.now(timezone.utc)
     _pid = __import__("os").getpid()
@@ -238,10 +379,23 @@ def snapshot(probe_dirty: bool = True) -> dict:
     now = head_sha()
     import time as _t
     uptime = int(_t.monotonic() - _boot_mono) if _boot_wall else 0
+    wt_fp = content_fp(_fp_cache["wt"]) if _fp_cache.get("wt") else ""
+    head_fp = content_fp(_fp_cache["head"]) if _fp_cache.get("head") else ""
+    # 三条正交判据：需不需要重启 / 跑的是不是 HEAD 的内容 / sha 只作溯源
+    nr = needs_restart(_boot_fp, wt_fp, head_fp)
+    rmh = running_matches_head(_boot_fp, head_fp)
+    reason = "" if nr is not None else STALE_UNKNOWN_REASON
     out = {
-        "git_sha_boot": short(_boot_sha),
+        "git_sha_boot": short(_boot_sha),        # ↓ 这两个自 09-24 起**只是溯源信息**
         "git_sha_now": short(now),
-        "code_stale": is_stale(_boot_sha, now),
+        "code_fp_boot": _boot_fp or None,
+        "code_fp_worktree": wt_fp or None,
+        "code_fp_head": head_fp or None,
+        "needs_restart": nr,
+        "running_matches_head": rmh,
+        "code_stale_reason": reason or None,
+        "code_stale": bool(nr),        # 兼容别名：不可判定按 False 报，但 reason 里写明
+        "code_fp_age_s": fp_age_s(),
         "boot_at": _boot_wall.astimezone(timezone.utc).isoformat(timespec="seconds") if _boot_wall else "",
         "uptime_s": uptime,
         "pid": _pid,
@@ -255,4 +409,6 @@ def snapshot(probe_dirty: bool = True) -> dict:
                           "untracked_code_files": None})
     out["dirty_age_s"] = dirty_age_s()
     out["code_matches_head"] = matches_head(_boot_sha, now, counts)
+    # 同一件事的内容指纹版：优先给指纹版结论，sha 版保留一版做兼容对照
+    out["code_matches_head_content"] = rmh
     return out

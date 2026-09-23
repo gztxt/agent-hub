@@ -209,10 +209,10 @@ function termDetach() {
 
 /* TERM_TOKEN 鉴权（后端强制校验）：首次用终端时 prompt 一次存 localStorage，之后 header+query 双带 */
 function termToken() {
-  let t = localStorage.getItem('hub.term.token');
+  let t = lsGet('hub.term.token');
   if (!t) {
     t = prompt('请输入终端鉴权 TERM_TOKEN（也可在右上角「设置」查看后一键应用）') || '';
-    if (t) localStorage.setItem('hub.term.token', t);
+    if (t) lsSet('hub.term.token', t);
   }
   return t;
 }
@@ -221,7 +221,7 @@ function termHeaders(extra) {
 }
 
 function wsUrl(path) {
-  const t = localStorage.getItem('hub.term.token');
+  const t = lsGet('hub.term.token');
   const sep = path.includes('?') ? '&' : '?';
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path + (t ? sep + 'token=' + encodeURIComponent(t) : '');
 }

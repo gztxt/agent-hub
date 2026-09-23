@@ -74,14 +74,14 @@ async function openChatSession() {
   box.innerHTML = '';
   chatSessLoad();
   chatCwdLoad();
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) { box.innerHTML = '<div class="hint" style="margin:auto">开始新会话（' + escapeHtml(chatPick) + '）</div>'; return; }
   try {
     const d = await api('/api/sessions/' + encodeURIComponent(sid) + '/messages');
     for (const m of d.messages || []) {
       box.appendChild(renderChatMsg(m));
     }
-  } catch (e) { localStorage.removeItem(sessKey(chatPick)); }
+  } catch (e) { lsRemove(sessKey(chatPick)); }
 }
 
 function renderChatMsg(m) {
@@ -102,8 +102,8 @@ async function chatSend() {
   const me = document.createElement('div');
   me.className = 'msg user'; me.textContent = msg;
   box.appendChild(me); box.scrollTop = box.scrollHeight;
-  let sid = localStorage.getItem(sessKey(chatPick));
-  if (!sid) { sid = Math.random().toString(36).slice(2, 14); localStorage.setItem(sessKey(chatPick), sid); }
+  let sid = lsGet(sessKey(chatPick));
+  if (!sid) { sid = Math.random().toString(36).slice(2, 14); lsSet(sessKey(chatPick), sid); }
   const busy = document.createElement('div');
   busy.className = 'msg assistant'; busy.textContent = '回复中…';
   box.appendChild(busy);
@@ -140,7 +140,7 @@ async function loadChatModels(force) {
     }
   }
   // 当前 agent 默认 model（localStorage 记忆）
-  const saved = localStorage.getItem('hub.model.' + chatPick) || '';
+  const saved = lsGet('hub.model.' + chatPick) || '';
   // 按 vendor 分组
   const groups = (CHAT_MODELS._groups) || {};
   const groupedKeys = Object.keys(groups);
@@ -167,7 +167,7 @@ async function loadChatModels(force) {
   sel.innerHTML = html;
 }
 $('chatModel')?.addEventListener?.('change', e => {
-  localStorage.setItem('hub.model.' + chatPick, e.target.value);
+  lsSet('hub.model.' + chatPick, e.target.value);
 });
 
 /* ── 工作目录（CWD 选择器）── */
@@ -179,7 +179,7 @@ function chatCwdLoad() {
   const a = entityById(chatPick);
   const profCwd = a && a.working_dir;
   // 2) localStorage 历史选择
-  const saved = localStorage.getItem('hub.cwd.' + chatPick) || '';
+  const saved = lsGet('hub.cwd.' + chatPick) || '';
   // 3) 合并去重
   const seen = new Set();
   const list = [];
@@ -196,12 +196,12 @@ function chatCwdCustom() {
   const v = prompt('自定义工作目录（绝对路径）', cur);
   if (v && v.trim()) {
     $('chatCwd').value = v.trim();
-    localStorage.setItem('hub.cwd.' + chatPick, v.trim());
+    lsSet('hub.cwd.' + chatPick, v.trim());
     toast('已设 cwd: ' + v.trim(), 'ok');
   }
 }
 $('chatCwd')?.addEventListener?.('change', e => {
-  localStorage.setItem('hub.cwd.' + chatPick, e.target.value);
+  lsSet('hub.cwd.' + chatPick, e.target.value);
 });
 
 /* ── 会话管理 ── */
@@ -209,7 +209,7 @@ let CHAT_SESSIONS = [];
 async function chatSessLoad() {
   const sel = $('chatSessList');
   if (!sel) return;
-  const cur = localStorage.getItem(sessKey(chatPick)) || '';
+  const cur = lsGet(sessKey(chatPick)) || '';
   try {
     const d = await api('/api/sessions?agent_id=' + encodeURIComponent(chatPick) + '&limit=30');
     CHAT_SESSIONS = d.sessions || [];
@@ -225,12 +225,12 @@ async function chatSessLoad() {
   } catch (e) { /* ignore */ }
 }
 function chatSessNew() {
-  localStorage.removeItem(sessKey(chatPick));
+  lsRemove(sessKey(chatPick));
   openChatSession();
   toast('已开新会话', 'ok');
 }
 async function chatSessRename() {
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) return toast('当前无会话', 'err');
   const cur = CHAT_SESSIONS.find(s => s.id === sid);
   const title = prompt('新标题', (cur && cur.title) || '');
@@ -246,17 +246,17 @@ $('chatSessList')?.addEventListener?.('change', async e => {
   const v = e.target.value;
   if (v === '__new__') { chatSessNew(); return; }
   if (!v) return;
-  localStorage.setItem(sessKey(chatPick), v);
+  lsSet(sessKey(chatPick), v);
   openChatSession();
 });
 // T7：删除当前会话（后端 DELETE /api/sessions/{id} 连同消息一并清理）
 async function chatSessDel() {
-  const sid = localStorage.getItem(sessKey(chatPick));
+  const sid = lsGet(sessKey(chatPick));
   if (!sid) return toast('当前无会话', 'err');
   if (!confirm('删除当前会话 ' + sid.slice(0, 8) + ' 及其全部消息？不可恢复。')) return;
   try {
     await api('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
-    localStorage.removeItem(sessKey(chatPick));
+    lsRemove(sessKey(chatPick));
     openChatSession();
     toast('会话已删除', 'ok');
   } catch (e) { toast(e.message, 'err'); }
