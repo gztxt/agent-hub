@@ -12,7 +12,7 @@
   T5 无 token 时必须被拒（HTTP 401 / WS 4401），证明鉴权没被改动削弱
 
 跑法：cd ~/agent-hub && venv/bin/python tests/verify_term_roundtrip.py
-      env：HUB_BASE（默认 http://127.0.0.1:3102）
+      env：HUB_BASE（默认 http://127.0.0.1:3199，即影子实例；要打生产显式指 :3102）
 token 只从 .env 读，绝不打印、绝不落盘。
 """
 import json
@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 AG = Path(__file__).resolve().parents[1]
-BASE = os.getenv("HUB_BASE", "http://127.0.0.1:3102")
+BASE = os.getenv("HUB_BASE", "http://127.0.0.1:3199")   # 默认影子；打生产需显式覆盖
 FAILS = []
 
 

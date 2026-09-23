@@ -62,7 +62,33 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
   `blocked_by_account` 不占预算也不重烧；假卡/坏卡连首次都不给。预算**跳重启不失忆**（`tries` 随 state 落盘）
 - 根因另记：探针默认 `RT_MODEL=agnes/agnes-2.0-flash` 是 CCR **免费池成员** ⇒ 按共享配置军规第 4 条
   必然周期性失效（本裁定只封住重试风暴，未动模型选择；选稳定模型 ID 另需在线清单取证）
-- 验证：`tests/test_vitals_retry.py` 17 条（全量 48 条）+ `tests/verify_rt_budget.py` 真 CLI A/B 实测
+- 验证：`tests/test_vitals_retry.py` 17 条（全量 97 条 = L0 76 + L1 21，见下「测试分层」）+ `tests/verify_rt_budget.py` 真 CLI A/B 实测
+
+### Manager LLM 模型 ID 修正（v0.13.5，2026-09-23，经用户批准）
+
+- 原 `.env`：`MANAGER_LLM_MODEL=anthropic/openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`。三处不对：
+  ① 该 ID **不在** FCC `GET /v1/models` 的 22 条清单里（FCC 用下划线 `open_router/`，`openrouter/` 是 CCR 写法，
+     两者互不通用）；② FCC 对**任意** bogus ID 都回 200（实测连 `this/does-not-exist-xyz` 也 200）
+     ⇒ 写死的 ID 并不证明选中了那个模型；③ 带 `:free` ⇒ 违反共享配置军规第 4 条，
+     且 `fcc-refresh-free.sh` 每天 12:30 重排兜底链。DB 里 09-06 的 25 条
+     `HTTP 400: All target providers failed` 是该路由历史上真失败过的旧证据。
+- 现值：`tokenrouter/qwen3.8-flash`（清单内、非 free、与 FCC 自身 `MODEL` 及 `src/config.py:42` 默认一致）。
+- 验证：走 `src/llm.chat_tools_loop` 真工具环 ⇒ `thought→toolcall→toolresult→thought→answer`，
+  取回约定标记 `HUBMGR-7731`（6.8s）。回滚：`.env.bak-20260923_100120-fix-manager-model`。
+
+### 测试分层与推前闸门（v0.13.5，2026-09-23）
+
+- 三层：**L0 hermetic 76** / **L1 host 21** / **L2 live 6 份探针**；口径唯一真相源 `tests/tiers.py`，
+  用法与理由见 `tests/README.md`。旧口径只有一个 `Ran 71 OK`，其中相当一部分断言的是
+  「这台 NAS 恰好存在的目录形态」，换机必红 ⇒ 文档里"加个 GitHub Actions 跑 pytest"不成立
+  （仓内无 `pytest`/`ruff`/`requirements-dev.txt`，全仓 stdlib `unittest`）。
+- `bash scripts/run_tests.sh hermetic-clean` 把 HOME 换成空目录真模拟干净 runner：L0 76 例全绿、**跳过 0**。
+  `scripts/run_tier.py` 把「L0 出现 SKIP」判为 FAIL(退出码 2)——否则被 skipTest 蒙过的用例在
+  干净 runner 上等于零覆盖却报绿。
+- `bash scripts/prepush.sh`：照工作区 36 号文档 §4b 五步推前闸门 + 测试闸，**只报路径不报值**；
+  默认不推送（加 `--push` 才推）。埋雷仓实测 4 项 FAIL、输出明文命中 0 次。
+  **未装 git hook**（会影响同仓并行的其他会话）；要长期生效自行
+  `ln -sf ../../scripts/prepush.sh .git/hooks/pre-push`。
 
 ### 自证与生命周期收口（v0.13.5，2026-09-23）
 
@@ -92,8 +118,7 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 ## API
 
 ```
-GET  /health                          POST /api/manager/chat        {message,session_id?}
-GET  /api/agents                      POST /api/agents/{id}/chat    {message,session_id?}
+GET  /health                          POST /api/agents/{id}/chat    {message,session_id?}
 GET  /api/agents/{id}                 POST /api/agents/{id}/chat/stream (SSE)
 POST /api/agents/detect  {dir}        GET  /api/sessions | /api/sessions/{id}/messages
 POST /api/agents         {dir,name?}  GET  /api/ports

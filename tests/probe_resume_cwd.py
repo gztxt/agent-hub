@@ -1,6 +1,6 @@
 """「不同会话进对应目录」的生产验收探针（只读取 + 起/销自己的会话）。
    跑法：cd ~/agent-hub && TOKEN=$(grep -m1 '^TERM_TOKEN=' .env | cut -d= -f2-) \\
-           venv/bin/python tests/probe_resume_cwd.py [http://127.0.0.1:3102]
+           venv/bin/python tests/probe_resume_cwd.py [http://127.0.0.1:3199]
    判据：① API 回执 session.cwd == 历史条目自己的 cwd
         ② /proc/<子进程>/cwd 实测 == 同一个值（不信回执，问内核）
         ③ 记录目录已不存在的会话 → 回退画像目录，且 pty 仍能起（不能起死）"""
@@ -11,7 +11,9 @@ import time
 import urllib.error
 import urllib.request
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:3102"
+# 默认打影子实例：本探针会**真建终端会话**，默认指生产会在生产里拉起 pty。
+# 要打生产请显式传参或设 HUB_BASE=http://127.0.0.1:3102（并自行确认 term_sessions 为 0）。
+BASE = sys.argv[1] if len(sys.argv) > 1 else os.getenv("HUB_BASE", "http://127.0.0.1:3199")
 TOKEN = os.environ["TOKEN"]
 HDR = {"x-term-token": TOKEN, "Content-Type": "application/json"}
 FAILS = []

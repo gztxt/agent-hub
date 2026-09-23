@@ -1,7 +1,7 @@
 """v0.13.3 终端配色端到端渲染验证（CDP / headless chromium；只读探针，不改任何状态）。
 
 跑法：cd ~/agent-hub && venv/bin/python tests/verify_term_theme.py
-      环境变量：HUB_BASE（默认 http://127.0.0.1:3102）、CDP_PORT（默认 9333）
+      环境变量：HUB_BASE（默认 http://127.0.0.1:3199，即影子实例）、CDP_PORT（默认 9333）
 逐条打 PASS/FAIL；退出码非 0 = 有 FAIL。
 
 为什么必须开浏览器，而不是 curl 一下 CSS 就算验过：
@@ -23,7 +23,7 @@ import urllib.request
 from urllib.parse import quote as _q
 
 PORT = int(os.getenv("CDP_PORT", "9333"))
-BASE = os.getenv("HUB_BASE", "http://127.0.0.1:3102")
+BASE = os.getenv("HUB_BASE", "http://127.0.0.1:3199")   # 默认影子；打生产需显式覆盖
 FAILS = []
 
 # 期望深底板：templates/index.html 的 --term-* token（2026-09-22 用户裁定，参考 grok 原生观感）

@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────┐
 │            Agent Hub（智管）                         │
-│              Python FastAPI + Vue 3                 │
+│         Python FastAPI + 原生 JS（无构建）          │
 │              端口 :3102 (0.0.0.0)                   │
 ├─────────────────────────────────────────────────────┤
 │  Dashboard    │  Agent List  │  Chat  │  Memory  │
@@ -67,7 +67,7 @@
 | 层 | 技术 | 版本 |
 |----|------|------|
 | 后端 | Python FastAPI | 0.104+ |
-| 前端 | Vue 3 + Vite | 3.4+ |
+| 前端 | 原生 JS（`static/hub.js`，无框架无构建）+ 本地 vendor xterm.js/fit.js | - |
 | 数据库 | SQLite | 内置 |
 | 异步 | asyncio + httpx | - |
 | 部署 | 直接运行 | :3102 |
