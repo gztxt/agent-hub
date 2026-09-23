@@ -556,11 +556,25 @@ function termWriteReplay(raw) {
   const gate = [];
   try {
     /* CSI 的私有前缀走独立派发表（注册 id 用 prefix 字段，写成 params 不生效——实测踩过）：
-       \x1b[c \x1b[>c（DA1/DA2）、\x1b[6n \x1b[5n \x1b[?6n（DSR）。
-       实测漏掉 `?6n` 就会往 pty 吐一串 `?26;118R`。 */
-    for (const id of [{ final: 'c' }, { prefix: '>', final: 'c' },
+       \x1b[c \x1b[>c \x1b[?c（DA1/DA2/**DA3**）、\x1b[6n \x1b[5n \x1b[?6n（DSR）。
+       实测漏掉 `?6n` 就会往 pty 吐一串 `?26;118R`。
+       DA3（\x1b[?c）顺手也注册了，但要说清：grep 本仓 vendor 的 xterm 5.5，
+       final:"c" 只注册了 primary 与 secondary 两个（{prefix:\"?\",final:\"c\"} **不存在**），
+       所以在这个版本上 DA3 查询不会被作答 —— 这一条是**版本升级保险**，
+       不是本次乱码的根因（原计划把它当根因，实测证伪）。 */
+    for (const id of [{ final: 'c' }, { prefix: '>', final: 'c' }, { prefix: '?', final: 'c' },
                       { final: 'n' }, { prefix: '?', final: 'n' }])
       gate.push(term.parser.registerCsiHandler(id, () => true));
+    /* DCS 这一类是本地实测补上的：原先整个闸门只管 CSI/OSC，漏了 DECRQPS。
+       `ESC P $ q "q ESC \`（保护属性）与 `ESC P $ qr ESC \`（滚动区）都会被作答。
+       实测（tests/verify_replay_gate.py，真代码抽取 + chromium，xterm 5.5 本仓 vendor）：
+         不设防 ⇒ onData 收到 "\x1bP1$r0\"q" 与 "\x1bP1$r1;10r" 两个包
+         注册后 ⇒ 两包消失，而对照组 \x1b[?6n 照常作答（不是把解析器整个闷掉）
+       这些应答灌进 pty 后回显成 `P1$r0"q` / `P1$r1;10r`，与用户报的
+       「白屏时夹带一串数字字母乱码」同形 —— 是 v0.12.4 那道闸门没覆盖完的分支。
+       线序陷阱：中间码只有 `$`。多一个空格 intermediates 就变成 "$ "，压根匹配不上
+       处理器，会得出"DECRQPS 不会作答"的假结论（本探针第一版就是这么错的）。 */
+    gate.push(term.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, () => true));
     // OSC 只在「是查询」时吞（带 ? 才是问，带颜色值是设色，不能误杀）
     for (const code of TERM_QUERY_OSC)
       gate.push(term.parser.registerOscHandler(code, s => String(s).includes('?')));

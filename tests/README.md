@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 76 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py` | 手动指定 base-url 单跑；不被 `discover -p "test_*.py"` 收进来 | 6 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（例外：`verify_replay_gate.py` 要的是 **chromium** 而非服务） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 7 |
 
 ## 怎么跑
 
@@ -50,4 +50,34 @@ venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（97 
 改前 :3197   观看者A 实收 30 / 观看者B 实收 90（共 120 条被劈开，集合互斥）  → FAIL
 改后 :3199   观看者A、B 各 120 且 A-B=[] B-A=[]；hb 回执 {"type":"hb","t":…}   → PASS
 静态闸门     .bak 200→404；/static/../static_evil/secret.txt 200(CANARY)→404；304 现带 Vary
+```
+
+## 前端解析层的缺陷只能拿真浏览器测：`verify_replay_gate.py`
+
+`test_*.py` 跑在 node/venv 里，看不见 xterm 的**自动应答**行为。这类缺陷的真实形状：
+回放帧里夹着上一个 TUI 发过的终端查询，xterm 替终端作答，答案顺 `onData` 灌进 pty，
+shell 不认就原样回显 —— 用户看到的是「白屏 + 一串数字字母乱码」。
+
+这个探针有三条硬规定，缺一条它就会给出假绿灯：
+
+1. **抽真代码，不抄示例**：用正则从 `static/hub.js` 里原样抽出 `TERM_QUERY_OSC` 与
+   `function termWriteReplay(){…}` 拼进测试页。谁把 DCS 那行删了探针就红；
+   手抄一份「我以为的实现」则删真代码也照样绿。
+   （抽取按**第 0 列的 `}`** 收尾，不做花括号配对 —— 注释里含 `{prefix:"?",final:"c"}`，
+   朴素配对会被注释里的 `}` 提前闭合，截到看不见 DCS 那行，第一版就栽在这。）
+2. **对照组必须在同一份产物里**：先不设防写一次（期望**有**应答包），再经闸门写一次
+   （期望**无**）。只有"红绿同时在场"才排除掉"解析器被别的东西闷掉了"这种假改善。
+3. **线序按字节而不是按文档**：DECRQPS 的中间码只有一个 `$`；照文档写成 `DCS $ q`
+   （带空格）时 intermediates 变成 `"$ "`，压根匹配不上处理器，
+   于是会得到「xterm 不答 DECRQPS」的**假结论** —— 本探针第一版就是这么错的，
+   是它自己的 FAIL 把真代码里被覆盖丢失的那行暴露出来。
+
+```
+$ venv/bin/python tests/verify_replay_gate.py
+  对照组（不设防）xterm 回了：  "P1$r0"q\"  "P1$r1;10r\"  "[?1;1R"
+  实验组（经 termWriteReplay）回了： （空）
+  PASS  对照组确实会作答（DECRQPS 两类都答）   [实得 2 个 DCS 应答包]
+  PASS  对照组 DSR 也作答（证明 onData 通路活着）
+  PASS  实验组零应答（闸门真的吞掉了）   [实得 0 包：[]]
+  全部通过 ✅   退出码 0
 ```
