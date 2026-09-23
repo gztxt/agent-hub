@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（09-23） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 93 |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 12 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 119 |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 24 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中 4 只只需 chromium 不需服务、3 只两者都要，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 14 |
 
 ## 怎么跑
 
@@ -83,7 +83,11 @@ $ venv/bin/python tests/verify_replay_gate.py
 ```
 
 
-## 浏览器探针（四个）：前端解析层的缺陷只有真引擎能作证
+## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
+
+> 计数口径：上面表格里的 14 是**文件数**（09-23 实测，旧写的 12 已漂）。
+> 其内 4 只走“抽函数 + 本地最小页”（不需服务），4 只走“真页面 CDP”（需服务），
+> 有重叠 ⇒ 不拿一个数字兼两个口径。
 
 共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
 
@@ -100,6 +104,14 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `verify_term_heal_viewport.py` | 白屏自愈按**缓冲区绝对行**数空行：`getLine(0)` 是 scrollback 最老一行，有历史时读到的是早已滚出屏幕的内容 ⇒ 判"画面不空"⇒ **自愈在长会话里永不触发** | 60 行历史 + ED2 清屏：旧口径 blank=**0**（被误抑制） | 同一现场新口径 blank=10/10（会自愈）；无 scrollback 时两口径一致（防回归） |
 | `verify_stream_decode.py` | 每帧 `new TextDecoder()`：UTF-8 多字节被 WS 帧劈开时**必然**吐 U+FFFD；`[?1003h` 跨帧时两帧都匹配不上正则 ⇒ `termMouseLive` 记不下 ⇒ 滚轮上报被闸门吃掉 | '中文终端输出…' 在第 2 字节劈帧 → `'??文终端输出…'`；DECSET 跨帧逐帧扫 → `termMouseLive=false` | 共用解码器 + 24 字符尾巴 → 逐字相等 / `true` |
 | `verify_key_focus_guard.py` | 全局 keydown 无 target 守卫：终端里敲 `/` 被 `preventDefault` + 焦点跳搜索框；`term.focus()` 无条件执行 ⇒ 手机自动挂载必弹软键盘 | 真事件冒泡到 document 且 `e.target.closest('.xterm')` 命中（**证明旧写法必劫持**） | `keyTargetIsEditing` 8 个输入位 true / 2 个普通元素 false；`termFocusWanted` 只认 `user:true` |
+| `verify_sidebar_narrow.py` | 线上五场景：窄屏首屏不得被 `position:fixed` 白底抽屉接走视口中心；**首屏解析不得写 localStorage**；跳断点（拖宽/转屏）必须自动重算；一档一键不得互渗（2026-09-23 白板事故本体） | —（红-绿对照在下一只） | A~E 5/5 PASS：390px `collapsed=true w=48 centerHit=div.hs`；桌面 `w=240` 不回退 |
+| `verify_sidebar_redgreen.py` | 同上缺陷的**红基线**：旧实现按内容从 git 回溯（不钉 HEAD、不读 `.bak`），只经 CDP `Fetch` 喂给本 headless 客户端 ⇒ 生产零影响 | 改前字节 + 污染值 + 390px：`collapsed=false w=236 pos=fixed` 且中心被抽屉接走 | 同条件下生产真字节：`collapsed=true w=48` 中心不受影响 |
+
+### 真页面探针的另一条硬规定：CDP 必须有常驻读线程
+
+`_cdp_min.py` 的存在理由：第一版探针在 `Page.reload` 后 `sleep(3)` 再取结果，期间到达的
+`Fetch.requestPaused` **没人应答** ⇒ 被拦资源永远 pending ⇒ 页面吊死、量到半成品。
+“事件随时会插进来”是 CDP 的基本事实，不能拿“请求-应答”的直觉去写。
 
 对应的**结构性**护栏（不需要浏览器、进 L0 常规跑）在 `tests/test_term_focus_policy.py`：
 它守的是"位置"而非"存在" —— `term.focus()` 只能出现在 `termFocusWanted(opts)` 之后同一行、
