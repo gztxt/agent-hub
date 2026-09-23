@@ -644,6 +644,7 @@ async def prov_loop():
         await asyncio.sleep(float(os.getenv("HUB_PROV_SEC", "30")))
 
 
+async def vitals_loop():
     """可用心跳慢周期：首轮延后 2s（先让 hub 开接请求），之后每 VITALS_SWEEP_SEC 一轮。
     只跑 L1/L2（which / 文件头 / --version / --help / 端点探活），不碰模型；
     任何异常都不打死循环（否则一次偶发就把菜单永久冻在旧结论上）。"""
