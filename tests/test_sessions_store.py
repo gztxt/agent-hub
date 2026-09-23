@@ -20,6 +20,19 @@ import tiers                                   # noqa: E402
 from src import sessions_store as ss      # noqa: E402
 
 CWD = "/fs/1000/ftp/技术文档"
+
+
+def _first_live(items):
+    """取第一条「记录里的目录现在还在盘上」的历史条目，没有则 None。
+
+    本机历史里会混进指向临时目录的会话：子代理在 /tmp 影子树上起过真 pty，
+    那些 claude/grok/qoder/jcode 会话被各自 app 落进了自己的 sessions 目录，
+    而影子树随后被清理掉。此时 session_cwd() 的**正确**行为是回退 fallback，
+    而不是等于记录里那个已死的目录 —— 原先三个用例无条件比等于，与同文件
+    test_missing_recorded_dir_falls_back 断言的回退分支直接矛盾（09-23 实测
+    被一次正常清理踩爆 6 例）。
+    """
+    return next((i for i in items if i.get("cwd") and Path(i["cwd"]).is_dir()), None)
 # 【偏差 D3】计划这一例写错了 cwd：7491a32f… 实测只存在于
 # ~/.qoder/projects/-home-gztxt-agent-hub/7491a32f-….jsonl（cwd=/home/gztxt/agent-hub），
 # 而 CWD 目录下 qoder 实测 0 条 *.jsonl（仅 4 个无正文骨架）⇒ known_ids("qoder", CWD) 为空，
@@ -215,14 +228,23 @@ class TestJcodeWindow(unittest.TestCase):
         """session_cwd() 是 pty 起目录与 qoder -w 的唯一来源，必须与条目自带 cwd 一致，
            且绝不返回一个不存在的目录（否则 pty 直接起不来）"""
         for a in ("grok", "claude", "jcode", "qoder"):
-            items = ss.list_history(a, CWD, 3)["items"]
+            items = ss.list_history(a, CWD, 5)["items"]
             if not items:
                 continue
-            i = items[0]
+            i = _first_live(items) or items[0]
             with self.subTest(agent=a):
                 c = ss.session_cwd(a, i["id"], "FALLBACK")
-                self.assertEqual(c, i["cwd"], "反查与会话记录不一致")
-                self.assertTrue(Path(c).is_dir(), f"返回了不存在的目录：{c}")
+                if Path(i["cwd"]).is_dir():
+                    self.assertEqual(c, i["cwd"], "反查与会话记录不一致")
+                    self.assertTrue(Path(c).is_dir(), f"返回了不存在的目录：{c}")
+                else:
+                    self.assertEqual(c, "FALLBACK",
+                                     f"记录目录 {i['cwd']} 已消失时必须回退，不得吐死路径")
+                    # 回退分支的"绝不返回不存在目录"必须拿**真存在的 fallback** 验，
+                    # 拿字面量 "FALLBACK" 去 is_dir() 是在断一个无意义的命题
+                    real = ss.session_cwd(a, i["id"], CWD)
+                    self.assertEqual(real, CWD, "回退时必须给调用方给的 fallback")
+                    self.assertTrue(Path(real).is_dir(), f"回退结果不在盘上：{real}")
 
 
 @tiers.host_only              # 依赖真盘；同一条「形状合法但盘上没有必须拒」在
@@ -249,27 +271,36 @@ class TestResumeExists(unittest.TestCase):
     def test_qoder_argv_uses_session_cwd(self):
         """qoder 是唯一把目录写进 argv 的（-w）：跳目录后必须给会话自己的目录，
            拿画像 cwd 硬套等于「在技术文档里打开 agent-hub 的工程」"""
-        items = ss.list_history("qoder", CWD, 1)["items"]
+        items = ss.list_history("qoder", CWD, 5)["items"]
         if not items:
             self.skipTest("qoder 无可续条目")
-        it = items[0]
+        it = _first_live(items) or items[0]
         argv = ss.resume_argv("qoder", it["id"], CWD)
         self.assertEqual(argv[0], "qodercli")
-        self.assertEqual(argv[argv.index("-w") + 1], it["cwd"], "-w 必须是会话自己的目录")
+        self.assertEqual(argv[argv.index("-w") + 1],
+                         it["cwd"] if Path(it["cwd"]).is_dir() else CWD,
+                         "-w 必须是会话自己的目录（其目录已消失时给 fallback，即调用方 CWD）")
         self.assertEqual(argv[-2:], ["-r", it["id"]])
 
     def test_missing_recorded_dir_falls_back(self):
         """记录目录已被删时必须退回 fallback——否则 pty 起在不存在的目录里直接死，
            而这条分支在真仓库里没有自然样本（探针只能 SKIP），故用 mock 钉住。"""
         from unittest import mock
-        items = ss.list_history("jcode", CWD, 1)["items"]
+        items = ss.list_history("jcode", CWD, 5)["items"]
         if not items:
             self.skipTest("jcode 无可续条目")
-        sid, want = items[0]["id"], items[0]["cwd"]
+        live = _first_live(items)
+        it = live or items[0]
+        sid, want = it["id"], it["cwd"]
         self.assertTrue(want, "样本需自带目录")
         with mock.patch.object(Path, "is_dir", return_value=False):
             self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), "FALLBACK")
-        self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), want, "未打桩时必须给真目录")
+        if live:
+            self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), want, "未打桩时必须给真目录")
+        else:
+            # 盘上没有活目录样本时，本例仍钉住硬约束：绝不返回不存在的路径
+            self.assertEqual(ss.session_cwd("jcode", sid, "FALLBACK"), "FALLBACK",
+                             f"记录目录 {want} 已消失时必须回退")
 
     def test_absent_id_still_rejected(self):
         with self.assertRaises(ValueError):
