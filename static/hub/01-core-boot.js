@@ -1,5 +1,11 @@
 /* Agent Hub v0.3.0 教室视图 — 复刻 Agent_Manager(Dashboard/Manager/Memory/Ports) 交互语义
    v0.10 chat: 动态模型选择器 + 工作目录 + 会话管理（服务 claude/jcode）*/
+/* ── 断点唯一真源（不变量 3）─────────────────────────────────────
+   全站只允许这一处 `matchMedia('(max-width: 767px)')`。放在 01 是因为 05 的顶层
+   语句也要读它，而 `window.isNarrow` 要等 initSidebar 跑起来才被赋值。 */
+const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
+const hubNarrow = () => HUB_NARROW_MQ.matches;
+
 'use strict';
 
 /* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────

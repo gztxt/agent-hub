@@ -60,7 +60,7 @@ function navMode(m) {
      1 一档一键，宽屏的偏好永不污染窄屏；
      2 加载不写盘，只有真点过才算偏好（污染路径从根上断掉）；
      3 断点只有一个定义（matchMedia 767px，与 CSS 同值），跨断点必重算。 */
-const mqNarrow = window.matchMedia('(max-width: 767px)');
+const mqNarrow = HUB_NARROW_MQ;   // 断点唯一真源在 01（不变量 3）
 const sidebarPrefKey = () => mqNarrow.matches ? 'hub.sidebar.narrow' : 'hub.sidebar.wide';
 
 /* 纯判定，单列成顶层函数是为了让探针能原样抽出**真代码**跑（手抄即假绿）。

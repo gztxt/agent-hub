@@ -236,7 +236,12 @@ hub.js 当场死亡 ⇒ 菜单空白 + initSidebar 从未执行 + 抽屉停在�
 闸门：tests/test_tdz_order.py（静态扫同类顺序违规；红基线取修复前的 git 版本）。 */
 let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
-let histOpen = localStorage.getItem('hub.hist') || '';
+// ★窄屏首屏**不恢复**上次的历史展开项。`hub.hist` 是按 origin 隔离的存量，一旦参与
+// 首屏判定，同一个动作在不同入口（局域网 IP / Tailscale IP）就会走出不同结果：
+// 09-23 23:3x 四格实测 —— hist 空 ⇒ 点 agent 名称只展开列表、侧栏不收起；
+// hist='claude' ⇒ 点名称即收起侧栏。两个 origin 各自一致、彼此不同 ⇒ 差异纯属存量，
+// 与网络/Tailscale 无关。闸门：tests/verify_collapse_symmetry.py。
+let histOpen = hubNarrow() ? '' : (localStorage.getItem('hub.hist') || '');
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
 
 function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff

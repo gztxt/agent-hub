@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 136 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 26 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（19 只里 12 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（20 只里 13 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
 
 ## 怎么跑
 
@@ -85,8 +85,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 
 ## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
 
-> 计数口径：上面表格里的 19 是**文件数**（09-23 22:4x 实测）。
-> 其内 7 只走“抽函数 + 本地最小页”（不需服务），9 只需服务在跑（含 `3102`），
+> 计数口径：上面表格里的 20 是**文件数**（09-23 23:5x 实测）。
+> 其内 7 只走“抽函数 + 本地最小页”（不需服务），10 只需服务在跑（含 `3102`），
 > 有重叠 ⇒ 不拿一个数字兼两个口径。
 
 共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
@@ -111,6 +111,16 @@ $ venv/bin/python tests/verify_replay_gate.py
 8. **浮层必须唯一且可逃生**：同一时刻最多一个抽屉是 `on`；任何导航都要清掉抽屉；遮罩只有一个
    计算出口，且点它一次关干净（手机上没有 ESC，点空白是唯一逃生路径）。
 
+9. **分档行为不得依赖「按 origin 隔离的存量」**：凡是按视口档位生效的交互，其
+   结果不得因 `localStorage` 里的历史值而改变——同一份代码在局域网 IP 与
+   Tailscale IP 上是**两个不同的 origin，各有一套 storage**，一旦首屏判定读取存量，
+   用户就会看到「浏览器正常 / APP  abnormal」这类**看起来像网络问题**的分叉。
+   09-23 23:3x 四格实测（两个 origin × `hub.hist` 有/无）证明差异 100% 来自存量、
+   与 Tailscale 无关；修法见闸门 `verify_collapse_symmetry.py`：窄屏首屏**不恢复**
+   `hub.hist`，宽屏照旧记忆。写代码时的口径：判定用 `hubNarrow()`（断点唯一真源
+   在 `01-core-boot.js`，不变量 3），**不要**再自己 `matchMedia` 或比 `innerWidth`。
+
+
 | 探针 | 钉住的缺陷 | 对照组实测 | 实验组实测 |
 |---|---|---|---|
 | `verify_replay_gate.py` | 回放历史时替终端作答查询码：ring 里躺着的 `DECRQPS`（`DCS $ q`）会被 xterm 应答并**注回 pty**，成为可见垃圾。改前的闸门只列 DA1/DA2，**DA3  `{prefix:'?',final:'c'}` 在本机 vendor 版里根本不存在**（grep 实测），真正漏的是 DCS 族 | 直接 write → xterm 回 2 个 DCS 包 + DSR | 经 `termWriteReplay` → **0 包** |
@@ -124,6 +134,7 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `verify_page_fallback.py` | `go()` 直接吃 `localStorage.getItem('hub.page')`，而这个值可能是**跨版本已改名的页名**（09-20 界面统一改过一批）⇒ 认不出时 `toggle('on', s.id === 'page-' + page)` 把**所有页面一起关掉** ⇒ 正文整块空白、页内零个可点元素。而 localStorage **按 origin 隔离** ⇒ 同一份代码『局域网那个源正常、Tailscale 那个源空白』 | 9 个取值里 7 个（dashboard/manager/agents/watch/terminal/乱写/overview）→ `section.page.on=(无)`、可点数=0 | 修后 9/9 全部落到 `page-classroom` 且有可点元素 ⇒ 退出码 0 |
 | `test_tdz_order.py`(L0) + `verify_hist_tdz.py` | **顶层 IIFE 早于 `let` 声明 ⇒ TDZ**：`histBootstrap()` → `histLoad()` → `renderNav()` 读到 1861 行才声明的 `_navHtml` ⇒ hub.js 当场死亡（菜单空白 + `initSidebar` 从未执行 + 抽屉停在展开态遮住正文）。门闩 = `histOpen ∈ TERM_HIST_AGENTS` **且 localStorage 有 `hub.term.token`** ⇒ 手机那份有、浏览器那份没有 ⇒ 这才是「浏览器正常/APP 异常」「局域网正常/Tailscale 异常」的真判据 | 红：**用 `Fetch.fulfillRequest` 把修复前的 HEAD 版喂进同一页面**（不往生产 static 目录写文件），逐字符复现 `JS异常 @ hub.js:1907` + `navTree子项=0` + `collapsed=false` | 绿 14/14，且主动调 `histLoad('claude')` 返回 DRIVE-OK、服务端确有 `/api/term/history` 命中（第一版只注入 localStorage 就报 8/8 绿，被日志否证为**空转**） |
 | `verify_diag_panel.py` | 端侧自检面板 `?diag=1` **自身失效**就等于永远拿不到端侧事实（本机对手机/APP 零探针是长期缺口）。给它做红绿：绿=如实报『异常清单: 无』；红=**同一条 CDP 连接**掐断 `hub.js` | 红况面板精确报「资源加载失败 …/hub.js」+ `go函数=undefined` + `navTree子项=0` + **`侧栏collapsed=false`（证明 JS 不跑时抽屉停在展开态遮住正文）** | 绿 8/8 + 红 6/6 + 无 `?diag` 时面板不存在 ⇒ 17/17 |
+| `verify_collapse_symmetry.py` | 窄屏「点 agent 名称后是否自动收起侧栏」**依赖 `hub.hist` 存量** ⇒ 同一动作在局域网 / Tailscale 两个 origin 上分叉（用户报「Tailscale 好像不行」） | 改前四格矩阵：hist 空→`collapsed=False`、hist='claude'→`collapsed=True`（两 origin 各自一致、彼此不同） | 改后四格全 `collapsed=False`，对称性成立 ✅ |
 
 ### 真页面探针的另一条硬规定：CDP 必须有常驻读线程
 

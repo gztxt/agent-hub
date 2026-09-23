@@ -36,45 +36,7 @@ USE_RE = re.compile(r"([A-Za-z_$][\w$]*)\s*\(")
 IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
 
-def strip_comments(src):
-    """去注释但**保留行号**（把注释字符换成空格）。
-
-    不这么做会被自己的注释骗到：v0.13.11 给 `_navHtml` 写的警示注释里有顶格的
-    `histLoad() → renderNav()` 字样，闸门一度把它当成顶层调用而误报。
-    """
-    out, i, n, q = [], 0, len(src), ""
-    while i < n:
-        c = src[i]
-        if q:
-            out.append(" " if c == "\n" else c)
-            if c == "\\":
-                out.append(src[i + 1] if i + 1 < n else "")
-                i += 2
-                continue
-            if c == q:
-                q = ""
-            i += 1
-            continue
-        if c in "\"'`":
-            q = c
-            out.append(c)
-            i += 1
-            continue
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            while i < n and src[i] != "\n":
-                out.append(" ")
-                i += 1
-            continue
-        if c == "/" and i + 1 < n and src[i + 1] == "*":
-            while i < n and not (src[i] == "*" and i + 1 < n and src[i + 1] == "/"):
-                out.append("\n" if src[i] == "\n" else " ")
-                i += 1
-            out.append("  ")
-            i += 2
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out)
+from _js_min import strip_comments   # 见该文件 docstring：承诺与实现必须一致
 
 
 def _selfcheck_strip():

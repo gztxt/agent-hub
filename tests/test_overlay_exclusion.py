@@ -16,6 +16,8 @@ import re
 import subprocess
 import sys
 import unittest
+
+from _js_min import strip_comments
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -110,7 +112,10 @@ class TestOverlayInvariants(unittest.TestCase):
     # ── ⑥ 断点单一真源（沿用 09-23 侧栏事故的教训，别再造第二个 767）──
     def test_breakpoint_single_source(self):
         """只数 **代码里的 matchMedia 调用点**（注释里引用 CSS 不算第二源）。"""
-        sites = re.findall(r"""matchMedia\(\s*['\"]\(max-width:\s*767px""", self.hub)
+        # ★承诺"注释里引用 CSS 不算第二源"，实现就必须真去注释（09-23 我在注释里写了
+        # 一句 `(max-width: 767px)` 就被数成两源 ⇒ 判据与 docstring 不符属闸门缺陷）。
+        js_code = strip_comments(self.hub)
+        sites = re.findall(r"""matchMedia\(\s*['\"]\(max-width:\s*767px""", js_code)
         self.assertEqual(len(sites), 1,
                          "JS 里有 %d 个 767 断点定义 ⇒ 与 CSS 会各自漂移" % len(sites))
         self.assertNotIn("innerWidth < 768", self.hub, "又造了一个平行断点判据")

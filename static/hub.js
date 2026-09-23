@@ -1,5 +1,11 @@
 /* Agent Hub v0.3.0 教室视图 — 复刻 Agent_Manager(Dashboard/Manager/Memory/Ports) 交互语义
    v0.10 chat: 动态模型选择器 + 工作目录 + 会话管理（服务 claude/jcode）*/
+/* ── 断点唯一真源（不变量 3）─────────────────────────────────────
+   全站只允许这一处 `matchMedia('(max-width: 767px)')`。放在 01 是因为 05 的顶层
+   语句也要读它，而 `window.isNarrow` 要等 initSidebar 跑起来才被赋值。 */
+const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
+const hubNarrow = () => HUB_NARROW_MQ.matches;
+
 'use strict';
 
 /* ── v0.7.3 统一图标：全站图形唯一出口 ──────────────────────────────
@@ -1792,7 +1798,12 @@ hub.js 当场死亡 ⇒ 菜单空白 + initSidebar 从未执行 + 抽屉停在�
 闸门：tests/test_tdz_order.py（静态扫同类顺序违规；红基线取修复前的 git 版本）。 */
 let _navHtml = '';   // 上一次渲染的菜单 HTML，用于跳过无变化的重写
 const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder'];   // 与后端 SESSION_STORES 同集合
-let histOpen = localStorage.getItem('hub.hist') || '';
+// ★窄屏首屏**不恢复**上次的历史展开项。`hub.hist` 是按 origin 隔离的存量，一旦参与
+// 首屏判定，同一个动作在不同入口（局域网 IP / Tailscale IP）就会走出不同结果：
+// 09-23 23:3x 四格实测 —— hist 空 ⇒ 点 agent 名称只展开列表、侧栏不收起；
+// hist='claude' ⇒ 点名称即收起侧栏。两个 origin 各自一致、彼此不同 ⇒ 差异纯属存量，
+// 与网络/Tailscale 无关。闸门：tests/verify_collapse_symmetry.py。
+let histOpen = hubNarrow() ? '' : (localStorage.getItem('hub.hist') || '');
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
 
 function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
@@ -1979,7 +1990,7 @@ function navMode(m) {
      1 一档一键，宽屏的偏好永不污染窄屏；
      2 加载不写盘，只有真点过才算偏好（污染路径从根上断掉）；
      3 断点只有一个定义（matchMedia 767px，与 CSS 同值），跨断点必重算。 */
-const mqNarrow = window.matchMedia('(max-width: 767px)');
+const mqNarrow = HUB_NARROW_MQ;   // 断点唯一真源在 01（不变量 3）
 const sidebarPrefKey = () => mqNarrow.matches ? 'hub.sidebar.narrow' : 'hub.sidebar.wide';
 
 /* 纯判定，单列成顶层函数是为了让探针能原样抽出**真代码**跑（手抄即假绿）。

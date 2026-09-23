@@ -61,9 +61,10 @@ def page_target(port, tries=40):
 
 
 class CDP:
-    def __init__(self, ws_url, on_paused=None):
+    def __init__(self, ws_url, on_paused=None, on_event=None):
         self.ws = _connect(ws_url, max_size=None)
         self.on_paused = on_paused
+        self.on_event = on_event
         self.n = 0
         self.res = {}
         self.cv = threading.Condition()
@@ -81,6 +82,11 @@ class CDP:
                 with self.cv:
                     self.res[m["id"]] = m
                     self.cv.notify_all()
+            elif m.get("method") == "Page.javascriptDialogOpening" and self.on_event:
+                # 原生 alert/confirm/prompt 会挂住 renderer ⇒ 任何 send 都会超时。
+                # 09-23 探针就是栽在 termToken() 的口令框上（Input.dispatchMouseEvent 无应答）。
+                threading.Thread(target=self.on_event, args=(m["method"], m.get("params") or {}),
+                                 daemon=True).start()
             elif m.get("method") == "Fetch.requestPaused" and self.on_paused:
                 threading.Thread(target=self.on_paused, args=(m["params"],), daemon=True).start()
 
