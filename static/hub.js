@@ -49,6 +49,7 @@ function toast(msg, cls) {
   el.textContent = msg;
   $('toast').appendChild(el);
   setTimeout(() => el.remove(), 4200);
+  return el;   // v0.13.6：返回节点，供「链路恢复后收掉同一条提示」用（老调用方忽略返回值，行为不变）
 }
 
 function escapeHtml(s) {
@@ -483,6 +484,44 @@ function embedCopyUrl() {
 
 let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = null;
 
+/* ── 终端链路自愈（v0.13.6 P1-1）：应用层心跳 + 退避重连 + 显式失败 ──────────────
+   实测缺陷（09-23 取证，非推断）：termConnect() 只有一个 new WebSocket，全仓零重连、
+   零心跳、零用户可见失败——手机切网络 / hub 重启后 socket 以 1006 静默死透，画面冻在
+   最后一帧，唯一恢复手段是手动点行1 芯片。这就是本仓库反复被烧的「静默不可用」。
+   规矩：任何带重试的组件必须 心跳 + 超时 + 显式失败，三者齐了才算自愈。
+
+   协议（服务端 term.py 已实现，09-23 工作树）：
+     客户端 → {"type":"hb"}   服务端 → {"type":"hb","t":<epoch float>}
+     任何 hb 回执都重置看门狗；回执本身不进画面（display 一律忽略）。
+   关闭码分诊：4404/4410 = 会话在服务端已不存在 ⇒ 永不重连（重连只会复活用户已经离开的会话）；
+     4401 = 未鉴权 ⇒ 停手并给出「重新应用口令」的路径（拿同一个错口令重连只会永远 4401）；
+     1005/1006/1011/1012 等传输码 = 链路断了但 pty 多半还活着 ⇒ 自动重连，
+     服务端会保留会话到 idle TTL 并回放 ring（最近 64KB），所以重连后画面自己就回来了。
+   退避 1/2/4/8/16/30s 封顶后每 30s 继续试，绝不静默放弃；只有 hb 真往返成功才回到 1s 档。 */
+const TERM_HB_SEND_MS = 15000;    // 每 15s 发一帧 {"type":"hb"}
+const TERM_HB_DEAD_MS = 30000;    // 距上一次 hb 回执 ≥30s ⇒ 判定半开，主动断开进重连
+const TERM_RC_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];   // 封顶 30s，之后一直 30s
+let termHbTimer = null;           // 全仓唯一「发帧」interval（同一时刻最多 1 个）
+let termHbDeadline = null;        // 全仓唯一「判死」一次性定时器（每次回执重新武装）
+let termHbLastReply = 0, termHbLastSend = 0, termHbBaseline = 0;
+let termRcTimer = null;           // 待触发的重连（同一时刻最多 1 个）
+let termRcAttempt = 0;            // 退避档位；仅 hb 往返成功后清零
+let termInputWarned = false;      // 「输入没送达」只提示一次，不按 keystroke 刷屏
+let termToastEl = null;           // 本模块自己那条 toast，链路恢复时收掉
+
+/* 链路提示走既有 toast()（不改 index.html/CSS 的前提下唯一可见出口）；
+   同一时刻只留最新一条，重连成功即清除，不留「正在重连」的僵尸提示。 */
+function termToast(msg, cls) {
+  termToastClear();
+  const el = toast(msg, cls);
+  if (el && el.nodeType) termToastEl = el;
+}
+function termToastClear() {
+  if (termToastEl) { try { termToastEl.remove(); } catch (e) {} termToastEl = null; }
+}
+/* 缓冲区里也留一行：toast 4.2s 自动消失，画面历史必须能事后追责 */
+function termNotice(s) { if (term) term.write('\r\n\x1b[90m' + s + '\x1b[0m'); }
+
 /* ── 鼠标上报闸门（v0.8.1）───────────────────────────────────────────────
    症状：挂上嵌入式终端后，鼠标在终端里划过就在屏幕上刷出一串 35;29;1m35;26;3m35;22;4m… 的乱码。
    根因（实测，非推断）：WS 建立瞬间服务端会 send_bytes(sess.ring) 回放最近 64KB 输出
@@ -537,8 +576,19 @@ function termScanMouseMode(text) {
   }
 }
 
+/* 输入不许静默丢弃：现在的做法是「socket 没开就把 keystroke 吃掉」，用户对着冻屏打字
+   而毫无反馈——正是静默不可用的另一半。改成显式失败 + 立刻确认重连在排队。
+   不跨重连排队回放：半途敲下的一行被打进另一个上下文（比如重连后已经是别的程序）比丢更糟。 */
+function termInputLost() {
+  /* 输入进不去通常意味着 onclose 已排过重连；这里只补漏（连接在飞时不打扰它） */
+  if (termSid && !termRcTimer && termWs && termWs.readyState !== 0) termScheduleReconnect(termWs);
+  if (termInputWarned) return;
+  termInputWarned = true;
+  termToast('终端未连接，输入不会被送达（不排队重放，避免打进错误上下文）', 'err');
+}
+
 function termSend(data) {
-  if (!termWs || termWs.readyState !== 1) return;
+  if (!termWs || termWs.readyState !== 1) { termInputLost(); return; }
   let payload = data;
   if (!termMouseLive) {
     payload = data.replace(TERM_MOUSE_REPORT_RE, '');
@@ -571,6 +621,110 @@ function termRepaint(force) {
   termHealNow();   // 隐藏期间攒下的「回放只剩半屏」在这里补做
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) termRepaint(); });
+
+/* ── 心跳 / 看门狗（每个 socket 最多一条心跳定时器）────────────────────────────
+   半开连接（手机切网络的典型形态）表现为 TCP 还在、WS readyState 仍是 1、但永不回数据：
+   只有应用层往返能识破它，所以判据是「回执账本」而不是 readyState。 */
+function termSockOpen(ws) { return !!ws && ws === termWs && ws.readyState === 1; }
+function termIsHb(text) {
+  if (!text || text.charCodeAt(0) !== 123) return false;   // 不以 '{' 开头的帧不去解析，省掉每帧 try
+  try { return JSON.parse(text).type === 'hb'; } catch (e) { return false; }
+}
+function termHbStop() {
+  if (termHbTimer) { clearInterval(termHbTimer); termHbTimer = null; }
+  if (termHbDeadline) { clearTimeout(termHbDeadline); termHbDeadline = null; }
+  termHbLastReply = 0; termHbLastSend = 0; termHbBaseline = 0;
+}
+function termHbSend(ws) {
+  termHbLastSend = Date.now();
+  try { ws.send('{"type":"hb"}'); } catch (e) { /* 正在关：交给 onclose */ }
+}
+/* 两个定时器各司其职，而不是一个轮询 tick：发帧按 15s 节流，判死按「回执 +30s」精确定点。
+   后台标签页会被浏览器节流，所以判死不能只靠这个定时器：另有一条按账本补算的唤醒路（termLinkWake）。 */
+function termHbArm() {
+  if (termHbDeadline) clearTimeout(termHbDeadline);
+  termHbDeadline = setTimeout(termHbTimeout, TERM_HB_DEAD_MS);
+}
+function termHbStart(ws) {
+  termHbStop();                       // 先收上一条线的，绝不留下第二个定时器
+  termHbBaseline = Date.now();        // 还没有回执时，以「本连接建立时刻」为账本基准
+  termHbSend(ws);                     // 连上立刻首发：一次往返即确认链路，也尽早把画面判活
+  termHbArm();
+  termHbTimer = setInterval(termHbSendTick, TERM_HB_SEND_MS);
+}
+function termHbSendTick() {
+  const ws = termWs;
+  if (!ws) { termHbStop(); return; }                     // 已解绑：心跳自己收口，不等 close 事件
+  if (ws.readyState !== 1) return;                       // closing/closed：由 onclose 进重连
+  termHbSend(ws);
+}
+function termHbTimeout() {
+  termHbDeadline = null;
+  const ws = termWs;
+  if (!ws) { return; }
+  if (ws.readyState !== 1) return;                       // 已经断了：close 事件在负责重连
+  if (Date.now() - (termHbLastReply || termHbBaseline) < TERM_HB_DEAD_MS) { termHbArm(); return; }  // 回执刚来过：重新武装，不误杀
+  termHbFail(ws);
+}
+function termHbReply(ws) {
+  if (!termSockOpen(ws)) return;
+  termHbLastReply = Date.now();
+  termRcAttempt = 0;        // 退避只在这里清零：真往返过 = 链路确实通了
+  termInputWarned = false;
+  termToastClear();         // 「正在重连」那条提示到此结案
+  termHbArm();              // 每一次回执都把 30s 看门狗拨回原点
+}
+function termHbFail(ws) {
+  termHbStop();
+  termNotice('[心跳超时：' + Math.round(TERM_HB_DEAD_MS / 1000) + 's 无回执，判定链路半开——主动断开重连]');
+  try { ws.close(); } catch (e) {}
+  /* 半开时浏览器可能迟迟不派发 onclose，重连不能干等它；termRcTimer 有则不重复排 */
+  termScheduleReconnect(ws);
+}
+
+/* ── 退避重连（全仓唯一待触发重连；任何新连接/解绑都先作废它）─────────────────── */
+function termRcCancel() { if (termRcTimer) { clearTimeout(termRcTimer); termRcTimer = null; } }
+
+function termScheduleReconnect(ws) {
+  if (ws && termWs !== ws) return;        // 迟到的旧事件不驱动重连
+  if (termRcTimer) return;                // 同一条线只许排一次（防重入：visibility/online/close 同时进来）
+  if (!termSid) return;                   // 已解绑 / 会话已结束 ⇒ 不复活用户已经离开的会话
+  const delay = TERM_RC_DELAYS[Math.min(termRcAttempt, TERM_RC_DELAYS.length - 1)];
+  termRcAttempt++;
+  termNotice('[连接中断——自动重连中，第 ' + termRcAttempt + ' 次（' + Math.round(delay / 1000) + 's 后）]');
+  termToast('终端连接中断，正在重连（第 ' + termRcAttempt + ' 次）', 'err');
+  termRcTimer = setTimeout(termRcFire, delay);
+}
+
+function termRcFire() {
+  termRcTimer = null;
+  if (!termSid) return;                                   // 等待期间用户已解绑/切实体
+  const ws = termWs;
+  if (ws && ws.readyState === 1 && termHbTimer) return;   // 期间已被别的入口接活
+  /* 重连前先向服务端对一次账。必须对账的实测理由：4404（会话不存在）是服务端在 accept
+     之前 close 的，浏览器拿不到那个业务码，只能看到握手被拒→1006（与“链路断了”同签名）。
+     不对账就会对着一个已经不存在的 sid 无限重连——正是「陈旧的重试环复活用户已经离开的会话」。
+     拿不到清单（live=null，接口错）时不下结论，照旧重连；只有服务端明确说「清单里没它了」才停。 */
+  termRefreshList().then(live => {
+    if (!termSid) {                     // 对账结果：会话已不在清单（termRefreshList 顺手解了绑）
+      termToast('终端会话已结束，请重新打开', 'err');   // 那条路径原本只往缓冲区写一行，补上可见失败
+      return;
+    }
+    termConnect(termSid, termSidAgent, { reconnect: true });
+  });
+}
+
+/* 回前台 / 网络恢复：iOS 与安卓后台会冻掉定时器，切回前台那一刻按账本补算一次。
+   只走唯一的重连出口，且靠 termRcTimer 去重 ⇒ 不会开出第二个 socket。 */
+function termLinkWake() {
+  if (!termSid) return;
+  const ws = termWs;
+  if (!ws || ws.readyState === 0) return;                 // 无绑定 / 连接在飞：交给它自己的事件
+  if (ws.readyState !== 1) { termScheduleReconnect(ws); return; }
+  if (termHbTimer && Date.now() - (termHbLastReply || termHbBaseline) >= TERM_HB_DEAD_MS) termHbFail(ws);
+}
+window.addEventListener('online', termLinkWake);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) termLinkWake(); });
 
 /* 连接中反馈：终端区顶部一条 2px 走马灯。不往缓冲区写字，回放到了自然被盖掉。 */
 function termConnecting(on, ws) {
@@ -634,6 +788,11 @@ function ensureTerm() {
 }
 
 function termDetach() {
+  termRcCancel();          // 用户显式离开 ⇒ 任何在排的重连一律作废，不许把会话拖回来
+  termHbStop();
+  termRcAttempt = 0;
+  termInputWarned = false;
+  termToastClear();
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   termSid = null; termSidAgent = null;
   termConnecting(false);   // 解绑后 close 事件会被 termWs!==ws 守卫吃掉，连接中状态在这儿自己收
@@ -659,7 +818,13 @@ function wsUrl(path) {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path + (t ? sep + 'token=' + encodeURIComponent(t) : '');
 }
 
-function termConnect(sid, agent) {
+function termConnect(sid, agent, opts) {
+  /* opts.reconnect：由 termRcFire 起的自动重连。目前与普通连接同路（都清屏 + 靠 ring 回放补画面），
+     留着这个入参是为了「重连场景」与「用户点芯片」在后续分诊时不必再改调用方签名。 */
+  const o = opts || {};
+  termRcCancel();          // 新连接开始 ⇒ 作废旧的一切实重连计划（防第二个 socket / 防漏定时器）
+  termHbStop();            // 心跳定时器全仓唯一，换绑即回收
+  termInputWarned = false;
   const oldAlive = !!termWs && termWs.readyState === 1;   // 关旧线之前先记下它还活着
   if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
   /* 只有「回到同一条会话且旧 socket 还活着」才保留画面。旧 socket 已死时画面里挂着
@@ -673,6 +838,7 @@ function termConnect(sid, agent) {
   if (row) row.querySelectorAll('.sess-item').forEach(x => x.classList.toggle('cur', x.dataset.sid === sid));
   termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
   termHealPending = false; // 上一条会话攒下的补画请求作废，新连接的回放自己会再挂
+  if (!o.reconnect) termToastClear();   // 用户主动接的线：收掉「正在重连」提示；自动重连则留到 hb 往返成功才结案
   /* 保留画面时别清屏：清屏 = 先给用户一屏白底，而服务端只回放 ring 里最近 64KB
      （整屏帧早被增量帧挤出去）⇒ 补不满就一直白着，就是用户报的现象。 */
   if (!keepScreen) term.clear();
@@ -686,6 +852,8 @@ function termConnect(sid, agent) {
   ws.onmessage = ev => {
     if (termWs !== ws) return;
     const raw = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
+    /* 心跳回执只喂看门狗，不进画面、也不占「首帧=回放」那次判定 */
+    if (typeof raw === 'string' && termIsHb(raw)) { termHbReply(ws); return; }
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
@@ -696,13 +864,29 @@ function termConnect(sid, agent) {
     term.write(raw);
     termScanMouseMode(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
   };
-  ws.onopen = () => { termConnecting(false, ws); term.focus(); termRepaint(true); };
+  /* 重连成功后必须跑的仍是原来那三件事（收连接中灯 + 聚焦 + force 重绘报行列），
+     之后额外挂上这条线自己的心跳。 */
+  ws.onopen = () => { termConnecting(false, ws); term.focus(); termRepaint(true); termHbStart(ws); };
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
     termConnecting(false, ws);
-    const gone = ev.code === 4404 || ev.code === 4410;  // 已退出/不存在 → 明确提示并刷新列表
-    term.write('\r\n\x1b[90m' + (gone ? '[该会话已结束或不存在——点行1 芯片重连，或按「新会话」]' : '[连接断开——点行1 芯片重连或新建]') + '\x1b[0m');
-    if (gone) { termDetach(); termRefreshList(); }
+    termHbStop();               // 本线心跳随本线收尸；重连成功后由新 socket 重新起一条
+    const code = ev.code;
+    if (code === 4404 || code === 4410) {   // 已退出/不存在 → 明确提示并刷新列表，绝不重连
+      termNotice('[该会话已结束或不存在——点行1 芯片重连，或按「新会话」]');
+      termToast('终端会话已结束，请重新打开', 'err');
+      termDetach(); termRefreshList();
+      return;
+    }
+    if (code === 4401) {                     // 未鉴权：同一个错口令重连只会一直被拒，停手指路
+      termNotice('[鉴权失败（4401）——在「设置」里重新应用 TERM_TOKEN 后再打开终端]');
+      termToast('终端鉴权失败（TERM_TOKEN 不符），已停止重连', 'err');
+      termDetach();
+      return;
+    }
+    // 1005/1006/1011/1012…：链路断了但 pty 多半还在服务端（ring 会回放）⇒ 退避自动重连
+    term.write('\r\n\x1b[90m' + '[连接断开——点行1 芯片重连或新建]' + '\x1b[0m');
+    termScheduleReconnect(ws);
   };
   termWs = ws;
 }
