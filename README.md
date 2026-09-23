@@ -40,6 +40,16 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 - 点条目＝终端里 `--resume <id>` 续聊；命令只出自后端模板，客户端最多传一个过正则且实盘存在的 id
 - 顶栏会话芯片同步改中文标题：pid 反查拿不到时走 `resume_of` 直查盘上标题（jcode 只在退出时写 last_pid，codex/qoder 无 pid 登记表）
 
+### 嵌入式终端配色：原生黑底白字（v0.13.3，2026-09-22 裁定 / 09-23 落地）
+
+- 用户裁定：所有需要终端界面的 agent 一律参考 grok 原生终端观感——**黑底白字**，不要浅色底
+- 落点是**单点**：`templates/index.html` 的 `--term-*` token（全站唯一 xterm 实例只读这套 token，`hub.js` 不写死色值），
+  改一处即 claude / grok / hermes / codex / pi / jcode 同步生效，天然满足「所有终端界面统一」
+- `hub.js` 的 `T()` 兜底值同步改深色：token 缺失（CSS 未加载）时**也不回退浅色**，避免白底闪现
+- ANSI 16 色取 xterm.js 默认板（与 grok 原生终端同族），黑底上可读；原浅底那套低饱和板已作废
+- 取证（09-23 线上实吐）：`--term-bg:#000000 --term-fg:#ffffff --term-cursor:#ffffff --term-sel:#b0d0ff40`，
+  且 `hub.js` 兜底 `T('bg','#000000')/T('fg','#ffffff')`
+
 ## 访问
 
 - 本地: http://127.0.0.1:3102/ ｜ 局域网: http://192.168.5.102:3102/ ｜ Tailscale: http://100.117.232.62:3102/

@@ -612,13 +612,14 @@ function ensureTerm() {
     fontFamily: T('font', 'monospace'),
     cursorStyle: 'bar', cursorBlink: true, scrollback: 5000,
     theme: {
-      background: T('bg', '#fcfcfd'), foreground: T('fg', '#24272b'),
-      cursor: T('cursor', '#24272b'), cursorAccent: T('bg', '#fcfcfd'),
-      selectionBackground: T('sel', '#11111126'),
-      black: T('black'), red: T('red'), green: T('green'), yellow: T('yellow'),
-      blue: T('blue'), magenta: T('magenta'), cyan: T('cyan'), white: T('white'),
-      brightBlack: T('bblack'), brightRed: T('bred'), brightGreen: T('bgreen'), brightYellow: T('byellow'),
-      brightBlue: T('bblue'), brightMagenta: T('bmagenta'), brightCyan: T('bcyan'), brightWhite: T('bwhite')
+      /* 兜底值与 token 真值同步为深色（黑底白字），token 缺失时也不回浅色 */
+      background: T('bg', '#000000'), foreground: T('fg', '#ffffff'),
+      cursor: T('cursor', '#ffffff'), cursorAccent: T('bg', '#000000'),
+      selectionBackground: T('sel', '#b0d0ff40'),
+      black: T('black', '#7f7f7f'), red: T('red', '#cd3131'), green: T('green', '#0dbc79'), yellow: T('yellow', '#e5e510'),
+      blue: T('blue', '#2472c8'), magenta: T('magenta', '#bc3fbc'), cyan: T('cyan', '#3b8ea6'), white: T('white', '#e5e5e5'),
+      brightBlack: T('bblack', '#666666'), brightRed: T('bred', '#f14c4c'), brightGreen: T('bgreen', '#23d18b'), brightYellow: T('byellow', '#f1f14c'),
+      brightBlue: T('bblue', '#3c85cc'), brightMagenta: T('bmagenta', '#d73fd7'), brightCyan: T('bcyan', '#49c2d6'), brightWhite: T('bwhite', '#ffffff')
     }
   });
   termFit = new window.FitAddon.FitAddon();
