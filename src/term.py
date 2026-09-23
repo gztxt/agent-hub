@@ -38,6 +38,8 @@ if not TERM_TOKEN:
     print(f"[term] TERM_TOKEN 未配置，已自动生成随机 token（前4位={TERM_TOKEN[:4]}，len={len(TERM_TOKEN)}）")
 IDLE_TTL_S = int(os.getenv("TERM_IDLE_TTL", "2700"))
 MAX_SESSIONS = 8
+# 回收心跳间隔（P0-4）：早先 _reap() 只寄生在 list_sessions() 上，前端一关就没人回收
+REAP_INTERVAL_S = float(os.getenv("TERM_REAP_INTERVAL", "60"))
 
 
 def _check_term_token(provided: str, source: str) -> None:
@@ -232,6 +234,37 @@ def _reap():
             continue
         if time.time() - s.last_io > IDLE_TTL_S:
             s.kill()
+
+
+async def reap_loop():
+    """独立回收心跳（P0-4）。
+
+    缺陷根因（实测）：`_reap()` 全仓唯一调用点是 `list_sessions()`，而 startup 只建了
+    sweep_stale_tasks / vitals_loop 两个后台任务 ⇒ 浏览器一关就再没人调
+    GET /api/term/sessions ⇒ 45min 空闲 TTL 形同虚设、死会话不从 _sessions 摘除，
+    MAX_SESSIONS(8) 被占满后新终端直接 429「开不出来」。
+    回收必须由服务自己按时做，不能依赖有没有人在看。
+    单轮异常不许打死循环 —— 否则又回到「静默不回收」。
+    """
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_S)
+        try:
+            _reap()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[term] reap_loop 异常（下轮重试）：{type(e).__name__}: {e}", flush=True)
+
+
+def alive_count() -> int:
+    """活会话数（自证端点与限流判据共用一个口径，别再各算各的）"""
+    return len([s for s in _sessions.values() if s.alive])
+
+
+def idle_max_s() -> int:
+    """最久没 IO 的活会话闲置秒数（判断 TTL 有没有真的在跑）"""
+    live = [time.time() - s.last_io for s in _sessions.values() if s.alive]
+    return int(max(live)) if live else 0
 
 
 def _attach_reader(sess: Session):

@@ -64,6 +64,27 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
   必然周期性失效（本裁定只封住重试风暴，未动模型选择；选稳定模型 ID 另需在线清单取证）
 - 验证：`tests/test_vitals_retry.py` 17 条（全量 48 条）+ `tests/verify_rt_budget.py` 真 CLI A/B 实测
 
+### 自证与生命周期收口（v0.13.5，2026-09-23）
+
+- **P0-1 修好一个静默三天的 500**：`POST /api/agents/{id}/chat` 自 v0.10.0（commit `2cf96fa`）起每请求必 500
+  —— 那次提交把 `tools` / `repair_mode` 从 `ChatRequest` 删了，调用点还写 `req.tools`（AttributeError）。
+  事故形态最贵：`/health` 全程 200、vitals 全绿，而前端 `hub.js` 恰好只调这个坏端点 ⇒ 直连对话框整条不可用。
+  现回归测 `tests/test_pydantic_attr_drift.py` 用 AST 静态取证（不 import main，避免拉起 lifespan），
+  把「handler 访问模型未声明字段」这一类缺陷全部扫掉。
+- **P0-2 `/health` 能自证跑的是哪份代码**：新增 `git_sha_boot` / `git_sha_now` / `code_stale` / `boot_at` /
+  `uptime_s` / `pid` / `db_ok` / `term_sessions` / `term_idle_max_s`（全 additive，前端 `pollHealth` 只读 `status`）。
+  立项理由即实况：进程报 v0.13.2 而 HEAD 已 v0.13.3，旧口径无从区分「改了没重启」与「跑的是最新」。
+  sha 解析在未初始化（`selfattest.py`）：非 git 环境一律返回空且**不**虚报 stale；取 sha 不 fork 子进程。
+- **P0-3 `agent-hubctl.sh` 交回单一拥有者**：不再生成/采信 `data/agent-hub.pid`，起停一律 `systemctl --user`；
+  任何 kill 前先校 `/proc/<pid>/cmdline` 是不是 hub 本尊（旧版 `kill $(cat pidfile)` 在 PID 复用时会误杀无关进程，
+  工作区里那枚 pidfile 写的 85512 就是个已不存在的陈旧的）；`stop`/`restart` 前读 `/health.term_sessions`，
+  有活终端会话则拒执（shutdown 钩子会 `kill_all()` 连坐），确要承担才 `FORCE=1`。`status` 现在与
+  `systemctl --user is-active` 一致（旧版在服务 active 时错报「❌ 未运行」）。
+- **P0-4 终端回收不再寄生在前端轮询上**：`_reap()` 原唯一调用点是 `list_sessions()`，浏览器一关就没人跑
+  ⇒ 45min 空闲 TTL 形同虚设、`MAX_SESSIONS(8)` 可被占满后新终端直接 429。现 `term.reap_loop()`
+  （`TERM_REAP_INTERVAL`，默认 60s）由 `startup()` 挂后台，单轮异常不致死循环。
+  端侧实测：建会话后**只读 /health**（它不调 `_reap`），TTL=8s 下会话自行归零。
+
 ## 访问
 
 - 本地: http://127.0.0.1:3102/ ｜ 局域网: http://192.168.5.102:3102/ ｜ Tailscale: http://100.117.232.62:3102/

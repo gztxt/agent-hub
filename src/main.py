@@ -51,11 +51,12 @@ import term as term_mod
 import profiles as profiles_mod
 import vitals as vitals_mod
 import embed_proxy as embed_proxy_mod
+import selfattest
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.3"
+VERSION = "0.13.5"
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -219,7 +220,27 @@ def _now() -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port}
+    """自证端点（P0-2）：不只看活没活，还要能看出「跑的是哪份代码」。
+
+    旧口径只回 {status,service,version,port} ⇒ 版本漂移（进程报 0.13.2 / HEAD 已 0.13.3）
+    与「对话端点必 500」这类**静默不可用**全都看不见。
+    新增字段全 additive；前端 pollHealth 只读 status，不会被改坏。
+    code_stale 只兑情报、不改 status：代码改了没重启不等于服务坏了。
+    """
+    try:
+        db.query("SELECT 1 FROM sqlite_master LIMIT 1")
+        db_ok = True
+    except Exception as e:  # noqa: BLE001
+        db_ok = False
+        print(f"[health] db 自检失败：{type(e).__name__}: {str(e)[:120]}", flush=True)
+    out = {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port,
+           "db_ok": db_ok,
+           "term_sessions": term_mod.alive_count(),
+           "term_idle_max_s": term_mod.idle_max_s()}
+    out.update(selfattest.snapshot())
+    if not db_ok:
+        out["status"] = "degraded"
+    return out
 
 
 # ── Agents ────────────────────────────────────────────────────────────
@@ -337,8 +358,6 @@ async def _chat_dispatch(agent_id: str, message: str,
                          session_id: Optional[str] = None,
                          model: Optional[str] = None,
                          cwd: Optional[str] = None,
-                         tools: Optional[bool] = None,
-                         repair_mode: Optional[bool] = None,
                          trace_id: Optional[str] = None) -> Dict:
     import time as _time
     t0 = _time.monotonic()
@@ -390,9 +409,13 @@ async def _chat_dispatch(agent_id: str, message: str,
 async def chat(agent_id: str, request: Request, req: ChatRequest):
     session_id = req.session_id or uuid.uuid4().hex[:12]
     trace_id = request.headers.get("x-trace-id")
+    # P0-1 回归（实测取证）：v0.10.0 commit 2cf96fa 把 tools/repair_mode 从 ChatRequest
+    # 字段表里删了，但调用点仍写 req.tools ⇒ 本端点从 09-20 起每请求必 500
+    # （AttributeError），而 /health 全程 200、vitals 全绿 —— 直连对话框静默不可用三天。
+    # 这两个参数在 v0.10.0 移除 hub-self 工具环后已无实体，**别再往回加**。
+    # 钉死它的测：tests/test_pydantic_attr_drift.py（AST 静态取证，不导 main）
     result = await _chat_dispatch(agent_id, req.message, session_id, req.model,
-                                  cwd=req.cwd, tools=req.tools, repair_mode=req.repair_mode,
-                                  trace_id=trace_id)
+                                  cwd=req.cwd, trace_id=trace_id)
     return {"agent_id": agent_id, "session_id": session_id,
             "message": req.message, "timestamp": _now(), **result}
 
@@ -633,6 +656,8 @@ async def startup():
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
     asyncio.create_task(tasks_mod.sweep_stale_tasks())
     asyncio.create_task(vitals_loop())
+    # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
+    asyncio.create_task(term_mod.reap_loop())
     mcpgw_mod.ensure_schema()
     cronjobs_mod.ensure_schema()
     cronjobs_mod.set_context(
@@ -652,7 +677,9 @@ async def startup():
         except Exception as e:
             print(f"[Agent Hub] 注入代理启动失败（不影响其他功能）：{type(e).__name__}: {e}")
             _embed_proxy = None
-    print(f"[Agent Hub] 启动完成 v{VERSION}，监听 {config.host}:{config.port}")
+    sa = selfattest.boot()   # 记下启动那一刻的 sha，供 /health 判 code_stale
+    print(f"[Agent Hub] 启动完成 v{VERSION} sha={sa['git_sha_boot'] or '?'}，"
+          f"监听 {config.host}:{config.port}")
     print(f"[Agent Hub] CCR: {config.ccr_url} | pi: {config.pi_url} | "
           f"jcode: {config.jcode_url} | TDAI: {config.tdaI_url}")
     print(f"[Agent Hub] LLM（记忆 L2 重建 / DAG 拆解）: {config.manager_llm_base} "
