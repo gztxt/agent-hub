@@ -876,6 +876,11 @@ function wsUrl(path) {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path + (t ? sep + 'token=' + encodeURIComponent(t) : '');
 }
 
+/* 是否该抢焦点：只有用户主动动作（新会话 / 点芯片 / 续聊历史）才聚焦。
+   自动挂载与退避重连一律不抢 —— 手机上那两条路径每次都无条件弹出软键盘
+   （用户描述为「手机一进来键盘就顶着脸」），桌面端则表现为离开页面回来被硬抢焦点。 */
+function termFocusWanted(opts) { return !!(opts && opts.user); }
+
 function termConnect(sid, agent, opts) {
   /* opts.reconnect：由 termRcFire 起的自动重连。目前与普通连接同路（都清屏 + 靠 ring 回放补画面），
      留着这个入参是为了「重连场景」与「用户点芯片」在后续分诊时不必再改调用方签名。 */
@@ -925,7 +930,9 @@ function termConnect(sid, agent, opts) {
   };
   /* 重连成功后必须跑的仍是原来那三件事（收连接中灯 + 聚焦 + force 重绘报行列），
      之后额外挂上这条线自己的心跳。 */
-  ws.onopen = () => { termConnecting(false, ws); term.focus(); termRepaint(true); termHbStart(ws); };
+  ws.onopen = () => { termConnecting(false, ws);
+    if (termFocusWanted(opts)) term.focus();   // 自动挂载/重连不抢焦点、不弹软键盘
+    termRepaint(true); termHbStart(ws); };
   ws.onclose = ev => {
     if (termWs !== ws) return;  // 旧连接的 close 不污染新会话画面
     termConnecting(false, ws);
@@ -954,7 +961,7 @@ async function termNew() {
   try {
     const d = await api('/api/term/sessions', { method: 'POST', headers: termHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ agent_id: chatPick }) });
     toast('已拉起 ' + chatPick + ' 终端会话', 'ok');
-    termConnect(d.session.id, chatPick);
+    termConnect(d.session.id, chatPick, { user: true });
     // 即时可见：不等服务端回写，先把新芯片本地插进去（termConnect 已设 termSid，所以自带 .cur）
     const el = $('termSessList');
     if (el && !el.querySelector('.sess-item[data-sid="' + d.session.id + '"]'))
@@ -966,11 +973,14 @@ async function termNew() {
 /* 芯片模板：行1 内联会话项。v0.13.0 起标签＝历史会话的问题原文（中文），
    取不到标题（刚新建、agent 还没落摘要 / 无 pid 登记表）退显「新会话 MM-DD」。
    字母 sid 只留在 data-sid 里作 DOM 键，用户可见处一律不再出现。 */
+/* 芯片点击的具名入口：内联 onclick 只能走全局作用域，所以在这里统一带上 user:true（点击=用户主动，该聚焦） */
+function termOpenChip(sid, agent) { termConnect(sid, agent, { user: true }); }
+
 function termChipHtml(s) {
   const label = (s.title && s.title.trim()) ? s.title.trim() : ('新会话 ' + hhTime(Math.floor(s.created)));
   return '<span class="sess-item' + (s.id === termSid ? ' cur' : '') + '" data-sid="' + s.id + '">' +
          '<a href="javascript:void(0)" title="' + escapeHtml(label) + '"' +
-         ' onclick="termConnect(\'' + s.id + '\',\'' + s.agent_id + '\')"><span class="s-t">' +
+         ' onclick="termOpenChip(\'' + s.id + '\',\'' + s.agent_id + '\')"><span class="s-t">' +
          escapeHtml(label) + '</span></a>' +
          '<button class="sess-x" title="关闭此会话" aria-label="关闭此会话" ' +
          'onclick="termKillOne(\'' + s.id + '\')">' + ico('x', 'xs') + '</button></span>';
@@ -1026,7 +1036,7 @@ function termAutoAttach(live) {
       /* 已经接在这条会话上就别拆线重连：重连 = 清屏 + 只回放 ring 尾巴，
          用户看到的「离开当前页再回来就白屏」正是这么来的。补一次重绘即可。 */
       if (termSid === last && termWs && termWs.readyState === 1) { termRepaint(); return; }
-      termConnect(last, chatPick);
+      termConnect(last, chatPick);   // 自动挂载：刻意不带 user:true，否则手机一进页面就弹键盘
       return;
     }
     // 确保 detached：切换实体时清除旧绑定，避免显示错误会话
@@ -1703,7 +1713,7 @@ async function startAgent(id) {
     const d = await api('/api/term/sessions', { method: 'POST', headers: termHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ agent_id: id }) });
     toast('已拉起 ' + id + ' 终端', 'ok');
     gotoChat(id, 'term');
-    setTimeout(() => termConnect(d.session.id, id), 100);
+    setTimeout(() => termConnect(d.session.id, id, { user: true }), 100);
   } catch (e) { toast(e.message, 'err'); }
 }
 /* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
@@ -1777,7 +1787,7 @@ async function termResume(agentId, sid) {
       body: JSON.stringify({ agent_id: agentId, session_id: sid }) });
     toast('已在终端里续聊该历史会话', 'ok');
     gotoChat(agentId, 'term');
-    termConnect(d.session.id, agentId);
+    termConnect(d.session.id, agentId, { user: true });
     termRefreshList();
   } catch (e) { toast('续聊失败：' + e.message, 'err'); }
 }
@@ -1986,18 +1996,36 @@ $('cmdInput').addEventListener('keydown', e => {
     if (first && !q) closeCmd(); else if (first) first.click();
   } else if (e.key === 'Escape') closeCmd();
 });
+/* 快捷键不许在"正在输入"的地方劫持按键（改前实测的两种破坏）：
+   · 终端里敲 `/`（路径分隔符，一天几百次）→ preventDefault + 焦点跳搜索框，
+     之后所有输入都进了搜索框，画面看起来像"打字没反应"；
+   · bash 的 Ctrl+K（kill-line）→ 被拿去开命令面板；
+   · vim 的 Esc → 归 pty 的用，不能顺手去关我的浮层。
+   规则：输入位（含 xterm 自己的 textarea）里只放行"搜索框的 Esc 清空"这一条，
+   其余一律 return；非输入位维持原有行为。 */
+function keyTargetIsEditing(e) {
+  const t = e && e.target;
+  if (!t || !t.closest) return false;
+  if (t.closest('.xterm')) return true;
+  const tag = t.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable === true;
+}
 document.addEventListener('keydown', e => {
+  const editing = keyTargetIsEditing(e);
+  if (e.key === 'Escape') {
+    // 终端里的 Esc 原样给 pty；只有搜索框自己认领"Esc 清空"
+    if (editing && !(e.target && e.target.id === 'navSearch')) return;
+    closeDetail();
+    closeSettings();
+    const si = $('navSearch');
+    if (si && si.value) { si.value = ''; renderNav(); return; }
+    return;
+  }
+  if (editing) return;
   if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault();
     $('cmdMask').classList.contains('on') ? closeCmd() : openCmd();
-  } else if (e.key === 'Escape') {
-    closeDetail();
-    closeSettings();
-    // Esc 清空搜索并收起手风琴
-    const si = $('navSearch');
-    if (si && si.value) { si.value = ''; renderNav(); return; }
   } else if (e.key === '/') {
-    // / 聚焦搜索框
     const si = $('navSearch');
     if (si) { e.preventDefault(); si.focus(); si.select(); }
   }
