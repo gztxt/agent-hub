@@ -52,6 +52,7 @@ import profiles as profiles_mod
 import vitals as vitals_mod
 import embed_proxy as embed_proxy_mod
 import selfattest
+import staticguard
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
@@ -130,21 +131,11 @@ if static_path.exists():
 
     @app.get("/static/{file_path:path}")
     async def _static_no_cache(file_path: str, request: Request):
-        f = (static_path / file_path).resolve()
-        # 路径安全：必须在 static_path 下。
-        # 原写法用 `str(f).startswith(str(static_path))` —— 前缀不是目录边界，
-        # 一个名为 `static_backup/` 的**兄弟目录**能完整通过该检查。改用 is_relative_to。
-        if not f.is_relative_to(static_path.resolve()):
-            from fastapi import HTTPException
-            raise HTTPException(404)
-        if not f.is_file():
-            from fastapi import HTTPException
-            raise HTTPException(404)
-        # 只服务真资源（P1-8）：仓里按备份铁律躺着 50+ 个 hub.js.bak-*，此前全部
-        # 可被 HTTP 直取（实测 GET /static/hub.js.bak-20260922_133021-replay-query-gate
-        # → 200 / 88779B）。备份留在磁盘供回滚，但不能从 Web 口读。
-        if ".bak" in f.name:
-            from fastapi import HTTPException
+        # 判据全部下沉到 src/staticguard.py（纯函数）：内联在路由里时，单测无法覆盖
+        # —— import src.main 会触发 lifespan（开真库、起后台任务）。历史三条判据与
+        # 实测红-绿见该模块 docstring。
+        f = staticguard.resolve_serveable(static_path, file_path)
+        if f is None:
             raise HTTPException(404)
         st = f.stat()
         # 与 FileResponse 同一套算法（md5("mtime-size")）⇒ 升级这次不会白掉一轮缓存

@@ -1,0 +1,53 @@
+# tests/ —— 三层口径（唯一真相源：`tests/tiers.py`）
+
+本目录不是"一套测试"，是**三套**，混跑会把"全绿"变成谎报。分层前本仓只有一个数字
+（`Ran 71 tests ... OK`），而其中相当一部分断言的是**这台 NAS 上恰好存在的目录形态**
+—— 换台机器（或干净 CI runner）它们必然红，于是"能不能上 CI"这个问题一直没有答案。
+
+| 层 | 判据 | 换机行为 | 数量（09-23） |
+|---|---|---|---|
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 76 |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py` | 手动指定 base-url 单跑；不被 `discover -p "test_*.py"` 收进来 | 6 |
+
+## 怎么跑
+
+```bash
+bash scripts/run_tests.sh hermetic         # 只 L0，以"零跳过"为闸
+bash scripts/run_tests.sh hermetic-clean   # L0 + 把 HOME 换成空目录 ⇒ 真模拟干净 runner
+bash scripts/run_tests.sh all              # L0 + L1（本机全量）
+bash scripts/run_tests.sh host             # 只 L1
+bash scripts/run_tests.sh probe verify_p1_backend.py http://127.0.0.1:3199
+venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（97 例，L0+L1 混在一起）
+```
+
+强制开关：`HUB_HOST_TESTS=1|0` 覆盖自动探测（探测判据＝上面六个宿主路径是否**全部**存在）。
+
+## 新测试该放哪一层
+
+1. 能用 `tempfile` 造出前提 ⇒ **L0**（首选）。例：`test_staticguard.py` 全部在临时目录里造
+   `static/`、兄弟目录 `static_evil/`、软链、`.bak` 件。
+2. 必须读这台机器的真实仓库 ⇒ **L1**，打 `@tiers.host_only`（class 或 method 都行）。
+3. 需要一个在跑的 hub ⇒ **L2**，命名 `verify_*.py` / `probe_*.py`，`HUB_BASE`/首参给地址，
+   并**自带红-绿对照**（同一份探针打改前/改后两棵树，别只给一个绿灯）。
+
+## 两条硬规矩（都对应过真实事故）
+
+- **不 import `src.main`**：它一 import 就跑 lifespan —— 开真库 `data/agents.db`、起后台
+  探针任务、绑端口。单测碰它等于碰生产数据。需要测路由里的判据时，把判据抽成纯函数
+  （见 `src/staticguard.py`：正是为此从路由里抽出来的）。
+- **不靠 `skipTest` 蒙过 L0**：L0 的 `skip` 在干净 runner 上意味着"这条什么都没测却报绿"。
+  能力探测失败就退化成一条仍然成立的断言（`test_staticguard.py` 里软链两例就是这么写的），
+  或者干脆打上 host 标。
+
+## 为什么 L2 探针是必需的，不是"手工验证"
+
+`test_*.py` 看不见需要两条并发 WS 才显形的缺陷。P1-5 就是例子：`Session.outputs` 曾是
+**单个** `asyncio.Queue`，每条 WS 的 pump 在同一队列上 `get()` ⇒ 桌面 + 手机同看一条会话时
+两个消费者互相偷字节。`verify_p1_backend.py` 对改前/改后两棵影子树的实测：
+
+```
+改前 :3197   观看者A 实收 30 / 观看者B 实收 90（共 120 条被劈开，集合互斥）  → FAIL
+改后 :3199   观看者A、B 各 120 且 A-B=[] B-A=[]；hb 回执 {"type":"hb","t":…}   → PASS
+静态闸门     .bak 200→404；/static/../static_evil/secret.txt 200(CANARY)→404；304 现带 Vary
+```

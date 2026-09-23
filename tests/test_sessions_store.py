@@ -1,5 +1,13 @@
-"""sessions_store 单测：真磁盘只读断言（无网络、无进程、无 mock）。
-   跑法：cd ~/agent-hub && venv/bin/python -m unittest tests.test_sessions_store -v"""
+"""sessions_store 单测 —— 已分层（口径见 tests/tiers.py 与 tests/README.md）：
+   L0 hermetic = 只依赖纯函数/tempfile，干净机器（含 CI runner）上结论必须一致；
+   L1 host     = 断了本机真实仓库形态（~/.grok ~/.claude ~/.jcode ~/.qoder ~/.hermes
+                 ~/.codex 与 /fs 真目录），换机显式 SKIP + 理由，绝不静默通过。
+   跑法：
+     bash scripts/run_tests.sh hermetic   # 只跑 L0，以零跳过为闸
+     bash scripts/run_tests.sh all        # L0 + L1
+     venv/bin/python -m unittest tests.test_sessions_store -v
+   历史：本文件原口径是「真磁盘只读断言（无网络、无进程、无 mock）」—— 口径不变，
+   只是把离不开本机的那部分显式标出来，不让它们冒充全绿。"""
 import json
 import re
 import sys
@@ -7,6 +15,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tiers.py
+import tiers                                   # noqa: E402
 from src import sessions_store as ss      # noqa: E402
 
 CWD = "/fs/1000/ftp/技术文档"
@@ -54,6 +64,7 @@ class TestTable(unittest.TestCase):
 
 
 class TestResumeArgv(unittest.TestCase):
+    @tiers.host_only          # 需要盘上真 id 才能断言（L1）
     def test_good_ids(self):
         self.assertEqual(ss.resume_argv("grok", "01a0c91d-eb84-7130-9767-479821ef336c", CWD),
                          ["grok", "--resume", "01a0c91d-eb84-7130-9767-479821ef336c"])
@@ -72,6 +83,7 @@ class TestResumeArgv(unittest.TestCase):
             ss.resume_argv("pi", "01a0c91d-eb84-7130-9767-479821ef336c", CWD)
 
 
+@tiers.host_only              # 断言本机六家仓库的真实形态 ⇒ 换机不可判定（L1）
 class TestRealStores(unittest.TestCase):
     """把 spec §2 取证矩阵的数字当断言：磁盘形态变了就 FAIL，这正是我们要的信号。"""
 
@@ -156,6 +168,7 @@ class TestLiveTitles(unittest.TestCase):
                     self.assertIsInstance(v, str)
 
 
+@tiers.host_only              # 三个用例里两个要真盘样本 ⇒ 整类标 L1，宁可少跑不谎报
 class TestTitleFor(unittest.TestCase):
     """续聊会话的顶栏标题兜底：live_titles() 靠 pid 反查，实测 jcode 只在退出时写 last_pid、
        codex/qoder 压根没有 pid→会话 映射 ⇒ 只靠它会回退成 sid 前缀（正是本次要消除的东西）。"""
@@ -181,6 +194,7 @@ class TestTitleFor(unittest.TestCase):
         self.assertEqual(ss.title_for("pi", "01a0c914-8f95-78e2-8b0f-123456789abc"), "")
 
 
+@tiers.host_only              # 依赖本机 jcode 平铺目录的真实条数（L1）
 class TestJcodeWindow(unittest.TestCase):
     """09-22 实测缺陷回归：jcode 仓库是平铺目录、混着所有 cwd。早期实现只扫「最新 20 个
        文件」再按 cwd 过滤 —— 当日 10 条探针（cwd=/tmp、/home/gztxt/agent-hub）把窗口占满，
@@ -211,6 +225,8 @@ class TestJcodeWindow(unittest.TestCase):
                 self.assertTrue(Path(c).is_dir(), f"返回了不存在的目录：{c}")
 
 
+@tiers.host_only              # 依赖真盘；同一条「形状合法但盘上没有必须拒」在
+                              # tests/test_term_launch_guard.py::TestResumeArgvHostile 已有 L0 版
 class TestResumeExists(unittest.TestCase):
     """续聊存在性校验必须按仓库结构直查，不能走被 limit 截断的展示清单"""
 
