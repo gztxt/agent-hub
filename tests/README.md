@@ -8,7 +8,7 @@
 |---|---|---|---|
 | **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 93 |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 21 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 10 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中四个是**浏览器探针**：要本机 chromium，不需要服务，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 11 |
 
 ## 怎么跑
 
@@ -106,3 +106,20 @@ $ venv/bin/python tests/verify_replay_gate.py
 `if (editing) return` 必须排在 `/` 与 Ctrl+K 分支之前、四个用户主动入口与两个自动路径的
 `user:true` 数量与身份钉死。变异检验已做：把守卫挪到分支之后 / 给自动挂载补 `user:true`，
 两条各自变红。
+
+
+## 生产体检：`verify_prod_smoke.py`（重启后出结论用的就是它）
+
+09-23 用户裁定「探活最多 2 次即停」之后，探针的设计口径变了：**一轮取齐全部证据**，
+而不是一个端点一个端点串行试。这个脚本对真生产做 19 项复合检查（响应码 + 时间戳 +
+`/health` 语义字段 + 头大小写 + WS 业务关闭码 + 日志异常计数），**且刻意不建 pty 会话**
+—— 重启后跑它不会打断任何在用的终端。
+
+三条实测出来的使用注意（都是本探针第一版自己踩的）：
+1. 响应头必须**大小写不敏感**地读：uvicorn 发的是小写 `vary`，`dict(r.headers).get("Vary")`
+   恒为 None，会把一条正确实现误判成 FAIL；
+2. 两个终端端点外层各包一级（`{"sessions":[…]}` / `{"agents":[…]}`），按裸列表断言必错；
+3. WS 关闭码用 `recv()` 超时后读 `ws.close_code`（照抄 `verify_p1_backend.py` 的可用取法，
+   别在第二个文件里发明第二种）。
+
+`--no-chat` 可跳过那一次真 LLM 调用；不带则该脚本共 19 项。
