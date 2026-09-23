@@ -211,8 +211,12 @@ def main():
             check("拿到可用 agent id 以测 chat", False, f"HTTP {stl}，跳过 chat 实跑")
         else:
             t0 = __import__("time").time()
+            # v0.13.6 写端点闸门上线后，chat 也归 32 条受闸门路由之一 —— 不带凭据这一发
+            # 拿到的 401 是**正确行为**，不是缺陷（探针比闸门早生，得跟上）。前端同理：
+            # hub.js 的 api() 只在写方法上带 x-hub-token。
             stc, _, cb = http(f"/api/agents/{ids[0]}/chat", method="POST",
-                              body={"message": "只回复四个字：收到了"}, timeout=90)
+                              body={"message": "只回复四个字：收到了"}, timeout=90,
+                              headers={"x-hub-token": tok})
             try:
                 cj = json.loads(cb or b"{}")
             except Exception:                               # noqa: BLE001
