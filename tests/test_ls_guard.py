@@ -40,6 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARDS = sorted((ROOT / "static" / "hub").glob("[0-9][0-9]-*.js"))
+HUBJS = ROOT / "static" / "hub.js"   # 产物也一起纳入零丢行断言
 HUB = ROOT / "static" / "hub.js"
 TPL = ROOT / "templates" / "index.html"
 RED_SHA = "0822164"          # ★改前状态（v0.13.12）：45 处裸调用、没有守卫
@@ -247,13 +248,37 @@ class TestStripperSanity(unittest.TestCase):
         self.assertNotIn("只允许一个抽屉在开", joined,
                          "行注释没被抹掉 ⇒ 正则/字符串态飘了，行号类判据不可信")
 
-    def test_known_jsmin_line_loss_is_real(self):
-        """把 `_js_min.strip_comments` 的缺陷钉成断言（留档，不是抱怨）：
-           它在 01 上会丢 204 行 ⇒ 任何按行号做的判据都不能用它。"""
+    def test_js_min_is_lossless_now(self):
+        """09-24 修好 `_js_min.strip_comments` 后，本钉子**翻向**：从"承认有缺陷"改为
+        "断言不许再丢行"。（原钉子写着"若修好请同步改写本例"，现在就是那个同步。）
+
+        为什么值得钉：丢行会让依赖它的闸门在**残缺文本**上跑（01 片曾 442→238），
+        那是"看着绿其实在漏"的静默失效，比红更贵。
+        """
         from _js_min import strip_comments
-        raw = _text(SHARDS[0])
-        self.assertNotEqual(strip_comments(raw).count("\n"), raw.count("\n"),
-                            "_js_min 若被修好，请同步删掉本文件里的 blank_js_comments 并改用它")
+        for p in SHARDS + [HUBJS]:
+            if not p.exists():
+                continue
+            raw = _text(p)
+            self.assertEqual(strip_comments(raw).count("\n"), raw.count("\n"),
+                             "%s 去注释后行数变了 ⇒ 又出现吞行（正则字面量/注释里的引号/跨行串）" % p.name)
+
+    def test_regex_with_quotes_does_not_swallow_lines(self):
+        """元凶样本必须单独钉：HTML 转义表 + 含引号的正则字面量。"""
+        from _js_min import strip_comments
+        src = ("var m = {'&':'&amp;','\"':'&quot;'};\n"
+               "var re = /[&<>\"']/g;\n"
+               "var keep = 1;\n")
+        out = strip_comments(src)
+        self.assertEqual(out.count("\n"), src.count("\n"), "含引号的正则不得开字符串态")
+        self.assertIn("var keep = 1;", out, "正则之后的代码必须还在（被吞掉就等于闸门看不见）")
+
+    def test_bare_newline_in_string_recovers(self):
+        """JS 里单/双引号串不能跨行；若解析器误开串态，遇裸换行必须退出而不是吞行。"""
+        from _js_min import strip_comments
+        src = "var a = '没闭合的串\nvar b = 2;\nvar c = 3;\n"
+        out = strip_comments(src)
+        self.assertIn("var b = 2;", out, "误开串态后必须恢复，否则后面全部消失")
 
 
 class TestLsGuardStatic(unittest.TestCase):
