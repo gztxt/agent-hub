@@ -311,12 +311,21 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         await ws.close(code=4401)
         return
     sess = _sessions.get(sid)
+    reject = None
     if not sess:
-        await ws.close(code=4404)
-        return
-    if not sess.alive:
-        # 死会话不再 accept：避免"回放旧画面+输入无效"的假加载（4410=已结束）
-        await ws.close(code=4410)
+        reject = 4404
+    elif not sess.alive:
+        # 死会话不再服务：避免"回放旧画面+输入无效"的假加载（4410=已结束）
+        reject = 4410
+    if reject is not None:
+        # 业务码必须在 accept() **之后** close。早先是在 accept 前 close：
+        # Starlette 此时只会回一个 HTTP 403 拒掉握手 ⇒ 浏览器侧看到的是 1006
+        # （异常关闭），与"链路断了"同签名 —— 前端就会对着一条已不存在的 sid
+        # 无限重连。实测（pre-accept 版）：websockets 客户端 InvalidStatus、
+        # http=403、close code = None。4401（鉴权失败）仍留在 accept 前：
+        # 不给未授权方完成握手。
+        await ws.accept()
+        await ws.close(code=reject)
         return
     await ws.accept()
     # 每个观看者一条**独立**队列（P1-5）。旧做法全会话共用一个 outputs 队列，

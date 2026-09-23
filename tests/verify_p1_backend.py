@@ -170,5 +170,33 @@ check("304 分支带 Vary: Accept-Encoding",
       "304" in h2.splitlines()[0] and "accept-encoding" in h2.lower(),
       "改前 304 无 Vary")
 
+# ── 3. WS 关闭码对客户端是否可见 ──────────────────────────────
+# 旧服务端在 accept() **之前** close ⇒ Starlette 只回 HTTP 403 拒握手 ⇒
+# 客户端拿到 1006/403（与"链路断了"同签名）⇒ 前端会对已不存在的 sid 无限重连。
+print("\n[3] WS 关闭码可见性（服务端协议）")
+
+
+def ws_close_code(sid):
+    got = {"code": None, "exc": None}
+
+    async def main():
+        try:
+            ws = await websockets.connect(f"{WSBASE}/ws/term/{sid}?token={TOK}")
+            try:
+                await asyncio.wait_for(ws.recv(), timeout=3)
+            except Exception:
+                pass
+            got["code"] = ws.close_code
+            await ws.close()
+        except Exception as e:
+            got["exc"] = f"{type(e).__name__}:{getattr(getattr(e, 'response', None), 'status_code', None)}"
+    asyncio.run(main())
+    return got["code"], got["exc"]
+
+
+code, exc = ws_close_code("nosuchsid0")
+check("不存在的 sid 能给客户端真实业务码 4404", code == 4404,
+      f"close_code={code} exc={exc}（改前实测：close_code=None exc=InvalidStatus:403）")
+
 print("\n" + ("全部通过 ✅" if not FAILS else f"失败 {len(FAILS)} 项 ❌：{FAILS}"))
 sys.exit(1 if FAILS else 0)
