@@ -108,6 +108,16 @@ function openOverlay(id) {
 }
 
 function go(page) {
+  /* 持久化状态必须校验后回退（2026-09-23 事故第二幕）：启动时直接吃
+     `localStorage.getItem('hub.page')`，而这个值可能是**跨版本已改名的页名**（09-20
+     「界面统一」改过一批）。下面原本只有 `toggle('on', s.id === 'page-' + page)` ⇒
+     一旦认不出来就**把所有页面一起关掉** ⇒ 正文整块空白、页内零个可点元素。
+     而 localStorage 是按 origin 隔离的 ⇒ 同一份代码在局域网那个源正常、
+     在 Tailscale 那个源空白。认不出就退回总览，并留下可取证的 warn。 */
+  if (!document.getElementById('page-' + page)) {
+    console.warn('go(): 未知页面 "' + page + '"，退回 classroom');
+    page = 'classroom';
+  }
   curPage = page;
   // ② 导航即清浮层（只在窄屏强制：桌面上抽屉是右侧常驻面板，收掉反而影响操作）
   if (window.isNarrow && window.closeDrawers && isNarrow() && overlayAnyOpen()) closeDrawers();

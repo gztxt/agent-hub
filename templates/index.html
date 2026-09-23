@@ -1025,8 +1025,74 @@
 
     <div class="footer">Agent Hub v{{ version }}<span class="foot-long"> · 融合 Agent_Manager (Apache-2.0) 设计理念</span> · <span id="ftTime"></span></div>
     <div id="toast"></div>
+    <!-- ── 端侧自检面板（仅 `?diag=1` 时可见）─────────────────────────────
+       2026-09-23 事故：同一地址在浏览器正常、在 pi-web 自研 APP 里异常，而本机对手机
+       零探针能力 ⇒ 任何“服务端全绿”都无法判端侧到底卡在哪个环节。本面板只读不写：
+       ① 捕获**资源加载失败**（hub.js / xterm 404、被代理换成 HTML 等）；
+       ② 捕获 JS 异常与 Promise 拒绍；
+       ③ 把“脚本跑到第几步”摊成可复制文本（go 是否存在 / initSidebar 是否跑过 /
+         navTree 子项数 / 当前哪个 section.page 在显示 / 档位与视口 / localStorage 键）。
+       不发任何网络请求、不写 localStorage、不改样式层（z 顶但只占 60vh）。 -->
+    <script>
+    (function () {
+      var L = [], T0 = Date.now();
+      window.addEventListener('error', function (e) {
+        var t = e && e.target;
+        if (t && (t.src || t.href)) L.push('资源加载失败: ' + (t.src || t.href));
+        else L.push('JS异常: ' + String((e && (e.message || e.type)) || '?').slice(0, 120));
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        L.push('Promise拒绍: ' + String(e && e.reason).slice(0, 100));
+      });
+      window.__DIAG_LOG__ = L;
+      function probe() {
+        var nt = document.getElementById('navTree'), sb = document.getElementById('sidebar');
+        var pages = [].slice.call(document.querySelectorAll('section.page.on')).map(function (s) { return s.id; });
+        var tag = document.querySelector('script[src*="hub.js"]');
+        var vis = 0, btns = sb ? sb.querySelectorAll('button') : [];
+        for (var i = 0; i < btns.length; i++) { var b = btns[i].getBoundingClientRect(); if (b.width > 4 && b.height > 4) vis++; }
+        return 'origin=' + location.origin + '\n'
+          + 'UA=' + String(navigator.userAgent).slice(0, 72) + '\n'
+          + '视口=' + innerWidth + 'x' + innerHeight + '\n'
+          + '窄屏档=' + matchMedia('(max-width:767px)').matches + '\n'
+          + 'hub.js标签=' + (tag ? tag.getAttribute('src') : '★无此标签') + '\n'
+          + 'go函数=' + (typeof go) + '\n'
+          + 'initSidebar跑过(遮罩出口)=' + (typeof window.syncOverlayMask) + '\n'
+          + 'navTree子项=' + (nt ? nt.children.length : '无navTree') + '\n'
+          + '侧栏可见按钮=' + vis + '\n'
+          + '侧栏collapsed=' + (sb ? sb.classList.contains('collapsed') : '?') + '\n'
+          + '在显示的页=' + (pages.join(',') || '★无（正文整块空白）') + '\n'
+          + 'localStorage键=' + (Object.keys(localStorage).join('|') || '(空)') + '\n'
+          + '就绪=' + document.readyState + ' 已运行=' + (Date.now() - T0) + 'ms\n'
+          + (L.length ? '异常清单(前6):\n' + L.slice(0, 6).join('\n') : '异常清单: 无');
+      }
+      window.__DIAG_TEXT__ = probe;
+      if (location.search.indexOf('diag') < 0) return;
+      var d = document.createElement('div');
+      d.id = 'diagBox';
+      d.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483000;max-width:96vw;max-height:56vh;'
+        + 'overflow:auto;background:#000;color:#0f0;font:12px/1.5 monospace;padding:8px;'
+        + 'border:2px solid #f00;white-space:pre-wrap';
+      var btn = document.createElement('button');
+      btn.textContent = '复制全部（粘给 AI 即可定位）';
+      btn.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:2147483000;font:13px monospace;padding:8px 12px';
+      btn.onclick = function () {
+        var t = probe();
+        var done = function (m) { btn.textContent = m; };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(function () { done('已复制✅ 去粘贴'); },
+                                                  function () { done('剪贴板被拒：请长按面板文字手工选复制'); });
+          } else { done('本环境无剪贴板 API：长按面板文字手工复制'); }
+        } catch (e) { done('复制异常：' + e.message); }
+      };
+      function render() { d.textContent = probe(); }
+      document.body.appendChild(d); document.body.appendChild(btn);
+      render(); setInterval(render, 1000);
+    })();
+    </script>
     <script src="/static/vendor/xterm.js?v=20260907c"></script>
     <script src="/static/vendor/fit.js?v=20260907c"></script>
-    <script src="/static/hub.js?v=20260922c"></script>
+    <script src="/static/hub.js?v=20260923a"></script>
 </body>
 </html>
