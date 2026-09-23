@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（09-23） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 119 |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 24 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（其中 4 只只需 chromium 不需服务、3 只两者都要，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 14 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 126 |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 26 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（16 只里 9 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 16 |
 
 ## 怎么跑
 
@@ -85,8 +85,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 
 ## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
 
-> 计数口径：上面表格里的 14 是**文件数**（09-23 实测，旧写的 12 已漂）。
-> 其内 4 只走“抽函数 + 本地最小页”（不需服务），4 只走“真页面 CDP”（需服务），
+> 计数口径：上面表格里的 16 是**文件数**（09-23 19:1x 实测，旧写的 14 已漂）。
+> 其内 7 只走“抽函数 + 本地最小页”（不需服务），9 只需服务在跑（含 `3102`），
 > 有重叠 ⇒ 不拿一个数字兼两个口径。
 
 共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
@@ -97,6 +97,11 @@ $ venv/bin/python tests/verify_replay_gate.py
    并断言改前**确实坏**。只证明改后能用 = 零信息（可能那条件根本不触发）。
 3. **测线上字节，不测文档式间距**：`ESC P $ q "q ESC \` 里 `$` 后带空格，intermediates
    就成了 `"$ "` 而非 `"$"` —— 按 README 里的写法造样本会造出一个永不匹配的探针。
+4. **报障为「点不动 / 被盖住」时必须真点一次**：`elementFromPoint` 只回答「此刻谁在最上面」，
+   不回答「用户那一下落在哪、之后残留了哪一层」。09-23 在这上面连吃三轮「探针全绿 + 用户说还是
+   坏的」—— 必须用 `Input.dispatchMouseEvent` 按坐标点，并断言**导航之后**浮层为空。
+5. **浮层必须唯一且可逃生**：同一时刻最多一个抽屉是 `on`；任何导航都要清掉抽屉；遮罩只有一个
+   计算出口，且点它一次关干净（手机上没有 ESC，点空白是唯一逃生路径）。
 
 | 探针 | 钉住的缺陷 | 对照组实测 | 实验组实测 |
 |---|---|---|---|
@@ -106,6 +111,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `verify_key_focus_guard.py` | 全局 keydown 无 target 守卫：终端里敲 `/` 被 `preventDefault` + 焦点跳搜索框；`term.focus()` 无条件执行 ⇒ 手机自动挂载必弹软键盘 | 真事件冒泡到 document 且 `e.target.closest('.xterm')` 命中（**证明旧写法必劫持**） | `keyTargetIsEditing` 8 个输入位 true / 2 个普通元素 false；`termFocusWanted` 只认 `user:true` |
 | `verify_sidebar_narrow.py` | 线上五场景：窄屏首屏不得被 `position:fixed` 白底抽屉接走视口中心；**首屏解析不得写 localStorage**；跳断点（拖宽/转屏）必须自动重算；一档一键不得互渗（2026-09-23 白板事故本体） | —（红-绿对照在下一只） | A~E 5/5 PASS：390px `collapsed=true w=48 centerHit=div.hs`；桌面 `w=240` 不回退 |
 | `verify_sidebar_redgreen.py` | 同上缺陷的**红基线**：旧实现按内容从 git 回溯（不钉 HEAD、不读 `.bak`），只经 CDP `Fetch` 喂给本 headless 客户端 ⇒ 生产零影响 | 改前字节 + 污染值 + 390px：`collapsed=false w=236 pos=fixed` 且中心被抽屉接走 | 同条件下生产真字节：`collapsed=true w=48` 中心不受影响 |
+| `verify_overlay_exclusion.py` | 窄屏「设置」抽屉（`min(400px,92vw)`/`z:60`）盖掉 92% 画面且**永不随导航关闭**：`#btnSettings` 用 inline `onclick` 旁路了侧栏事件委托（而“点完收抽屉”只写在委托里）+ `go()` 不清抽屉 + 遮罩只看侧栏态不看抽屉态 ⇒ 手机上「整页白板、完全点不动」且无逃生路径 | 红基线在 `test_overlay_exclusion.py` L1：git 内容搜到 `bd0f84a8`（HTML 带 `onclick="openSettings()"`、无 `data-settings`）与 `119f1c7b`（hub.js 无 `openOverlay`/`closeDrawers`） | 真鼠标 16/16 PASS：★点「总览」后残留层=`[]`、中心命中 `div.hs`、`pageOn=page-classroom`；点遮罩留白一次关干净；桌面无回退 |
+| `probe_sidebar_width_sweep.py` | 通用诊断（不钉缺陷）：320→1920 **宽度轴**一次扫完侧栏几何/可见按钮数/中心接住者/JS 异常 | 320~767：收起 48px、6 按钮、0 列表项（图标条设计如此） | 768+：展开 240px、14 按钮；**全带无空白** ⇒ 把方向从“布局/几何”逼到“事件与浮层残留” |
 
 ### 真页面探针的另一条硬规定：CDP 必须有常驻读线程
 

@@ -74,8 +74,43 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ── 浮层唯一性（2026-09-23 事故：窄屏「设置」抽屉盖掉 92% 画面且没人关）────────
+   三个浮层（侧栏抽屉 / detailDrawer / settingsDrawer）此前各开各的：
+   开设置不关侧栏、导航不收抽屉、遮罩只管侧栏 —— 窄屏抽屉宽 min(400px,92vw)，
+   一旦残留就把整页压成"白板 + 点不动"。规则钉死三条：
+   ① 同一时刻最多一个抽屉是 on（开新的必先清旧的）；
+   ② 导航 = 清抽屉（go 里做，不留给调用方自觉）；
+   ③ 遮罩只有一个计算出口（06 的 syncOverlayMask），且点它一定关干净 ——
+      手机上没有 ESC 键，点空白是唯一逃生路径。 */
+const OVERLAY_IDS = ['detailDrawer', 'settingsDrawer'];
+const overlayOpen = id => { const el = $(id); return !!(el && el.classList.contains('on')); };
+window.overlayAnyOpen = () => OVERLAY_IDS.some(overlayOpen);
+function closeDrawers() {
+  let changed = false;
+  OVERLAY_IDS.forEach(id => {
+    const el = $(id);
+    if (el && el.classList.contains('on')) { el.classList.remove('on'); changed = true; }
+  });
+  if (changed && window.syncOverlayMask) syncOverlayMask();
+  return changed;
+}
+function closeOverlay(id) {
+  const el = $(id);
+  if (el && el.classList.contains('on')) el.classList.remove('on');
+  if (window.syncOverlayMask) syncOverlayMask();
+}
+function openOverlay(id) {
+  closeDrawers();                      // ① 只允许一个抽屉在开
+  const el = $(id);
+  if (el) el.classList.add('on');
+  if (window.collapseSidebar) collapseSidebar();   // 窄屏别让侧栏抽屉和它叠着
+  if (window.syncOverlayMask) syncOverlayMask();
+}
+
 function go(page) {
   curPage = page;
+  // ② 导航即清浮层（只在窄屏强制：桌面上抽屉是右侧常驻面板，收掉反而影响操作）
+  if (window.isNarrow && window.closeDrawers && isNarrow() && overlayAnyOpen()) closeDrawers();
   document.querySelectorAll('.sidebar button[data-page], .sidebar .side-item[data-sys]').forEach(b => {
     const on = (b.dataset.page || b.dataset.sys) === page;   // 常驻顶栏项用 data-sys，取值要看两个属性
     b.classList.toggle('on', on);
@@ -239,9 +274,9 @@ function showDetail(id) {
     (es.length ? es.map(e => '<span class="tag agent" style="display:inline-block;margin:2px 4px 2px 0;max-width:100%;overflow-wrap:anywhere">' +
       escapeHtml(e.type) + (e.url ? ': ' + escapeHtml(e.url) : '') + '</span>').join('') : '<span class="hint">无</span>');
   $('detailBody').innerHTML = html || '<span class="hint">无附加信息</span>';
-  $('detailDrawer').classList.add('on');
+  openOverlay('detailDrawer');
 }
-function closeDetail() { $('detailDrawer').classList.remove('on'); }
+function closeDetail() { closeOverlay('detailDrawer'); }
 
 /* L4 体检：让 hub 现场跑一次真实一次性请求（耗 token、冷启动可近 60s），完事刷列表 */
 async function verifyAgent(id) {
@@ -260,9 +295,9 @@ async function verifyAgent(id) {
 
 /* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
-  $('settingsDrawer').classList.add('on');
+  openOverlay('settingsDrawer');
 }
-function closeSettings() { $('settingsDrawer').classList.remove('on'); }
+function closeSettings() { closeOverlay('settingsDrawer'); }
 function settingsPasscode() { return localStorage.getItem('hub.passcode') || ''; }
 
 async function settingsViewToken() {

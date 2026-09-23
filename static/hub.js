@@ -74,8 +74,43 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ── 浮层唯一性（2026-09-23 事故：窄屏「设置」抽屉盖掉 92% 画面且没人关）────────
+   三个浮层（侧栏抽屉 / detailDrawer / settingsDrawer）此前各开各的：
+   开设置不关侧栏、导航不收抽屉、遮罩只管侧栏 —— 窄屏抽屉宽 min(400px,92vw)，
+   一旦残留就把整页压成"白板 + 点不动"。规则钉死三条：
+   ① 同一时刻最多一个抽屉是 on（开新的必先清旧的）；
+   ② 导航 = 清抽屉（go 里做，不留给调用方自觉）；
+   ③ 遮罩只有一个计算出口（06 的 syncOverlayMask），且点它一定关干净 ——
+      手机上没有 ESC 键，点空白是唯一逃生路径。 */
+const OVERLAY_IDS = ['detailDrawer', 'settingsDrawer'];
+const overlayOpen = id => { const el = $(id); return !!(el && el.classList.contains('on')); };
+window.overlayAnyOpen = () => OVERLAY_IDS.some(overlayOpen);
+function closeDrawers() {
+  let changed = false;
+  OVERLAY_IDS.forEach(id => {
+    const el = $(id);
+    if (el && el.classList.contains('on')) { el.classList.remove('on'); changed = true; }
+  });
+  if (changed && window.syncOverlayMask) syncOverlayMask();
+  return changed;
+}
+function closeOverlay(id) {
+  const el = $(id);
+  if (el && el.classList.contains('on')) el.classList.remove('on');
+  if (window.syncOverlayMask) syncOverlayMask();
+}
+function openOverlay(id) {
+  closeDrawers();                      // ① 只允许一个抽屉在开
+  const el = $(id);
+  if (el) el.classList.add('on');
+  if (window.collapseSidebar) collapseSidebar();   // 窄屏别让侧栏抽屉和它叠着
+  if (window.syncOverlayMask) syncOverlayMask();
+}
+
 function go(page) {
   curPage = page;
+  // ② 导航即清浮层（只在窄屏强制：桌面上抽屉是右侧常驻面板，收掉反而影响操作）
+  if (window.isNarrow && window.closeDrawers && isNarrow() && overlayAnyOpen()) closeDrawers();
   document.querySelectorAll('.sidebar button[data-page], .sidebar .side-item[data-sys]').forEach(b => {
     const on = (b.dataset.page || b.dataset.sys) === page;   // 常驻顶栏项用 data-sys，取值要看两个属性
     b.classList.toggle('on', on);
@@ -239,9 +274,9 @@ function showDetail(id) {
     (es.length ? es.map(e => '<span class="tag agent" style="display:inline-block;margin:2px 4px 2px 0;max-width:100%;overflow-wrap:anywhere">' +
       escapeHtml(e.type) + (e.url ? ': ' + escapeHtml(e.url) : '') + '</span>').join('') : '<span class="hint">无</span>');
   $('detailBody').innerHTML = html || '<span class="hint">无附加信息</span>';
-  $('detailDrawer').classList.add('on');
+  openOverlay('detailDrawer');
 }
-function closeDetail() { $('detailDrawer').classList.remove('on'); }
+function closeDetail() { closeOverlay('detailDrawer'); }
 
 /* L4 体检：让 hub 现场跑一次真实一次性请求（耗 token、冷启动可近 60s），完事刷列表 */
 async function verifyAgent(id) {
@@ -260,9 +295,9 @@ async function verifyAgent(id) {
 
 /* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
-  $('settingsDrawer').classList.add('on');
+  openOverlay('settingsDrawer');
 }
-function closeSettings() { $('settingsDrawer').classList.remove('on'); }
+function closeSettings() { closeOverlay('settingsDrawer'); }
 function settingsPasscode() { return localStorage.getItem('hub.passcode') || ''; }
 
 async function settingsViewToken() {
@@ -1947,9 +1982,21 @@ function initSidebar() {
     sb.classList.toggle('collapsed', c);
     btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
     if (persist !== false) localStorage.setItem(sidebarPrefKey(), c ? '1' : '0');
-    const m = document.getElementById('sideMask');
-    if (m) m.classList.toggle('on', !c && narrow());   // 窄屏展开时才有遮罩
+    if (window.syncOverlayMask) syncOverlayMask();   // 遮罩不在这里算，统一走下面那个出口
   };
+  /* ③ 遮罩的唯一计算出口（浮层唯一性）：窄屏 且（侧栏抽屉展开 或 任一抽屉浮层在开）
+     才存遮罩。以前这里是个与 apply() 平行的写入点，开设置/导航都不过它 —— 所以
+     设置抽屉盖住 92% 画面时遮罩还是没开，用户点哪儿都落在抽屉上。 */
+  function syncOverlayMask() {
+    const m = document.getElementById('sideMask');
+    if (!m) return;
+    m.classList.toggle('on', mqNarrow.matches &&
+      (!sb.classList.contains('collapsed') || (window.overlayAnyOpen ? overlayAnyOpen() : false)));
+  }
+  // 用命名函数而不是 `window.x = () => {}`：后者 tests/_hub_extract 抽不到，闸门会变成假绿
+  window.syncOverlayMask = syncOverlayMask;
+  window.collapseSidebar = () => { if (mqNarrow.matches && !sb.classList.contains('collapsed')) apply(true); };
+  window.isNarrow = () => mqNarrow.matches;   // 断点单一真源：外面只准问这个，不准再写 767
   // 首屏解析档位偏好：persist=false ⇒ 加载本身不再写盘（老代码正是在这一步把宽屏的"展开"存成全局值）
   const resolve = () => apply(sidebarWantCollapsed(narrow(), localStorage.getItem(sidebarPrefKey()),
                                                    localStorage.getItem('hub.sidebar')), false);
@@ -1963,6 +2010,8 @@ function initSidebar() {
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
     if (el) { go(el.dataset.page); if (narrow()) apply(true); return; }
+    el = e.target.closest('button[data-settings]');
+    if (el) { openSettings(); return; }   // 「设置」以前走 inline onclick 旁路委托 ⇒ 抽屉永远不收
     el = e.target.closest('button[data-sys]');
     if (el) { go(el.dataset.sys); if (narrow()) apply(true); return; }
     el = e.target.closest('.hh-row');                     // 历史条目：续聊，窄屏顺手收抽屉
@@ -1992,7 +2041,12 @@ function initSidebar() {
     }
   });
   const mask = document.getElementById('sideMask');
-  if (mask) mask.addEventListener('click', () => apply(true));
+  // 点遮罩 = 一次关干净（抽屉 + 侧栏）：手机上没 ESC 键，这是唯一逃生路径
+  if (mask) mask.addEventListener('click', () => {
+    if (window.closeDrawers) closeDrawers();
+    apply(true);
+    if (window.syncOverlayMask) syncOverlayMask();
+  });
   const si = document.getElementById('navSearch');
   if (si) {
     let _t;

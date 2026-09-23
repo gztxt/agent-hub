@@ -81,9 +81,21 @@ function initSidebar() {
     sb.classList.toggle('collapsed', c);
     btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
     if (persist !== false) localStorage.setItem(sidebarPrefKey(), c ? '1' : '0');
-    const m = document.getElementById('sideMask');
-    if (m) m.classList.toggle('on', !c && narrow());   // 窄屏展开时才有遮罩
+    if (window.syncOverlayMask) syncOverlayMask();   // 遮罩不在这里算，统一走下面那个出口
   };
+  /* ③ 遮罩的唯一计算出口（浮层唯一性）：窄屏 且（侧栏抽屉展开 或 任一抽屉浮层在开）
+     才存遮罩。以前这里是个与 apply() 平行的写入点，开设置/导航都不过它 —— 所以
+     设置抽屉盖住 92% 画面时遮罩还是没开，用户点哪儿都落在抽屉上。 */
+  function syncOverlayMask() {
+    const m = document.getElementById('sideMask');
+    if (!m) return;
+    m.classList.toggle('on', mqNarrow.matches &&
+      (!sb.classList.contains('collapsed') || (window.overlayAnyOpen ? overlayAnyOpen() : false)));
+  }
+  // 用命名函数而不是 `window.x = () => {}`：后者 tests/_hub_extract 抽不到，闸门会变成假绿
+  window.syncOverlayMask = syncOverlayMask;
+  window.collapseSidebar = () => { if (mqNarrow.matches && !sb.classList.contains('collapsed')) apply(true); };
+  window.isNarrow = () => mqNarrow.matches;   // 断点单一真源：外面只准问这个，不准再写 767
   // 首屏解析档位偏好：persist=false ⇒ 加载本身不再写盘（老代码正是在这一步把宽屏的"展开"存成全局值）
   const resolve = () => apply(sidebarWantCollapsed(narrow(), localStorage.getItem(sidebarPrefKey()),
                                                    localStorage.getItem('hub.sidebar')), false);
@@ -97,6 +109,8 @@ function initSidebar() {
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
     if (el) { go(el.dataset.page); if (narrow()) apply(true); return; }
+    el = e.target.closest('button[data-settings]');
+    if (el) { openSettings(); return; }   // 「设置」以前走 inline onclick 旁路委托 ⇒ 抽屉永远不收
     el = e.target.closest('button[data-sys]');
     if (el) { go(el.dataset.sys); if (narrow()) apply(true); return; }
     el = e.target.closest('.hh-row');                     // 历史条目：续聊，窄屏顺手收抽屉
@@ -126,7 +140,12 @@ function initSidebar() {
     }
   });
   const mask = document.getElementById('sideMask');
-  if (mask) mask.addEventListener('click', () => apply(true));
+  // 点遮罩 = 一次关干净（抽屉 + 侧栏）：手机上没 ESC 键，这是唯一逃生路径
+  if (mask) mask.addEventListener('click', () => {
+    if (window.closeDrawers) closeDrawers();
+    apply(true);
+    if (window.syncOverlayMask) syncOverlayMask();
+  });
   const si = document.getElementById('navSearch');
   if (si) {
     let _t;
