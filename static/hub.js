@@ -754,12 +754,30 @@ function termConnecting(on, ws) {
    回放落在隐藏态时先挂着（termHealPending），等 termRepaint() 在重新可见时补做。 */
 let termHealPending = false;
 function termHealBlank() { termHealPending = true; setTimeout(termHealNow, 250); }
+/* 数「视口内」的空行 —— 必须从 viewportY 起算，不能从缓冲区第 0 行起算。
+   buffer.active.getLine(0) 是**绝对坐标**，即 scrollback 的最老一行；
+   一旦屏上有历史（输出超过一屏、或用户滚动过），0..rows-1 读到的是早滚出屏幕的旧行，
+   与用户此刻看到的画面无关。旧写法在这里空耗两个后果：
+     · 画面明明全白，绝对行却有内容 ⇒ blank 偏低 ⇒ 自愈被误抑制（P2-8 的实际症状）
+     · 反之画面有内容但顶部历史是空的 ⇒ 会对着不白屏的 pty 乱发 resize 打扰它
+   抽成函数是为了能在真浏览器里取证（tests/verify_term_heal_viewport.py 会
+   同时算新旧两种口径，红绿放在同一份产物里对比）。 */
+function termViewportBlankRows(t) {
+  const b = t.buffer.active;
+  const rows = t.rows;
+  const top = (typeof b.viewportY === 'number' && b.viewportY >= 0) ? b.viewportY : 0;
+  let blank = 0;
+  for (let i = 0; i < rows; i++) {
+    const l = b.getLine(top + i);
+    if (!l || !l.translateToString(true).trim()) blank++;
+  }
+  return blank;
+}
+
 function termHealNow() {
   if (!termHealPending || !term || !termWs || termWs.readyState !== 1 || !termVisible()) return;
   termHealPending = false;
-  const b = term.buffer.active;
-  let blank = 0;
-  for (let i = 0; i < term.rows; i++) { const l = b.getLine(i); if (!l || !l.translateToString(true).trim()) blank++; }
+  const blank = termViewportBlankRows(term);
   if (blank * 3 < term.rows * 2) return;   // 画面有内容就别去打扰 pty
   const c = term.cols, r = term.rows;
   termWs.send(JSON.stringify({ type: 'resize', cols: c, rows: Math.max(1, r - 1) }));

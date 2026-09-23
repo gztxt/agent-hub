@@ -30,6 +30,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _hub_extract as HX  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 HUB = REPO / "static" / "hub.js"
 VENDOR = REPO / "static" / "vendor"
@@ -42,22 +45,16 @@ DSR = "\\x1b[?6n"                # DSR 光标位置
 
 
 def extract_gate_source():
-    """从 hub.js 原样抽出闸门实现（含它依赖的 TERM_QUERY_OSC）。"""
+    """从 hub.js 原样抽出闸门实现（含它依赖的 TERM_QUERY_OSC）。
+       抽取逻辑已提到 tests/_hub_extract.py 与视口探针共用，两份实现迟早不一致。"""
     src = HUB.read_text(encoding="utf-8")
-    m = re.search(r"^const TERM_QUERY_OSC = .*$", src, re.M)
-    if not m:
+    osc = HX.extract_line(src, "const TERM_QUERY_OSC =")
+    if not osc:
         return None, "抽不到 TERM_QUERY_OSC"
-    osc = m.group(0)
-    i = src.find("function termWriteReplay(")
-    if i < 0:
+    body = HX.extract_function(src, "termWriteReplay")
+    if not body:
         return None, "抽不到 termWriteReplay"
-    # 不用花括号配对：本函数注释里就有 `{prefix:"?",final:"c"}` 这种字面量，
-    # 朴素配对会被注释里的 `}` 提前闭合而截断（第一版就被截到看不见 DCS 那行）。
-    # 本文件风格里顶层函数的结束标志是**第 0 列的 }**，内部块一律缩进 ⇒ 按它切。
-    end = src.find("\n}\n", i)
-    if end < 0:
-        return None, "termWriteReplay 找不到第 0 列的收尾 }"
-    body = src[i:end + 2]
+
     if "registerDcsHandler" not in body:
         print("  注：当前 hub.js 的闸门里没有 DCS 注册（本探针会据此判 FAIL）")
     return osc + "\n" + body, None
