@@ -352,6 +352,26 @@ def rule_verdict(ev: dict) -> str:
 
 
 # ── 采集 + 裁决 ─────────────────────────────────────────────────
+def ordered_candidates(primary: Optional[str],
+                       aliases: Optional[List[str]]) -> List[str]:
+    """候选名顺序：**真名（非 fcc-* 入口壳）一律优先**，fcc-* 垫后（稳定排序，保留原序）。
+
+    2026-09-24 修（opencode 实例）：原实现把画像里**冻结的** cli 字段当首选，
+    而候补序只在「首选 which() 完全落空」时才往下走。于是 09-22 命中的假壳
+    `fcc-opencode` 会一直压着后面的真二进制：壳会退 rc=127 打印
+    “Could not find OpenCode CLI command”，verdict 停在 not_installed，
+    **真装好后也翻不了案**。改为不依赖冻结字段，按名性质定序。
+
+    单一真相源：collect() 与 Vitals.rejudge_stale() 共用此函数，不得各写一份。"""
+    seen: set = set()
+    names: List[str] = []
+    for n in [primary] + list(aliases or []):
+        if n and n not in seen:
+            seen.add(n)
+            names.append(n)
+    return sorted(names, key=lambda n: 1 if n.rsplit("/", 1)[-1].startswith("fcc-") else 0)
+
+
 def collect(prof: dict, do_roundtrip: bool = False) -> dict:
     """单个画像 → 一份证据。CLI 型走 L1/L2(/L4)；服务型走 EP。"""
     pid, kind = prof.get("id"), prof.get("kind")
@@ -364,14 +384,15 @@ def collect(prof: dict, do_roundtrip: bool = False) -> dict:
     name = cli or term
     if name:                                   # 终端型 Agent
         ev["agent_shape"] = "terminal-cli"
-        path = profiles.which(name)
-        cands = [name] + [n for n in (prof.get("aliases") or []) if n != name]
-        if not path:
-            for n in cands:
-                path = profiles.which(n)
-                if path:
-                    name = n
-                    break
+        # 真名优先逐个 which（ordered_candidates 为唯一定序口径）
+        cands = ordered_candidates(name, prof.get("aliases"))
+        for n in cands:
+            p2 = profiles.which(n)
+            if p2:
+                name, path = n, p2
+                break
+        else:
+            name, path = (cands[0] if cands else None), None
         ev["candidates_tried"] = cands
         ev["resolved_name"], ev["resolved_path"], ev["resolved"] = name, path, bool(path)
         if path:
@@ -591,6 +612,41 @@ class Vitals:
         rec = self.judge(prof, do_roundtrip=True)
         self._save()
         return rec
+
+    def rejudge_stale(self, profs: List[dict]) -> dict:
+        """定向重判：只处理「可能被陈旧结论压住」的候补，只跑 L1/L2（不碰模型、不烧 token）。
+
+        为何需要：卡片闸门 `show_in_menu()` 读的是**上一轮 sweep 的结论**，而不是当下磁盘状态；
+        新装 CLI 会被上一轮 not_installed 固化，理应当等 SWEEP_EVERY(900s)，但候补有轮换降频
+        （实测部分候补陈旧 32h）⇒「装好了但菜单里没有」可拖半日以上。
+        命中任一条即重判：无记录 / 上次判 not_installed / 记录的路径已不在 / 现在选出的首选名与当时不同。
+        返回 changed 供调用方决定要不要刷 discovery。"""
+        t0 = time.time()
+        checked: List[str] = []
+        changed: List[dict] = []
+        for p in profs:
+            pid = p.get("id")
+            if not pid:
+                continue
+            rec = self.get(pid)
+            old = (rec or {}).get("verdict")
+            ev = (rec or {}).get("evidence", {}) or {}
+            cands = ordered_candidates(p.get("cli") or (p.get("terminal") or {}).get("cmd"),
+                                       p.get("aliases"))
+            hit = next((n for n in cands if profiles.which(n)), None)
+            stale = (rec is None) or (old == "not_installed") or (hit and ev.get("resolved_name") != hit)
+            if not stale and ev.get("resolved_path") and not os.path.exists(ev["resolved_path"]):
+                stale = True                      # 记录里那个可执行文件已被删/换位
+            if not stale:
+                continue
+            checked.append(pid)
+            new = self.judge(p, False)
+            if new.get("verdict") != old:
+                changed.append({"id": pid, "from": old, "to": new.get("verdict")})
+        if checked:
+            self._save()
+        return {"checked": checked, "changed": changed,
+                "secs": round(time.time() - t0, 2)}
 
     # ── 菜单闸门：假卡不出卡；判不出来时保留（宁多不误删）
     def show_in_menu(self, agent_id: str) -> bool:

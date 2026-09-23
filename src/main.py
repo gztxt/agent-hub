@@ -58,7 +58,7 @@ import staticguard
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.13"
+VERSION = "0.13.14"   # 后端：新装 CLI 被陈旧 vitals 判定固化的两处修（scan/run 定向重判 + 候补序真名优先）+ opencode L4 探针
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -594,9 +594,26 @@ class ScanIn(BaseModel):
 
 @app.post("/api/scan/run")
 async def scan_run(body: ScanIn):
-    """发现源扫描（docker/systemd/CLI 名单，全部只读探测）"""
+    """发现源扫描（docker/systemd/CLI 名单，全部只读探测）
+
+    2026-09-24：扫描收尾补一次「定向重判」。原实现只跑 scanner.run_scan，
+    而它「仅报告安装状态（不注册）」（见 scanner.py 顶部注释），卡片补发由
+    profiles._dynamic_cli_agents 负责，其闸门读的是**上一轮 vitals 结论**
+    ⇒ 点「自动扫描」永远刷不动一枚陈旧 not_installed，新装 CLI 出不来（opencode 实例）。
+    重判只走 L1/L2（which / --version / --help），不碰模型、不烧 token。"""
     result = await asyncio.to_thread(scanner.run_scan, body.auto_register, db)
-    if body.auto_register and result.get("added") and discovery:
+    rejudge: dict = {}
+    try:
+        rejudge = await asyncio.to_thread(
+            vitals_mod.vitals.rejudge_stale, _agent_profs_for_vitals())
+    except Exception as e:  # noqa: BLE001  重判挂了不能把扫描本身弄失败
+        rejudge = {"error": "%s: %s" % (type(e).__name__, str(e)[:160])}
+    result["vitals_rejudge"] = rejudge
+    need_reload = bool(rejudge.get("changed")) or bool(
+        body.auto_register and result.get("added"))
+    if need_reload and discovery:
+        if rejudge.get("changed"):
+            profiles_mod.invalidate_cli_cache()   # 30s 候补缓存不得压住刚翻案的卡
         discovery.reload()
     return result
 

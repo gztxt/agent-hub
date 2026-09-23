@@ -248,6 +248,13 @@ AGENT_PROBE: Dict[str, dict] = {
     "grok":   {"aliases": ["grok", "fcc-grok"], "verify_argv": ["grok", "-p", "{p}"]},
     # qoder 卡片 id 是 qoder，实际可执行名 qodercli（WorkBuddy 21:51 的多候选名修正）
     "qoder":  {"aliases": ["qodercli", "qoder"], "verify_argv": ["qodercli", "-p", "{p}"]},
+    # opencode：一次性非交互真请求 `opencode run -m <provider/model> "<提示>"`。
+    # rt_model 必须带 **provider 前缀** 且用 CCR 的斜杠形式（本机全局配置里 provider id = ccr）；
+    # 不能沿用默认 RT_MODEL=Agnes-2.0-flash —— 那是 claude/jcode 才认的写法。
+    # 选 stable 非 :free 模型：CCR 每日 12:00 轮换会摘掉 429/403 成员，写死免费模型必然中午失效。
+    "opencode": {"aliases": ["opencode", "fcc-opencode"],
+                 "verify_argv": ["opencode", "run", "-m", "{m}", "{p}"],
+                 "rt_model": "ccr/deepseek/deepseek-v4-flash"},
 }
 
 
@@ -316,6 +323,14 @@ def _dynamic_cli_agents(gate: bool = True) -> List[dict]:
     cache["ts"] = now
     cache["items"] = out
     return out
+
+
+def invalidate_cli_cache() -> None:
+    """强制下一次重算候补卡（清掉 _dynamic_cli_agents 的 30s 缓存）。
+
+    判定刚翻案（not_installed → usable）时，30s 缓存会把「刚装好」再压 30 秒，
+    表现为「点了扫描还是没出来」。只在重判后调用，不改变缓存本身的降频意图。"""
+    _cli_dyn_cache.clear()
 
 
 def all_profiles(include_blocked: bool = False) -> List[dict]:
