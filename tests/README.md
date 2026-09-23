@@ -119,7 +119,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 1. 响应头必须**大小写不敏感**地读：uvicorn 发的是小写 `vary`，`dict(r.headers).get("Vary")`
    恒为 None，会把一条正确实现误判成 FAIL；
 2. 两个终端端点外层各包一级（`{"sessions":[…]}` / `{"agents":[…]}`），按裸列表断言必错；
-3. WS 关闭码用 `recv()` 超时后读 `ws.close_code`（照抄 `verify_p1_backend.py` 的可用取法，
+3. WS 关闭码用 `recv()` 超时后读 `ws.close_code`；
+4. chat 端点的回复字段是 **`response`**（实测顶层键：`agent_id/session_id/message/timestamp/success/agent/response/model/usage`）—— 按 `reply`/`text` 读会把一条成功的真 LLM 回复判成空字符串（照抄 `verify_p1_backend.py` 的可用取法，
    别在第二个文件里发明第二种）。
 
 `--no-chat` 可跳过那一次真 LLM 调用；不带则该脚本共 19 项。

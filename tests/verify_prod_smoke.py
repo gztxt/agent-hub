@@ -217,9 +217,13 @@ def main():
                 cj = json.loads(cb or b"{}")
             except Exception:                               # noqa: BLE001
                 cj = {}
-            txt = str(cj.get("reply") or cj.get("text") or "")
+            # 实测字段名是 `response`（不是 reply/text）—— 第一版按记忆里的名字读，
+            # 把一条成功的真 LLM 回复判成空。判据同时要求 usage 里有 token 计数，
+            # 免得将来"字段有值但根本没调模型"这类假绿混进来。
+            txt = str(cj.get("response") or cj.get("reply") or cj.get("text") or "")
             check("chat 端点真跑通一次 LLM（工具环之外的文本环）",
-                  stc == 200 and cj.get("success") is True and len(txt) > 0,
+                  stc == 200 and cj.get("success") is True and len(txt) > 0
+                  and isinstance(cj.get("usage"), dict) and (cj["usage"].get("total_tokens") or 0) > 0,
                   f"HTTP {stc} {__import__('time').time()-t0:.1f}s model={cj.get('model')} reply={txt[:16]!r}")
     else:
         print("  SKIP  chat（--no-chat）")
