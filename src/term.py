@@ -190,7 +190,12 @@ async def create_session(body: CreateIn, request: Request):
 
 
 @router.get("/api/term/sessions")
-async def list_sessions():
+async def list_sessions(request: Request):
+    # P1-7：列表本身是**控制平面入口** —— 它漏 sid + agent_id + cmd + cwd + alive，
+    # 而 DELETE 以前不鉴权 ⇒ 任何能撑到 3102 的一方（单前 **绑定 0.0.0.0**，局域网可达）
+    # 可以「列 → 拿 sid → 杀」接力杀掉别人正在跑的会话。只堵 DELETE 不堵 GET 等于没堵。
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "GET /api/term/sessions")
     _reap()
     # 只展示活会话：已退出记录不再以"僵尸条目"出现（历史改由 /api/term/history 从磁盘直读）
     titles: Dict[str, Dict[int, str]] = {}
@@ -221,7 +226,11 @@ async def agent_history(agent_id: str, request: Request, limit: int = Query(defa
 
 
 @router.delete("/api/term/sessions/{sid}")
-async def kill_session(sid: str):
+async def kill_session(sid: str, request: Request):
+    # P1-7：杀掉别的会话 = 服务打断，与“建会话”同级危险（建已经被闸了）。
+    # 前端六个调用点本来就带 termHeaders()，故此处只补服务端，不会造成界面断流。
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "DELETE /api/term/sessions/{sid}")
     # 先摘出登记表 → 列表/新 WS 立即看不到（❌ 即时生效）；进程灭杀与资源回收走 kill→_force_kill→_cleanup
     sess = _sessions.pop(sid, None)
     if not sess:

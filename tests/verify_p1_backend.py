@@ -132,7 +132,15 @@ print(f"目标：{BASE}")
 # ── 1. 多观看者：两条 WS 必须各拿到完整流 ────────────────────────────
 print("\n[1] 多观看者独立流（P1-5）")
 N = 120
-s = api("/api/term/sessions", {"agent_id": "shell"})["session"]
+try:
+    s = api("/api/term/sessions", {"agent_id": "shell"})["session"]
+except urllib.error.HTTPError as e:
+    if e.code == 401:
+        print("  建会话被 401 拒：P1-7 鉴权**生效中**，是探针没带对口令。\n"
+              "  正确跑法：HUB_TOKEN=<该实例 .env 里的 TERM_TOKEN> "
+              "            venv/bin/python tests/verify_p1_backend.py <BASE>")
+        sys.exit(3)
+    raise
 sid = s["id"]
 print(f"  会话 {sid}  cmd={s['cmd']}")
 try:
@@ -197,6 +205,36 @@ def ws_close_code(sid):
 code, exc = ws_close_code("nosuchsid0")
 check("不存在的 sid 能给客户端真实业务码 4404", code == 4404,
       f"close_code={code} exc={exc}（改前实测：close_code=None exc=InvalidStatus:403）")
+
+# ── 4. P1-7 终端控制平面鉴权 ────────────────────────────────────
+# 改前实测（生产 :3102）：无口令 GET → 200（漏 sid+cmd+cwd）、无口令 DELETE → 404
+# （404 = 根本没查口令就直接查表）。"列 → 拿 sid → 杀" 是一条完整的打断别人会话的链。
+print("\n[4] 终端清单/销毁的鉴权（P1-7）")
+
+
+def status(path, method="GET", tok=None):
+    hd = {"Content-Type": "application/json"}
+    if tok is not None:
+        hd["x-term-token"] = tok
+    r = urllib.request.Request(BASE + path, method=method, headers=hd)
+    try:
+        with urllib.request.urlopen(r, timeout=20) as f:
+            return f.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+check("无口令 GET /api/term/sessions → 401", status("/api/term/sessions") == 401,
+      f"实得 {status('/api/term/sessions')}（改前生产实测 200）")
+check("无口令 DELETE 不存在的 sid → 401 而非 404",
+      status("/api/term/sessions/deadbeef", "DELETE") == 401,
+      f"实得 {status('/api/term/sessions/deadbeef', 'DELETE')}（404=先查表后鉴权，等于没闸）")
+check("错口令仍 401（不做前缀/大小数宽容）",
+      status("/api/term/sessions", tok="definitely-wrong") == 401)
+check("对口令 GET → 200（没把界面打成断流）", status("/api/term/sessions", tok=TOK) == 200)
+check("query ?token= 与 header 同权（与 POST/WS 口径一致）",
+      status(f"/api/term/sessions?token={TOK}") == 200)
+check("首页与静态未被误伤（/ 200、hub.js 200）",
+      status("/") == 200 and status("/static/hub.js") == 200)
 
 print("\n" + ("全部通过 ✅" if not FAILS else f"失败 {len(FAILS)} 项 ❌：{FAILS}"))
 sys.exit(1 if FAILS else 0)

@@ -917,11 +917,24 @@ function termChipHtml(s) {
          'onclick="termKillOne(\'' + s.id + '\')">' + ico('x', 'xs') + '</button></span>';
 }
 
+/* P1-7：清单类 GET 的 401 只能报一次 —— termRefreshList 是轮询调用，不去重就会
+   反复弹同款错误把界面活埋。拿到过清单就重置，允许下次再错时重新报。 */
+let termAuthWarned = false;
+function termAuthWarn(e) {
+  const m = String((e && e.message) || e || '');
+  if (!/401|token/i.test(m)) return;      // 网络错/5xx 不归因到「口令」
+  if (termAuthWarned) return;
+  termAuthWarned = true;
+  toast('终端清单需要 TERM_TOKEN：在「设置」里应用口令后重试', 'err');
+}
+function termAuthOk() { termAuthWarned = false; }
+
 async function termRefreshList() {
   try {
     const d = await api('/api/term/sessions', { headers: termHeaders() });
     // 只显示当前选中 agent 的会话，避免显示其他 agent 的终端
     const live = (d.sessions || []).filter(s => s.alive && s.agent_id === chatPick);
+    termAuthOk();   // 拿到清单 = 口令可用，重置去重位
     const el = $('termSessList');
     if (!el) return live;
     // 空清单就什么都不画（用户 09-20：拿掉「暂无活会话」占位字）
@@ -932,7 +945,12 @@ async function termRefreshList() {
       if (term) term.write('\r\n\x1b[90m[当前会话已结束——点「新会话」重新开始]\x1b[0m');
     }
     return live;
-  } catch (e) { return null; }
+  } catch (e) {
+    // 改前 GET 不鉴权，走不到这条路；P1-7 之后这里是 401 的唯一出口。
+    // 全吐成 null 就是「静默不可用」—— 这是用户自己能修的一种失败，必须上屏。
+    termAuthWarn(e);
+    return null;
+  }
   // 出错回 null（= 没拿到清单），与「清单为空」分开：空清单才清屏给提示，
   // 取不到清单不能把好好一块画面抹掉
 }
@@ -958,7 +976,9 @@ function termAutoAttach(live) {
     const a = entityById(chatPick);
     term.write('\x1b[90m' + chatPick + ' · ' + (a?.name || chatPick) + ' 终端\x1b[0m\r\n');
     term.write('\x1b[90m提示：点「新会话」拉起 ' + (a?.name || chatPick) + ' 的原生终端\x1b[0m\r\n');
-  });
+  }).catch(e => { termAuthWarn(e); });
+  // 这条 .catch 不是装饰：termAutoAttach 会为拿不到清单而自己补发一次 GET，
+  // 无 catch 就只剩控制台里一条没人认领的 rejection，用户侧表现为「什么都没发生」
 }
 
 /* termKill()（「销毁当前」整块按钮）已随 v0.10.1 外框统一拿掉；销毁只保留芯片上的 × = termKillOne。 */
