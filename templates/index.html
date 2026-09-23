@@ -1038,8 +1038,13 @@
       var L = [], T0 = Date.now();
       window.addEventListener('error', function (e) {
         var t = e && e.target;
-        if (t && (t.src || t.href)) L.push('资源加载失败: ' + (t.src || t.href));
-        else L.push('JS异常: ' + String((e && (e.message || e.type)) || '?').slice(0, 120));
+        if (t && (t.src || t.href)) { L.push('资源加载失败: ' + (t.src || t.href)); return; }
+        // 必须留 filename:lineno —— 只记 message 会丢掉「抛在哪一行」这个能定罪的量
+        var f = String((e && e.filename) || '?').split('/').pop().split('?')[0];
+        L.push('JS异常 @ ' + f + ':' + (e && e.lineno) + ':' + (e && e.colno) + ' → '
+          + String((e && (e.message || e.type)) || '?').slice(0, 150));
+        var st = (e && e.error && e.error.stack) ? String(e.error.stack).split('\n')[1] : '';
+        if (st) L.push('栈顶: ' + st.trim().slice(0, 150));
       }, true);
       window.addEventListener('unhandledrejection', function (e) {
         L.push('Promise拒绍: ' + String(e && e.reason).slice(0, 100));
@@ -1064,7 +1069,27 @@
           + '在显示的页=' + (pages.join(',') || '★无（正文整块空白）') + '\n'
           + 'localStorage键=' + (Object.keys(localStorage).join('|') || '(空)') + '\n'
           + '就绪=' + document.readyState + ' 已运行=' + (Date.now() - T0) + 'ms\n'
-          + (L.length ? '异常清单(前6):\n' + L.slice(0, 6).join('\n') : '异常清单: 无');
+          // 端侧真实拿到的字节：Resource Timing 由浏览器自己填，伪造不了
+          + '脚本实况=' + (function () {
+              var out = [];
+              try {
+                [].slice.call(performance.getEntriesByType('resource')).forEach(function (r) {
+                  if (!/hub\.js|xterm\.js|fit\.js/.test(r.name)) return;
+                  out.push(r.name.split('/').pop().split('?')[0]
+                    + ' enc=' + r.encodedBodySize + ' xfer=' + r.transferSize
+                    + ' dec=' + r.decodedBodySize
+                    + (r.responseStatus !== undefined ? ' code=' + r.responseStatus : '')
+                    + ' ms=' + Math.round(r.duration));
+                });
+              } catch (err) { out.push('取不到:' + err); }
+              return out.join(' | ') || '(无资源计时)';
+            })() + '\n'
+          // 顶层 function 会整体提升，所以「某函数缺失」只有一种解释：响应体在它的声明处被截断
+          + '符号阶梯=' + ['openOverlay', 'go', 'loadAgents', 'navItemHtml', 'histHtml',
+                          'navRow', 'renderNav', 'initSidebar', 'syncOverlayMask',
+                          'setBadge', 'tick']   // 声明行号 102/110/161/1742/1803/1859/1862/1987/~2016/2070/2147
+              .map(function (k) { return k + ':' + (typeof window[k] === 'function' ? 1 : 0); }).join(' ') + '\n'
+          + (L.length ? '异常清单(前8):\n' + L.slice(0, 8).join('\n') : '异常清单: 无');
       }
       window.__DIAG_TEXT__ = probe;
       if (location.search.indexOf('diag') < 0) return;
