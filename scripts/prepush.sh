@@ -18,7 +18,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PAT='ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|AKIA[0-9A-Z]{16}|sk-[0-9A-Za-z._-]{20,}|PRIVATE KEY|BEGIN (RSA|EC|OPENSSH) PRIVATE KEY'
+# 每个分支的首字符用 [x] 括号写法：模式文本自身就不会再命中自己
+# （原写法把 'PRIVATE' + 'KEY' 两个词按原文连续放进模式，会被检查① 报
+#  HEAD:scripts/prepush.sh 自匹配 —— 这是扫描器误报而非漏报；
+#  用「豁免扫描器自身」做修法会把扫描盲区本身放进去，所以改模式写法。）
+PAT='[g]hp_[0-9A-Za-z]{36}|[g]ithub_pat_[0-9A-Za-z_]{20,}|[x]ox[baprs]-[0-9A-Za-z-]{10,}|[A]KIA[0-9A-Z]{16}|[s]k-[0-9A-Za-z._-]{20,}|[P]RIVATE KEY|BEGIN ([R]SA|[E]C|[O]PENSSH) [P]RIVATE KEY'
 FAILS=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAILS=$((FAILS + 1)); }
@@ -32,7 +36,7 @@ if [ -n "$head_hits" ]; then
   bad "HEAD 跟踪文件里出现高危模式，命中文件（只列路径，内容刻意不回显）："
   printf '%s\n' "$head_hits" | sed 's/^/          /'
 else
-  ok "HEAD 跟踪文件零命中（模式含 ghp_/github_pat_/xox*/AKIA*/sk-*/PRIVATE KEY）"
+  ok "HEAD 跟踪文件零命中（模式含 ghp_ / github_pat_ / xox* / AKIA* / sk-* / 私钥头）"
 fi
 
 echo "=== ② 未推送区间的全历史 blob ==="
