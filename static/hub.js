@@ -1914,20 +1914,51 @@ function navMode(m) {
 }
 
 /* ── 侧栏：手风琴导航委托绑定 + 折叠记忆 ───────────── */
+/* ── v0.13.7 侧栏抽屉：偏好按视口档位分存 ─────────────────────────────
+   事故（2026-09-23）：旧实现用一个**与宽度无关**的全局键 hub.sidebar 存折叠态，
+   并在**加载时**就写盘。于是一次宽屏访问就把 "展开(0)" 存成全局偏好；手机再打开时
+   stored==='0' ⇒ 不收起 ⇒ CSS @media(max-width:767px) 的 .sidebar:not(.collapsed)
+   是 position:fixed / width:236px / z-index:46 的白色覆盖层 —— 390px 屏上盖掉 61%
+   视口（实测 overlays: [{id:sidebar,bg:rgb(255,255,255),z:46,pct:61}]），用户看到
+   就是「整页被白板糊住」。且 resize 只重画终端，抽屉态永不重算 ⇒ 刷新也不会好。
+
+   三条不变量（本文件里全部可被 tests/test_sidebar_breakpoint.py 打到）：
+     1 一档一键，宽屏的偏好永不污染窄屏；
+     2 加载不写盘，只有真点过才算偏好（污染路径从根上断掉）；
+     3 断点只有一个定义（matchMedia 767px，与 CSS 同值），跨断点必重算。 */
+const mqNarrow = window.matchMedia('(max-width: 767px)');
+const sidebarPrefKey = () => mqNarrow.matches ? 'hub.sidebar.narrow' : 'hub.sidebar.wide';
+
+/* 纯判定，单列成顶层函数是为了让探针能原样抽出**真代码**跑（手抄即假绿）。
+   stored：本档已存偏好；legacy：旧的全局键 hub.sidebar。
+   legacy 只在宽屏当一次性迁移用 —— 它几乎必然由宽屏写入；窄屏一律回到默认收起，
+   这样存量已被污染的手机（值='0'）首屏即自愈，不需用户清缓存。 */
+function sidebarWantCollapsed(narrow, stored, legacy) {
+  if (stored !== null) return stored === '1';
+  if (!narrow && legacy !== null) return legacy === '1';
+  return narrow;
+}
+
 function initSidebar() {
   const sb = document.getElementById('sidebar'), btn = document.getElementById('btnSideToggle');
   if (!sb || !btn) return;
-  const narrow = () => window.innerWidth < 768;
-  const apply = c => {
+  const narrow = () => mqNarrow.matches;
+  const apply = (c, persist) => {
     sb.classList.toggle('collapsed', c);
     btn.innerHTML = c ? ico('panel-expand', 'xs') : ico('panel-collapse', 'xs') + '<span class="lbl">收起</span>';
-    localStorage.setItem('hub.sidebar', c ? '1' : '0');
+    if (persist !== false) localStorage.setItem(sidebarPrefKey(), c ? '1' : '0');
     const m = document.getElementById('sideMask');
     if (m) m.classList.toggle('on', !c && narrow());   // 窄屏展开时才有遮罩
   };
-  const stored = localStorage.getItem('hub.sidebar');
-  apply(stored === '1' || (stored === null && narrow()));   // 窄屏首次默认收成图标条
+  // 首屏解析档位偏好：persist=false ⇒ 加载本身不再写盘（老代码正是在这一步把宽屏的"展开"存成全局值）
+  const resolve = () => apply(sidebarWantCollapsed(narrow(), localStorage.getItem(sidebarPrefKey()),
+                                                   localStorage.getItem('hub.sidebar')), false);
+  resolve();
   btn.onclick = () => apply(!sb.classList.contains('collapsed'));
+  // 跨断点（转屏/窗口拖窄/桌面缩放）重新解析本档偏好；老代码只重画终端，抽屉状态永远停在加载那一刻
+  const onBreak = () => resolve();   // apply() 自己会带遮罩，不再加一个平行的掩码同步路径
+  if (mqNarrow.addEventListener) mqNarrow.addEventListener('change', onBreak);
+  else if (mqNarrow.addListener) mqNarrow.addListener(onBreak);   // Safari < 14
   // 事件委托：静态常驻项 + 手风琴动态项（含系统页）统一走这里
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
