@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（09-23） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 136 |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 26 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（23 只里 16 只需服务在跑、7 只不需，见下节） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 19 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 265 |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 35 |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 29 |
 
 ## 怎么跑
 
@@ -85,9 +85,12 @@ $ venv/bin/python tests/verify_replay_gate.py
 
 ## 浏览器探针（离线四只 + 线上三只）：前端解析层的缺陷只有真引擎能作证
 
-> 计数口径：上面表格里的 23 是**文件数**（09-24 00:5x 实测）。
-> 其内 7 只走“抽函数 + 本地最小页”（不需服务），13 只需服务在跑（含 `3102`），
-> 有重叠 ⇒ 不拿一个数字兼两个口径。
+> 计数口径：**上面三列数字均为 09-24 19:0x 实测** —— L0 265 / L1 35 取自
+> `bash scripts/run_tests.sh hermetic-clean` 与 `... host` 的 `[tier]` 行；
+> L2 29 = `ls tests/verify_*.py`(27) + `ls tests/probe_*.py`(2)。
+> 旧版“23 只 = 16 需服务 + 7 离线”的拆分已随文件集变化作废（此后新增的
+> `verify_kb_federation` / `verify_skill_facade` / `verify_mcp_facade` 都是 in-process 不占端口），
+> 但完整的二分没逐只重数 ⇒ **宁可不写数字，也不拿旧拆分冒充实测**。
 
 共同硬规定（三条都是踩出来的，缺一就变成"自己说好了"）：
 

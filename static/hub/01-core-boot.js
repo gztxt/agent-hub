@@ -197,6 +197,7 @@ function go(page) {
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
   if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
   if (page === 'mcp') { loadMcp(); loadAcl(); }
+  if (page === 'assets') loadAssets();   // P4 资产面板（只读门面聚合，07-asset-panel.js）
 }
 
 function fillAgentSelect(sel, withAuto) {

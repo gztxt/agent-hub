@@ -40,6 +40,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARDS = sorted((ROOT / "static" / "hub").glob("[0-9][0-9]-*.js"))
+# P4（v0.13.19）新分片在红基线 SHA 上**不存在**，逐文件取旧体时必须跳过。
+# 故意列成显式名单而不是「取不到就静默 skip」：一旦有人把红基线整段注掉，
+# RED_TOTAL 那道全站计数断言会立刻变空转（那正是 09-24 侦察报的假绿家族）。
+SHARDS_AFTER_RED = ["07-asset-panel.js"]
 HUBJS = ROOT / "static" / "hub.js"   # 产物也一起纳入零丢行断言
 HUB = ROOT / "static" / "hub.js"
 TPL = ROOT / "templates" / "index.html"
@@ -285,7 +289,8 @@ class TestLsGuardStatic(unittest.TestCase):
     def test_shard_set_is_what_we_counted(self):
         self.assertEqual([p.name for p in SHARDS],
                          ["01-core-boot.js", "02-nav-and-poll.js", "03-agents-cards.js",
-                          "04-terminal-ws.js", "05-chat-and-history.js", "06-manager-tasks.js"],
+                          "04-terminal-ws.js", "05-chat-and-history.js", "06-manager-tasks.js",
+                          "07-asset-panel.js"],
                          "分片清单变了 ⇒ 逐文件计数与红基线要一起核")
 
     def test_R1_no_bare_localStorage_in_shards(self):
@@ -342,7 +347,10 @@ class TestLsGuardStatic(unittest.TestCase):
     def test_R5_red_baseline_is_caught(self):
         """闸门必须在改前字节上判红，否则属空转。"""
         per, total = {}, 0
-        for p in SHARDS:
+        red_shards = [p for p in SHARDS if p.name not in SHARDS_AFTER_RED]
+        self.assertEqual(len(red_shards), 6,
+                         "红基线覆盖的分片数变了（应仍为 6）⇒ 不能靠新增分片稀释计数基线")
+        for p in red_shards:
             old = blank_js_comments(_git(RED_SHA, "static/hub/" + p.name))
             n = len(bare_uses(old))
             per[p.name] = n

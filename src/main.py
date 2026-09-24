@@ -45,6 +45,8 @@ from writeauth import write_gate
 from registry import build_adapters, get_adapter
 import hook as hook_mod
 import memory as memory_mod
+import kb as kb_mod
+import skill as skill_mod
 import tasks as tasks_mod
 import mcpgw as mcpgw_mod
 import cronjobs as cronjobs_mod
@@ -54,11 +56,15 @@ import vitals as vitals_mod
 import embed_proxy as embed_proxy_mod
 import selfattest
 import staticguard
+import tdai_client
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.15"   # 后端：opencode 历史会话接入（sessions_store 补 opencode_sqlite 适配 + 前端白名单同步）
+VERSION = "0.13.19"   # 后端：P3 工具注册表——/mcp/tools 回 pass-through inputSchema + 逐后端台账信封（backends/degraded/note/took_ms），
+                      #   截断打标 description_truncated、无 schema 打标 schema_missing；新增 /mcp/registry 按 agent 算生效工具与 ACL；
+                      #   _resolve_acl() 单一真源（deny 覆盖 allow、与行序无关、零规则默认放行、有规则未覆盖则拒）；
+                      #   修 mcp_call 无条件重指全局 DB 连接（会把临时库指向生产库并污染之）；前端 P4 资产面板 /assets（六态诚实区分）
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -192,6 +198,8 @@ if static_path.exists():
 # 子路由（Hook / 记忆 / 指挥官）
 app.include_router(hook_mod.router)
 app.include_router(memory_mod.router)
+app.include_router(kb_mod.router)
+app.include_router(skill_mod.router)
 app.include_router(tasks_mod.router)
 app.include_router(mcpgw_mod.router)
 app.include_router(cronjobs_mod.router)
@@ -268,6 +276,11 @@ async def health():
            "term_sessions": term_mod.alive_count(),
            "term_idle_max_s": term_mod.idle_max_s()}
     out.update(selfattest.snapshot())
+    # 记忆后端体检（P0-6）：权威库在 TDAI，它挂不挂必须从 /health 能看出来。
+    # 旧态是「/api/memory/search 永远回 count:0 且无任何错误字段」——全绿而功能层已死。
+    # 纯读缓存不起网络（见 tdai_client.backend_status 注释），且**不改 status**：
+    # 记忆后端不可用不等于 hub 坏了，同 code_stale 只兑情报的设计意图。
+    out["memory_backend"] = tdai_client.backend_status()
     if not db_ok:
         out["status"] = "degraded"
     return out

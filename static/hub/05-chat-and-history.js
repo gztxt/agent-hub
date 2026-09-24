@@ -89,7 +89,8 @@ async function loadAcl() {
       '<p><b>' + escapeHtml(r.agent_id) + '</b> · <code>' + escapeHtml(r.tool_pattern) + '</code>' +
       (r.server_id ? ' · server=' + escapeHtml(r.server_id) : ' · 任意server') + '</p>' +
       '<button class="btn sm danger" aria-label="删除规则 ' + r.id + '" onclick="delAcl(' + r.id + ')">' + ico('x') + '</button></div>').join('') ||
-      '<div class="hint">暂无规则——无规则 = 所有 agent 默认放行（首次接入零摩擦）</div>';
+      '<div class="hint">暂无规则——<b>零规则行时</b>所有 agent 默认放行（首次接入零摩擦）；'
+      + '但只要存在任何一条适用规则（<b>含 <code>*</code> 通配行</b>），即进入白名单语义：未覆盖即拒，且 deny 优先。</div>';
   } catch (e) { el.innerHTML = '<span style="color:var(--danger-text)">' + escapeHtml(e.message) + '</span>'; }
 }
 async function addAcl() {
@@ -152,10 +153,12 @@ const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders' };   // �
 const NAV_ORDER = ['agents', 'infra', 'system'];
 const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
-                   ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow']];
+                   ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
+                   ['assets', '资产', 'layers']];
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
-                      memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测' };
+                      memory: '记忆中心', mcp: '工具', ports: '端口', telemetry: '遥测',
+                      assets: '资产' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';

@@ -4,9 +4,17 @@
 - L2 近30天工作记忆：整文档；content 由 L1 压缩生成（LLM 可用时），manual 用户手写独立保存
 - L3 长期 Profile：整文档，人工确认制——与上游一致：只有用户能删改，自动流程不碰 manual 区
 - 注入通道：GET /api/memory/context 产出「开局上下文包」（L3+L2+相关 L1）
+
+【v0.13.16 主权收口】记忆的**权威副本在 TDAI（:8420，实测 L1 233 / L0 5967 / L3 persona）**，
+不在本模块的 `memories` 表（实测只有 4 行 2026-09-06 的陈旧便签）。因此检索与注入
+一律**并联**本地与 TDAI 后 RRF 融合，**不得再写「本地无命中才查权威库」的短路**。
+旧实现那一条把路径/方法/两个鉴权头写错、又用 `except: pass` 吞掉，对外只报
+`{count:0, engine:"keyword"}` 的 HTTP 200 —— 属「全指标绿而功能层已死」。详见 tdai_client.py 顶部。
 """
+import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -15,10 +23,98 @@ from pydantic import BaseModel, Field
 
 import db
 import llm
+import tdai_client
 
 router = APIRouter()
 
 CATEGORIES = {"fact", "decision", "constraint", "preference"}
+
+#: RRF 常数。取文献惯例 60：名次差异在前几名被拉开、长尾被压平，
+#: 且**不依赖各路原始分**（本地 LIKE 无分、TDAI 是余弦，量纲不可比）。
+RRF_K = 60
+#: 开局注入包里的 TDAI 调用预算。它坐在会话起始链路上，超了就必须放弃该路，
+#: 不能把对话卡在记忆检索后面（v2 设计里唯一被完整采纳的一条约束）。
+CONTEXT_TIMEOUT_S = float(os.getenv("MEMORY_CONTEXT_TIMEOUT", "1.2"))
+#: 权威 persona 很長（实测数千字），给注入包留固定占比，不要把 L2/L1 挤光。
+PROFILE_CHARS = int(os.getenv("MEMORY_PROFILE_CHARS", "1200"))
+
+
+def _local_l1(q: str, limit: int) -> list:
+    # `layer='L1'` 不是多余过滤：`list_l1` 一直按 layer='L1' 取数，而检索路此前把全表混入
+    # 融合，两个端点口径不一致（同一个库给两个答案）。09-24 独立复核发现。
+    rows = db.query(
+        "SELECT * FROM memories WHERE status='active' AND layer='L1' AND content LIKE ? "
+        "ORDER BY updated_at DESC LIMIT ?", (f"%{q}%", limit))
+    for r in rows:
+        r["source"] = "local"
+    return rows
+
+
+# `sources` 只认这两个词。用白名单 + 400 而不是「未知词则忽略」，是因为忽略会造出
+# **第三种静默零结果**：`?sources=tdaii`（手一抖）→ 两路全跳 → HTTP 200、
+# `backends:[]`、无 error、count=0——与本次要修的缺陷对外表现一模一样。
+SOURCE_WHITELIST = ("local", "tdai")
+
+
+def _split_sources(sources: str) -> set:
+    want = {s.strip() for s in (sources or "").split(",") if s.strip()}
+    bad = sorted(want - set(SOURCE_WHITELIST))
+    if bad:
+        raise HTTPException(
+            400, f"未知 sources: {bad}；可用值 {list(SOURCE_WHITELIST)}")
+    if not want:
+        raise HTTPException(400, "sources 不能为空")
+    return want
+
+
+# RRF 权重：权威库满权，原始会话略降，本地便签压到 0.2。
+# 为何本地不是 0：它记的是「hub 自己看到的本机事实」（端口/部署），TDAI 里没有；
+# 为何不是 1.0：只有 4 行且与权威库同权时，`sorted` 的稳定排序会让它**恰好压过
+# TDAI 第一名**（rank0 双方同为 1/(K+1)），4 命中 3 条即占 3 席。
+# 09-24 独立复核指出 `weights` 形参全仓无人传（死旋钮），已用真代码复现。
+W_LOCAL, W_TDAI_L1, W_TDAI_L0 = 0.2, 1.0, 0.6
+
+
+def _exc(e: BaseException) -> str:
+    """异常 → 可外发的短字符串。**必须过 scrub**：上游异常文本里可能带 URL/头片段，
+    直接 `str()` 进 `backends[].error` 是一条绕过脱敏的出口（09-24 复核发现的真漏 1）。
+    与 `tdai_client` 共用同一个 scrub 实现，脱敏只能有一处。"""
+    return tdai_client.scrub(f"{type(e).__name__}: {e}")[:160]
+
+
+def _rrf_fuse(rankings, weights=None, limit=10):
+    """Reciprocal Rank Fusion：score = Σ weight/(RRF_K + rank + 1)。
+
+    为什么不用原分加权：本地那路是 LIKE，根本没有可比的分数；一旦拿
+    `0.76 > 1` 这种比较去排序，就是在拿两侧量纲开源。只用名次。
+    去重键带 source，避免本地整型 id 与 TDAI 的 `m_xxx` 字符串 id 撞车。
+    """
+    pool: dict = {}
+    n = len(rankings)
+    w = weights or [1.0] * n
+    for ri, lst in enumerate(rankings):
+        for rank, it in enumerate(lst or []):
+            key = f"{it.get('source','')}|{it.get('id') or (it.get('content') or '')[:80]}"
+            e = pool.get(key)
+            if e is None:
+                e = dict(it)
+                e["rrf"] = 0.0
+                e["from"] = []
+                pool[key] = e
+            e["rrf"] += w[ri] / (RRF_K + rank + 1)
+            src = it.get("source")
+            if src and src not in e["from"]:
+                e["from"].append(src)
+    out = sorted(pool.values(), key=lambda x: -x["rrf"])[:limit]
+    for o in out:
+        o["rrf"] = round(o["rrf"], 5)
+    return out
+
+
+def _backend(name: str, r: dict) -> dict:
+    """把一次各路调度的结果压成可读诊断字段。**ok=false 时必须带 error**。"""
+    return {"name": name, "ok": bool(r.get("ok")), "count": int(r.get("count") or 0),
+            "ms": r.get("ms"), "error": r.get("error") if not r.get("ok") else None}
 
 
 class MemoryIn(BaseModel):
@@ -86,28 +182,69 @@ async def delete_l1(mid: int):
 
 
 @router.get("/api/memory/search")
-async def search_memory(q: str = Query(min_length=1), limit: int = Query(default=10, le=50)):
-    """关键词检索（上游为 BGE 语义检索，此处轻量版；接 TDAI/embedding 留扩展位）"""
-    rows = db.query(
-        "SELECT * FROM memories WHERE status='active' AND content LIKE ? "
-        "ORDER BY updated_at DESC LIMIT ?", (f"%{q}%", limit))
-    result = {"memories": rows, "count": len(rows), "engine": "keyword"}
-    # 透传 TDAI（若在跑且本地无命中）
-    if not rows:
-        try:
-            import aiohttp
+async def search_memory(q: str = Query(min_length=1), limit: int = Query(default=10, le=50),
+                        sources: str = Query(default="local,tdai"),
+                        episodic: int = Query(default=0, ge=0, le=20)):
+    """记忆检索：本地 L1（LIKE）与 TDAI 权威库（语义）**并联**后 RRF 融合。
 
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"{os.getenv('TDAI_URL', 'http://127.0.0.1:8420')}/memory/search",
-                                 params={"q": q, "limit": limit},
-                                 timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        result["tdai"] = data
-                        result["engine"] = "keyword+tdai"
-        except Exception:  # noqa: BLE001
-            pass
-    return result
+    为什么不保留 v0.13.15 及以前的「本地无命中才打 TDAI」短路：
+    本地 `memories` 实测只有 4 行 09-06 陈旧便签，一旦它命中就会把权威库整个屏蔽；
+    更重的是原实现的 TDAI 分支路径/方法/两个鉴权头全错且被 `except: pass` 吞掉，
+    导致对外只报 `{count:0, engine:"keyword"}` 的 HTTP 200——「全指标绿而功能层已死」。
+
+    `episodic>0` 时额外并一路 L0 原始会话检索（TDAI）。
+    失败不抛错、不静默：`backends[]` 逐路报 ok/count/ms/error，前端与闸门都能断言。
+    """
+    t0 = time.monotonic()
+    want = _split_sources(sources)
+    backends = []
+    routes = []                      # [(name, items, weight)] 顺序即权威度顺序
+
+    local = _local_l1(q, limit) if "local" in want else []
+    if "local" in want:
+        routes.append(("local", local, W_LOCAL))
+        backends.append({"name": "local", "ok": True, "count": len(local),
+                         "ms": None, "error": None})
+
+    tdai_hits = []
+    if "tdai" in want:
+        tasks = [tdai_client.search_memories(q, limit, timeout_s=CONTEXT_TIMEOUT_S * 2.5)]
+        if episodic:
+            tasks.append(tdai_client.search_conversations(q, episodic,
+                                                          timeout_s=CONTEXT_TIMEOUT_S * 2.5))
+        res = await asyncio.gather(*tasks, return_exceptions=True)
+        c = res[0]
+        if isinstance(c, Exception):        # gather 兼容：客户端本不应抛，抛了也不能择掉
+            c = {"ok": False, "count": 0, "error": _exc(c)}
+        tdai_hits = c.get("items") or []
+        backends.append(_backend("tdai_l1", c))
+        # L1 先入 rankings、L0 后入：旧写法把 L0 排在 L1 前面，同一名次下
+        # **原始会话会压过结构化记忆**，方向反了（09-24 独立复核）。
+        routes.append(("tdai_l1", tdai_hits, W_TDAI_L1))
+        if episodic:
+            e = res[1] if len(res) > 1 else {"ok": False, "count": 0, "error": "未执行"}
+            if isinstance(e, Exception):
+                e = {"ok": False, "count": 0, "error": _exc(e)}
+            backends.append(_backend("tdai_l0", e))
+            if e.get("ok"):
+                routes.append(("tdai_l0", e.get("items") or [], W_TDAI_L0))
+
+    fused = _rrf_fuse([r[1] for r in routes],
+                      weights=[r[2] for r in routes], limit=limit)
+    engines = [b["name"] for b in backends if b["ok"] and b["count"]]
+    degraded = [b["name"] for b in backends if not b["ok"]]
+    return {
+        "memories": fused,
+        "count": len(fused),
+        # 保留 `engine` 与 `tdai` 两个旧字段：hubmcp.hub_memory_search 还在读。
+        # 旧实现里它拿 `bool(data.get("tdai"))` 把 TDAI 结果整个丢弃，所以即使透传通了
+        # 也会回 count=0；现在 TDAI 条目已入 fused，count 自然对了。
+        "engine": "+".join(engines) + "|rrf" if engines else "none",
+        "tdai": bool(tdai_hits),
+        "backends": backends,
+        "degraded": degraded,
+        "took_ms": round((time.monotonic() - t0) * 1000, 1),
+    }
 
 
 # ── L2 / L3 文档 ──────────────────────────────────────────────────────
@@ -184,21 +321,81 @@ async def rebuild_l2():
 # ── 注入通道 ──────────────────────────────────────────────────────────
 
 @router.get("/api/memory/context")
-async def injection_context(q: Optional[str] = None, max_chars: int = Query(default=6000, le=20000)):
-    """SessionStart 注入包：L3 + L2(content+manual) + 相关 L1"""
+async def injection_context(q: Optional[str] = None, max_chars: int = Query(default=6000, le=20000),
+                            sources: str = Query(default="local,tdai"),
+                            scenes: int = Query(default=0, ge=0, le=20)):
+    """SessionStart 注入包：L3 + L2(content+manual) + 相关 L1（本地与权威库融合）。
+
+    为什么 L3 要回落到 TDAI：hub 自己的 `memory_docs` 实测只有 L2 一行，**L3 为空**，
+    所以旧版返回的开局包里根本不会出现「## 长期 Profile」段——实测只有 357 字、
+    且是 18 天前的 L2 旧稿。权威 L3（persona）在 TDAI `/v2/core/read`。
+
+    时间预算：本函数坐在会话起始链路上，TDAI 各路给 `MEMORY_CONTEXT_TIMEOUT`（默认 1.2s），
+    超时即**弃该路并记入 degraded**，绝不把对话卡在记忆检索后面。
+    """
+    t0 = time.monotonic()
+    want = _split_sources(sources)
     l3 = _get_doc("L3")
     l2 = _get_doc("L2")
+
+    # 一开始就把所有 TDAI 调用并发发出去，不串行等
+    calls = {}
+    if "tdai" in want and not (l3["content"] or l3["manual"]):
+        calls["profile"] = tdai_client.core_read(timeout_s=CONTEXT_TIMEOUT_S)
+    if "tdai" in want and q:
+        calls["l1"] = tdai_client.search_memories(q, 10, timeout_s=CONTEXT_TIMEOUT_S)
+    if "tdai" in want and scenes:
+        calls["scenes"] = tdai_client.scenario_ls(timeout_s=CONTEXT_TIMEOUT_S)
+    results = dict(zip(calls.keys(), await asyncio.gather(*calls.values(),
+                                                         return_exceptions=True))) \
+        if calls else {}
+    backends = []
+    for name, r in results.items():
+        if isinstance(r, Exception):
+            r = {"ok": False, "count": 0, "error": _exc(r)}
+            results[name] = r
+        if name == "profile" and r.get("ok"):
+            # /v2/core/read 的契约里没有 items，不补这一刀会出现
+            # 「ok:true 但 count:0」这个歧义信号——而歧义信号正是本次要消除的东西。
+            r["count"] = 1 if (r.get("content") or "").strip() else 0
+        backends.append(_backend(f"tdai_{name}", r))
+    if "local" in want:
+        backends.append({"name": "local", "ok": True,
+                         "count": int(bool(l3["content"] or l3["manual"]))
+                         + int(bool(l2["content"] or l2["manual"])),
+                         "ms": None, "error": None})
+
     parts = []
     if l3["content"] or l3["manual"]:
         parts.append(f"## 长期 Profile\n{l3['content']}\n{l3['manual']}")
+    else:
+        pr = results.get("profile") or {}
+        if pr.get("ok") and pr.get("content"):
+            parts.append("## 长期 Profile（TDAI 权威源）\n"
+                         + pr["content"][:PROFILE_CHARS])
     if l2["content"] or l2["manual"]:
         parts.append(f"## 近30天工作记忆\n{l2['content']}\n{l2['manual']}")
+
     if q:
-        rows = db.query("SELECT category,content FROM memories "
-                        "WHERE status='active' AND content LIKE ? ORDER BY id DESC LIMIT 10",
-                        (f"%{q}%",))
-        if rows:
-            parts.append("## 相关记忆\n" + "\n".join(f"- [{r['category']}] {r['content']}" for r in rows))
+        local_rows = _local_l1(q, 10)
+        tdai_rows = (results.get("l1") or {}).get("items") or []
+        fused = _rrf_fuse([local_rows, tdai_rows],
+                          weights=[W_LOCAL, W_TDAI_L1], limit=10)
+        if fused:
+            parts.append("## 相关记忆\n" + "\n".join(
+                f"- [{m.get('category') or m.get('type') or 'l1'}] {m.get('content','')}"
+                for m in fused))
+
+    if scenes:
+        ent = (results.get("scenes") or {}).get("entries") or []
+        if ent:
+            parts.append("## 场景索引（TDAI L2）\n"
+                         + "\n".join(f"- {e.get('path','')}" for e in ent[:scenes]))
+
     text = "\n\n".join(parts)
     truncated = len(text) > max_chars
-    return {"context": text[:max_chars], "truncated": truncated, "chars": len(text[:max_chars])}
+    body = text[:max_chars]
+    degraded = [b["name"] for b in backends if not b["ok"]]
+    return {"context": body, "truncated": truncated, "chars": len(body),
+            "backends": backends, "degraded": degraded,
+            "took_ms": round((time.monotonic() - t0) * 1000, 1)}

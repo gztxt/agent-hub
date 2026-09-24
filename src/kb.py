@@ -1,0 +1,276 @@
+"""联邦检索门面 /api/kb/* —— 把本机**已有**的检索能力并发调起、融合、逐路表态。
+
+【为什么不建 hub 自己的知识库】
+记忆的权威副本是 TDAI(:8420，实测 L1 236 / L0 6054)，文档的权威副本是
+`/fs/1000/ftp/技术文档` 文件系统本身（turbovec 索引只是它的投影，1.02MB / 2791 chunks）。
+hub 再建一份 `knowledge.db` 就是**第二权威副本**——它会腐烂、会与源头不一致，
+而且按本机「唯一权威副本」主权原则，那正是要避免的资产形态。所以本模块只做
+**门面 + ACL + 审计 + 归并**，一个字都不存。
+
+【四路取证的实测结论（2026-09-24，取证过程见 PENDING-TASKS PT-20260924-10）】
+① TDAI L1 语义：`tdai_client` 已在 P0 接通，实测 3.0ms/次 ⇒ 入门面。
+② turbovec 技术文档：实测可用（`[0.512] path#chunk7` 命中真实文档），但
+   **CLI 没有 JSON 出口**（只有 `info` 是 JSON），且子进程固定开销 **0.25s**
+   （numpy + core 导入 + load_meta，RSS 41MB）+ ollama embed 34ms。
+   ⇒ 入门面，但**单独给预算**（`TV_TIMEOUT_S`，默认 **2.0s**；生产实测一次 395ms），绝不上会话起始链路（那里是 1.2s 总预算）。
+     ⚠ 本行原写「800ms 预算」，与代码默认值 2.0s 不一致，09-24 12:4x 由一次外派只读复核抓出并改正。
+     口径：**文档串里的数字必须与常量同源**，否则后人会按错的预算去调参。
+③ hub 本地 `memories`：P0 已接（权威度权重 0.2，因为它只有 4 行陈旧便签）。
+④ **wigolo 网页缓存：不接**。理由全部来自实测——它的 `url_cache_fts` 建表时
+   **没有 `tokenize=` 子句**（默认 unicode61），中文查询「端口」FTS 只召回 **2** 条
+   而 `LIKE` 有 **8** 条，「配置项」FTS **0** 条；也就是说 FTS 在中文上**不比 LIKE 强、
+   还更绕**。而 LIKE 全表扫 353 行只要 **9.2ms**，根本不需要 FTS。更要紧的是：
+   对 `agent-hub` 这个主题 **LIKE 命中 0 条**（内容以 MDN 85 / 知乎 36 / 百度 31 为主），
+   而它的最近抓取时间虽然是 09-24 00:02，**却是别的会话为别的任务攒的**。
+   ⇒ 收益接近零，代价是跨进程读一个**活动写入中的 60MB 他方 db**（schema_migrations 已 9 版），
+     耦合与误写风险都归 hub 担。故 P1 明确不接，判据与数字都写在这里，防止后人再测一遍。
+
+【失败表态纪律（承接 P0）】
+每路必须回 `backends[] = {name, ok, count, ms, error}`，任何一路挂了都要能说出
+「挂的是哪路、为什么挂、这次结果少了什么」。**禁止 `except: pass`、禁止静默返回空**。
+"""
+import asyncio
+import json
+import logging
+import os
+import re
+import time
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Query
+
+import tdai_client
+
+log = logging.getLogger("hub.kb")
+router = APIRouter(prefix="/api/kb", tags=["kb"])
+
+# ── 配置（全部可 env 覆盖；默认值来自 09-24 实测，不是猜的）────────────
+TURBOVEC_PY = os.getenv("KB_TURBOVEC_PY", "/vol1/turbovec-pilot/venv/bin/python")
+# 模块**没有装进 venv**，必须在它的包目录下以 `-m` 跑（09-24 实测：换 cwd 即 ModuleNotFoundError）
+TURBOVEC_CWD = os.getenv("KB_TURBOVEC_CWD", "/fs/1000/ftp/技术文档/turbovec-mcp")
+TURBOVEC_INDEX = os.getenv("KB_TURBOVEC_INDEX", "/vol1/turbovec-pilot/data/techdocs.tvim")
+TV_TIMEOUT_S = float(os.getenv("KB_TURBOVEC_TIMEOUT", "2.0"))   # 0.25s 固定开销 + embed + 检索，留足
+TDAI_TIMEOUT_S = float(os.getenv("KB_TDAI_TIMEOUT", "0.4"))     # 实测 3ms，400ms 已是很宽的天花板
+DEFAULT_K = int(os.getenv("KB_DEFAULT_K", "8"))
+CACHE_TTL_S = float(os.getenv("KB_INFO_TTL", "600"))            # 索引重建是人工触发的，10 分钟够新
+
+ROUTES = ("local", "tdai", "turbovec")
+
+# turbovec 的输出形态（照抄 cmd_search）：
+#   1. [0.512] 相对路径#chunk7
+#      <预览，可能自带换行，最长 120 字符>
+# 预览里出现换行是常态（Markdown 原文），所以**不能按"一行一条"解析**：
+# 以 `N. [score] path#chunkK` 为记录起点，到下一条起点为止的全部内容都归它。
+_ROW = re.compile(r"^\s*(\d+)\.\s*\[(-?\d+\.\d+)\]\s*(.+?)#chunk(\d+)\s*$", re.M)
+
+
+def parse_turbovec_stdout(out: str) -> List[Dict[str, Any]]:
+    """把人类可读输出解析成结构化行。解析不出任何一条时返回 []，由调用方表态成 error。"""
+    marks = list(_ROW.finditer(out))
+    rows: List[Dict[str, Any]] = []
+    for i, m in enumerate(marks):
+        start = m.end()
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(out)
+        preview = out[start:end].strip()
+        rows.append({
+            "score": float(m.group(2)),
+            "path": m.group(3).strip(),
+            "chunk": int(m.group(4)),
+            "preview": preview[:240],
+            "source": "turbovec",
+        })
+    return rows
+
+
+async def _turbovec_search(q: str, k: int) -> Dict[str, Any]:
+    """子进程调 turbovec。永不抛：一律回 {ok, items, ms, error}。"""
+    t0 = time.perf_counter()
+    cmd = [TURBOVEC_PY, "-m", "techdocs_mcp.cli", "search", q, "-k", str(k)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=TURBOVEC_CWD,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    except (OSError, ValueError) as e:
+        return {"ok": False, "items": [], "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": f"起不来（{type(e).__name__}）：解释器或 cwd 不对？{e}",
+                "detail": {"cmd": " ".join(cmd), "cwd": TURBOVEC_CWD}}
+
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=TV_TIMEOUT_S)
+        ms = round((time.perf_counter() - t0) * 1000, 1)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:  # noqa: BLE001 — 超时后收尾失败不该再盖掉超时这个真因
+            pass
+        return {"ok": False, "items": [],
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": f"超时 {TV_TIMEOUT_S}s 已杀进程（该路本次弃用；ollama 没常驻时冷启动会偏慢）"}
+
+    out = (out_b or b"").decode("utf-8", "replace")
+    if proc.returncode != 0:
+        txt = tdai_client.scrub((err_b or out).decode("utf-8", "replace"))[:300]
+        return {"ok": False, "items": [], "ms": ms,
+                "error": f"退出码 {proc.returncode}：{txt}"}
+    rows = parse_turbovec_stdout(out)
+    if not rows and "(无结果)" not in out and out.strip():
+        # 输出了东西但解析不出一条 ⇒ 上游改了打印格式。这**必须**报错，
+        # 不能当成"没有命中"——那正是 P0 修掉的那类静默。
+        return {"ok": False, "items": [], "ms": ms,
+                "error": "输出无法解析（疑似 CLI 打印格式变更）",
+                "detail": {"head": tdai_client.scrub(out)[:200]}}
+    return {"ok": True, "items": rows, "ms": ms, "error": None}
+
+
+_INFO_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+async def turbovec_info(force: bool = False) -> Dict[str, Any]:
+    """索引元信息（`info` 子命令**本来就是 JSON**）。带 TTL 缓存，给面板与新鲜度判据用。"""
+    now = time.monotonic()
+    if not force and _INFO_CACHE["data"] is not None and (now - _INFO_CACHE["ts"]) < CACHE_TTL_S:
+        return {**_INFO_CACHE["data"], "cached": True}
+    cmd = [TURBOVEC_PY, "-m", "techdocs_mcp.cli", "info"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=TURBOVEC_CWD,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=TV_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill(); await proc.wait()  # noqa: ASYNC110
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "error": "info 超时", "cached": False}
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"info 起不来：{type(e).__name__}", "cached": False}
+    if proc.returncode != 0:
+        return {"ok": False, "error": tdai_client.scrub(err_b.decode("utf-8", "replace"))[:200],
+                "cached": False}
+    try:
+        data = json.loads(out_b.decode("utf-8", "replace"))
+    except ValueError as e:
+        return {"ok": False, "error": f"info 不是合法 JSON：{e}", "cached": False}
+    data["ok"] = True
+    data["cached"] = False
+    _INFO_CACHE.update(ts=time.monotonic(), data=data)
+    return data
+
+
+def _backend(name: str, r: Dict[str, Any]) -> Dict[str, Any]:
+    return {"name": name, "ok": bool(r.get("ok")), "count": len(r.get("items") or []),
+            "ms": r.get("ms"), "error": r.get("error") if not r.get("ok") else None}
+
+
+@router.get("/search")
+async def kb_search(q: str = Query(min_length=1),
+                    k: int = Query(default=DEFAULT_K, le=30),
+                    routes: str = Query(default=",".join(ROUTES)),
+                    doc_k: int = Query(default=5, le=20, description="turbovec 取几条")):
+    """联邦检索：本机已有检索面并发调起 → RRF 融合 → 逐路表态。
+
+    `routes` 走白名单，未知值直接 400。这不是防攻击，是防**手一抖打出静默空结果**
+    （P0 里 `sources=tdaii` 就是这样把"两路全跳"伪装成"没查到"的）。
+    """
+    t0 = time.monotonic()
+    want = {x.strip() for x in (routes or "").split(",") if x.strip()}
+    bad = sorted(want - set(ROUTES))
+    if bad:
+        raise HTTPException(400, f"未知 routes: {bad}；可用值 {list(ROUTES)}")
+    if not want:
+        raise HTTPException(400, "routes 不能为空")
+
+    tasks: List[Any]
+    names: List[str] = []
+    if "tdai" in want:
+        tasks = [tdai_client.search_memories(q, k, timeout_s=TDAI_TIMEOUT_S)]
+        names.append("tdai_l1")
+    else:
+        tasks = []
+        names = []
+    if "turbovec" in want:
+        tasks.append(_turbovec_search(q, doc_k))
+        names.append("turbovec")
+    if "local" in want:
+        # 本地那路复用 P0 的口径：只有 4 行陈旧便签，所以低权
+        import memory
+        tasks.append(_local_async(memory, q, k))
+        names.append("local")
+
+    res = await asyncio.gather(*tasks, return_exceptions=True)
+    backends: List[Dict[str, Any]] = []
+    rankings: List[List[Dict[str, Any]]] = []
+    weights: List[float] = []
+    # 权重口径与 memory.py 同源：文档语义命中（真内容）满权，便签 0.2
+    W = {"tdai_l1": 1.0, "turbovec": 1.0, "local": 0.2}
+    for name, r in zip(names, res):
+        if isinstance(r, Exception):
+            r = {"ok": False, "items": [], "ms": None,
+                 "error": tdai_client.scrub(f"{type(r).__name__}: {r}")[:200]}
+        backends.append(_backend(name, r))
+        if r.get("ok"):
+            rankings.append(r.get("items") or [])
+            weights.append(W[name])
+
+    import memory as _m
+    fused = _m._rrf_fuse(rankings, weights=weights, limit=k)
+    engines = [b["name"] for b in backends if b["ok"] and b["count"]]
+    degraded = [b["name"] for b in backends if not b["ok"]]
+    return {
+        "results": fused,
+        "count": len(fused),
+        "engine": "+".join(engines) + "|rrf" if engines else "none",
+        "backends": backends,
+        "degraded": degraded,
+        # 「count=0」到底是"真没有"还是"该路挂了"——这两件事必须能区分，
+        # 否则这个门面就又造了一次静默不可用。
+        "note": ("全部可用路都返回零命中" if not engines and not degraded else
+                 None if not degraded else f"{degraded} 本次弃用，结果不完整"),
+        "took_ms": round((time.monotonic() - t0) * 1000, 1),
+    }
+
+
+async def _local_async(memory_mod, q: str, limit: int) -> Dict[str, Any]:
+    """本地 SQLite 是同步的，放子线程跑，别把事件循环卡在 4ms 的库锁上。"""
+    t0 = time.perf_counter()
+    try:
+        rows = await asyncio.to_thread(memory_mod._local_l1, q, limit)
+        return {"ok": True, "items": rows, "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": None}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "items": [],
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": tdai_client.scrub(f"{type(e).__name__}: {e}")[:200]}
+
+
+@router.get("/status")
+async def kb_status():
+    """资产面板用：各路是否可用、索引多新、库有多大。全实测，不猜。"""
+    info = await turbovec_info()
+    tdai = tdai_client.backend_status()
+    # 年龄**不解析** `built_at` 字符串：实测它是 `2026-09-20T02:21:10` 这种**无时区**形态，
+    # 与 aware datetime 相减直接 TypeError（闸门第一版就是在这上头 500 的，只捕了 ValueError）。
+    # 改用索引文件 mtime：内核记的 UTC epoch，无时区歧义，而且万一 rebuild 没回写 meta
+    # 字符串，mtime 仍会动——更接近真相。
+    age = None
+    idx = info.get("index_path") or TURBOVEC_INDEX
+    try:
+        if idx and os.path.exists(idx):
+            age = round(max(0.0, (time.time() - os.path.getmtime(idx)) / 86400.0), 1)
+    except OSError:
+        age = None
+    return {
+        "turbovec": {"available": bool(info.get("ok")), "chunks": info.get("chunks"),
+                     "dim": info.get("dim"), "model": info.get("model"),
+                     "built_at": info.get("built_at"),
+                     "index_mtime_age_days": age,
+                     "age_source": "index mtime（不解析上游字符串）",
+                     "index_path": idx,
+                     "index_mb": info.get("index_size_mb"), "error": info.get("error"),
+                     "cached": info.get("cached", False)},
+        "tdai": tdai,
+        "wigolo": {"available": False,
+                   "why": "P1 判定不接入：FTS 无 tokenize 子句、中文召回 2<LIKE 8、"
+                          "LIKE 全表扫仅 9.2ms，且 agent-hub 主题命中 0 条。详见 src/kb.py 顶部"},
+    }

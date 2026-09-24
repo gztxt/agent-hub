@@ -8,6 +8,7 @@
   （streamable_http_app 自带 /mcp 子路由，故不能挂到 /mcp，否则与 mcpgw 的 /mcp/* REST 冲突）。
 
 注册工具：hub_list_agents / hub_list_ports / hub_memory_search / hub_memory_context
+          / hub_kb_search / hub_kb_status / hub_skill_list / hub_skill_read / hub_skill_status
 """
 import json
 import os
@@ -16,6 +17,7 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+import tdai_client
 from mcp.server.mcpserver import MCPServer
 
 HUB_URL = os.getenv("HUB_MCP_SELF_URL", "http://127.0.0.1:3102")
@@ -34,7 +36,18 @@ def _get(path: str, **params) -> dict:
         with urllib.request.urlopen(url, timeout=TIMEOUT_S) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return {"error": f"hub REST {e.code}", "path": path}
+        # 上游的 4xx/5xx **正文里才有诊断**（例如 /api/skill/read 的 409 带 candidates、
+        # /api/kb/search 的 400 带「可用值清单」）。旧写法只回 "hub REST 409"，等于在 MCP 层
+        # 把 hub 刚做好的失败表态又剥掉一次 —— 与本文件 99-101 行记的那条教训同型。
+        # 补 detail 是 additive：error / path 两个旧键不动，既有工具不受影响。
+        # 正文必须过 scrub：技能与记忆正文是凭据高危面。
+        detail = ""
+        try:
+            detail = tdai_client.scrub(e.read().decode("utf-8", "replace"))[:400]
+        except Exception:  # noqa: BLE001 — 取不到正文不该盖掉原本的 HTTP 码
+            pass
+        return {"error": f"hub REST {e.code}", "path": path,
+                "http": e.code, "detail": detail}
     except Exception as e:  # noqa: BLE001
         return {"error": f"{type(e).__name__}: {e}", "path": path}
 
@@ -73,8 +86,10 @@ def hub_list_ports(agent: str = "") -> str:
 
 @server.tool()
 def hub_memory_search(q: str, limit: int = 10) -> str:
-    """按关键词检索 hub 三层记忆（L1 事实/L2 工作记忆/L3 画像），无命中时自动透传 TDAI。
-    返回命中的记忆条目；这是找回本机历史决策与约束的首选工具。"""
+    """检索本机记忆：本地 L1 与权威库 TDAI **并联**后 RRF 融合（不是「本地无命中才查 TDAI」）。
+    返回命中的记忆条目 + 逐路健康度；这是找回本机历史决策与约束的首选工具。
+    **看到 count=0 请继续读 degraded / backends**：只有它们能区分「真没有这条记忆」
+    与「上游挂了」——两者对外都是空结果，但含义完全相反。"""
     if limit > 50:
         limit = 50
     data = _get("/api/memory/search", q=q, limit=limit)
@@ -83,21 +98,131 @@ def hub_memory_search(q: str, limit: int = 10) -> str:
     return json.dumps({
         "engine": data.get("engine"), "count": data.get("count", 0),
         "memories": [{
-            "id": m.get("id"), "layer": m.get("layer"), "category": m.get("category"),
+            "id": m.get("id"), "layer": m.get("layer"),
+            # TDAI 条目带的是 `type`，本地条目带的是 `category`；不兼容一下，
+            # 外部 agent 看到的权威命中就是 category:null，丢语义。
+            "category": m.get("category") or m.get("type"),
+            # 不告诉调用方命中来自哪一路，它就分不出「233 条权威库」与
+            # 「4 行陈旧便签」，而这两者的可信度差两个量级。
+            "source": m.get("source"),
             "content": (m.get("content") or "")[:400],
         } for m in data.get("memories", [])],
         "tdai": bool(data.get("tdai")),
+        # ↓ 三个字段是 v0.13.16 本批改动的**全部意义所在**。旧写法只往上提 engine/count/memories，
+        # 于是 hub 后端刚修好的「静默不可用」在本层被原样复刻：外部 agent 永远只能看到一个
+        # count:0 的 200，TDAI 挂了它无从得知（09-24 独立复核：本文件是最重的一条发现）。
+        "degraded": data.get("degraded") or [],
+        "backends": data.get("backends") or [],
+        "took_ms": data.get("took_ms"),
     }, ensure_ascii=False)
 
 
 @server.tool()
 def hub_memory_context() -> str:
     """获取开局上下文包（L3 画像 + L2 工作记忆 + 相关 L1 事实）。新会话初始化时先调它，
-    避免在不知道本机约定与约束的情况下动手。"""
-    data = _get("/api/memory/context")
+    避免在不知道本机约定与约束的情况下动手。返回含 `degraded`：为真表示这一包**不完整**。"""
+    data = _get("/api/memory/context", max_chars=5000)
     if "error" in data:
         return json.dumps(data, ensure_ascii=False)
-    return json.dumps(data, ensure_ascii=False)[:6000]
+    # 不再对 JSON 字符串硬截 [:6000]：那会截出**非法 JSON** 交给调用方，
+    # 对端解析器直接报错，比返回一段长文本糟糕得多。截断交给服务端的 max_chars
+    # 在正文层面做，本层保证结构完整。degraded / backends 也随包透传。
+    return json.dumps(data, ensure_ascii=False)
+
+
+@server.tool()
+def hub_kb_search(q: str, k: int = 8, routes: str = "local,tdai,turbovec") -> str:
+    """**联邦检索**：并发调起本机已有的几路检索面（记忆权威库 TDAI、技术文档向量索引
+    turbovec、hub 本地便签）后 RRF 融合。找「本机以前是否记过这件事 / 有无相关文档」时优先用它，
+    而不是只查记忆。
+
+    返回 `results` + 逐路 `backends` + `degraded` + `note`。**看到 count=0 必读 degraded/note**：
+    「真没有」与「那路挂了」在这里是可区分的，别把两者当成一件事。
+    routes 可用值：local / tdai / turbovec（写错直接 400，不给你静默空结果的机会）。"""
+    if k > 30:
+        k = 30
+    data = _get("/api/kb/search", q=q, k=k, routes=routes)
+    if "error" in data:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps({
+        "count": data.get("count", 0),
+        "engine": data.get("engine"),
+        "results": [{
+            "source": r.get("source"),
+            "path": r.get("path"), "chunk": r.get("chunk"),   # 文档路独有，给调用方能开原文
+            "category": r.get("category") or r.get("type"),
+            "content": (r.get("content") or r.get("preview") or "")[:400],
+            "score": r.get("score"),
+        } for r in data.get("results", [])],
+        "backends": data.get("backends") or [],
+        "degraded": data.get("degraded") or [],
+        "note": data.get("note"),
+        "took_ms": data.get("took_ms"),
+    }, ensure_ascii=False)
+
+
+@server.tool()
+def hub_kb_status() -> str:
+    """查本机各检索面是否可用、文档索引多新（chunks/built_at/age_days）、记忆库多大。
+    动手前先调它一次，确认你要的那路是不是已经 degraded——**不要拿一个缺失的检索面当「没有资料」**。"""
+    data = _get("/api/kb/status")
+    return json.dumps(data, ensure_ascii=False)
+
+
+@server.tool()
+def hub_skill_list(q: str = "", routes: str = "", limit: int = 50) -> str:
+    """列出本机**真实在用**的技能（SKILL.md）：磁盘四路 claude / pi / techdocs / superpowers，
+    再加 TDAI 技能注册表一路。要判断「本机是否已有现成技能能干这件事」时**先调它**，
+    别凭印象造轮子，也别只查记忆。
+
+    返回 `items` + 逐路 `backends` + `degraded` + `note` + `dedup`（软链别名，同一技能只列一次）。
+    **看到 count=0 必读 degraded/note**：「TDAI 注册表 0 行、磁盘 37 条在用」是本机现状
+    （技能权威源未裁，PT-20260924-08 T2-1），不等于「本机没有技能」。
+    routes 留空＝全部路；写错值直接 400，不给你静默空结果的机会。
+    `fm=false` 的条目是**没有 frontmatter 的技能**（名字回退成目录名），不是坏数据。"""
+    if limit > 200:
+        limit = 200
+    data = _get("/api/skill/list", q=q, routes=routes, limit=limit)
+    if "error" in data:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps({
+        "count": data.get("count", 0),
+        "engine": data.get("engine"),
+        "items": [{
+            "name": i.get("name"),
+            "description": (i.get("description") or "")[:300],
+            "route": i.get("route"), "routes": i.get("routes"),
+            "path": i.get("path"), "via_symlink": i.get("via_symlink"),
+            "fm": i.get("fm"), "bytes": i.get("bytes"),
+            # 下面四个只有 TDAI 注册表那一路才有（磁盘路为 None）
+            "id": i.get("id"), "status": i.get("status"),
+            "version": i.get("version"), "owner_agent_id": i.get("owner_agent_id"),
+        } for i in data.get("items", [])],
+        "dedup": data.get("dedup") or {},
+        # 以下四个键**必须原样透传**：剥掉就等于在 MCP 层复刻「静默不可用」
+        "backends": data.get("backends") or [],
+        "degraded": data.get("degraded") or [],
+        "note": data.get("note"),
+        "took_ms": data.get("took_ms"),
+    }, ensure_ascii=False)
+
+
+@server.tool()
+def hub_skill_read(name: str, route: str = "") -> str:
+    """读一个技能的**全文**（已脱敏）。`name` 取 hub_skill_list 里的 name。
+
+    同名技能在多路下指向**不同文件**时回 409，`detail` 里带 candidates —— 带上 route 再调一次，
+    门面不会替你静默挑一个。正文超上限会 `truncated=true` 并给 `bytes_total`，**不会静默截断**。
+    路径穿越会被 400 拒（realpath 必须落在技能目录内）。"""
+    return json.dumps(_get("/api/skill/read", name=name, route=route), ensure_ascii=False)
+
+
+@server.tool()
+def hub_skill_status() -> str:
+    """查技能资产面板：每个技能目录是否可用、各有多少条、哪些缺 frontmatter、哪些经软链、
+    TDAI 注册表有几行、以及磁盘与注册表的缺口（`gap.note`）。
+    动手前先调它一次，别把「某一路 degraded」当成「本机没有那个技能」。"""
+    return json.dumps(_get("/api/skill/status"), ensure_ascii=False)
 
 
 if ALLOW_WRITE:

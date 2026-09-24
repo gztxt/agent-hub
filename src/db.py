@@ -117,6 +117,27 @@ def init_db(path: Path) -> None:
     _conn = sqlite3.connect(str(path), check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.execute("PRAGMA journal_mode=WAL")
+    # ── T05-1（v0.13.16）：把 PRAGMA 从「靠默认值」改成「写死在这一行」───────
+    # 0924 方案 v2 提的四个 PRAGMA，**实测后只采纳三个**，因为其中一个本来就有：
+    #   busy_timeout：新连接实测已经回 5000 —— 不是本文件设的，是 Python 3.11
+    #     `sqlite3.connect(timeout=5.0)` 的默认值。所以“撞锁就 BUSY”的担心不成立；
+    #     但把它从「标准库默认」提升为**本仓写死**仍是净收益：换 Python 版本或改
+    #     connect() 参数时不会被静默抹掉。
+    #   foreign_keys：实测 0（OFF）。SCHEMA 实测 **0 处 REFERENCES/FOREIGN KEY**，
+    #     所以打开它今天不会打断任何写入；不打开的代价是「将来加外键时静默不生效」。
+    #   synchronous：实测 2=FULL。WAL 下每次 commit 等 fsync，而本机是 NAS；
+    #     本库装的是 telemetry/画像/聊天记录（非不可丢数据），NORMAL 是 WAL 的推荐搭配。
+    #     ⚠ 这是耐久语义的取舍：断电时可能丢最后几个已提交事务（库不会坏）。
+    _conn.execute("PRAGMA busy_timeout=5000")
+    _conn.execute("PRAGMA foreign_keys=ON")
+    _conn.execute("PRAGMA synchronous=NORMAL")
+    # WAL 实测长期不回落（生产主库 1.1MB 而 -wal 4.0MB），原因是**没有任何 checkpoint 触发点**。
+    # 只在启动时收一次：运行期做 TRUNCATE 会与写者抢锁，而 hub 有 4 个后台循环在写。
+    # 失败绝不打断启动 —— checkpoint 是优化，不是正确性前提。
+    try:
+        _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError as e:  # noqa: BLE001
+        print(f"[db] wal_checkpoint 跳过（不影响启动）：{type(e).__name__}: {e}", flush=True)
     with _lock:
         _conn.executescript(SCHEMA)
         # S2 画像/追踪列（存量库自动迁移）
@@ -125,6 +146,26 @@ def init_db(path: Path) -> None:
         _add_column_if_missing(_conn, "telemetry_events", "status", "TEXT")
         _add_column_if_missing(_conn, "custom_agents", "source", "TEXT DEFAULT 'manual'")
         _conn.commit()
+
+
+def is_open() -> bool:
+    """当前是否已有连接。**09-24 新增**：`mcpgw.mcp_call` 以前每次都 `init_db()`，
+    而 `init_db` 会把全局连接**重指**到传入路径——生产上看不出来（路径相同），
+    但在任何进进程测试里，一发 `/mcp/call` 就会把测试的 tmp 库悄悄换成生产库，
+    后续写入全落在真库上（本机 09-24 实际就这么污染过一次 mcp_servers/mcp_acl）。
+    另一个代价：P0 往 `init_db` 里加了 `wal_checkpoint(TRUNCATE)`，“只在启动时收一次”；
+    按次重进等于每次工具调用抢一次 checkpoint，与本仓自己的注释直接相远。"""
+    return _conn is not None
+
+
+def current_path() -> str:
+    """当前连接指向的库文件（给测试做“库指向金丝雀”断言用，拿不到则空串）。"""
+    if _conn is None:
+        return ""
+    try:
+        return str(_conn.execute("PRAGMA database_list").fetchone()[2])
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _now() -> str:

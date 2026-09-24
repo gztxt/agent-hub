@@ -923,7 +923,7 @@
                 <pre class="code" id="mcProbe" style="display:none"></pre>
             </div>
             <div class="panel">
-                <h3>工具调用 ACL（agent 一旦有 allow 规则即白名单语义：默认拒；无规则默认放行）</h3>
+                <h3>工具调用 ACL（deny 优先、与插入顺序无关；<code>*</code> 通配行对所有 agent 生效；零规则行才默认放行）</h3>
                 <div class="toolbar">
                     <input id="aclAgent" placeholder="agent_id（manager / jcode / *）" style="max-width:190px">
                     <input id="aclPattern" placeholder="工具模式，如 read_* 或 *" style="max-width:170px">
@@ -967,6 +967,33 @@
                 <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint tscroll">加载中…</div></div>
             </div>
             <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
+        </section>
+
+        <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
+             不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
+             列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
+        <section class="page" id="page-assets">
+            <div class="panel">
+                <h3>资产门面（记忆 / 知识 / 技能 —— hub 只做门面，不建第二权威副本）</h3>
+                <div id="assetStatus" class="hint">未加载</div>
+                <div class="toolbar">
+                    <input id="assetQ" placeholder="一次问三路门面（如：端口 / 备份 / 技能）" style="max-width:340px">
+                    <button class="btn sm" data-asset="search">检索</button>
+                    <button class="btn sm" data-asset="refresh">重检健康</button>
+                    <span class="hint" id="assetHint"></span>
+                </div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel"><h3>记忆（本地 + TDAI RRF）</h3><div id="assetMemory" class="hint tscroll">未检索</div></div>
+                <div class="panel"><h3>技术文档（turbovec 语义）</h3><div id="assetKb" class="hint tscroll">未检索</div></div>
+                <div class="panel"><h3>技能（磁盘四路）</h3><div id="assetSkill" class="hint tscroll">未检索</div></div>
+            </div>
+            <div class="panel"><h3>四态语义</h3><div class="hint">
+                <b>有结果</b> / <b>确实零命中</b>（后端全绿且 count=0）/
+                <b>部分后端不可用</b>（某一路挂了，清单不完整 —— 不代表没资产）/
+                <b>端点不可用</b>（端口 404，通常是代码比进程新、未重启）。
+                把后两种渲染成「没东西」，就是本机最禁的「静默不可用」在前端层的形态。
+            </div></div>
         </section>
     </main>
     </div>
@@ -1131,6 +1158,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=f70c0f1a"></script>
+    <script src="/static/hub.js?v=9c9ccb83"></script>
 </body>
 </html>
