@@ -62,7 +62,10 @@ RT_NEG_STREAK = int(os.getenv("VITALS_NEG_STREAK", "2"))
 # 写成下划线形态会被 CCR 拒（军规：CCR 用 /，FCC 用 _，两者不通用）。
 RT_MODEL = os.getenv("VITALS_RT_MODEL", "agnes/agnes-2.0-flash")
 # 实测一轮真请求耗时：claude 14s / jcode 9s / grok 19s / hermes 21s，40s 够宽容抖。
-RT_TIMEOUT = float(os.getenv("VITALS_RT_TIMEOUT", "40"))
+RT_TIMEOUT = float(os.getenv("VITALS_RT_TIMEOUT", "90"))
+# 2026-09-24：40s → 90s。实测 claude 走 CCR 在 40s 窗口下跑出一例
+# run_rc=124 "TIMEOUT after 40.0s"，而同一个 Agent 稍后又 answered
+# ⇒ 超时是瞬时抖动，窗口太短会把「可用」刷成「未实测」（另见 judge 的凭据保持）。
 # L4 探活预算（2026-09-23 用户裁定：「探活测试 2 次即结束，不要反复频繁探测」）：
 # 外部条件失败态在一个 RT_TTL 窗内最多真跑这么多次，用完即停到窗过期。
 # 改前该态完全不设保鲜 ⇒ 每 SWEEP_EVERY(900s) 重烧一次 ⇒ 96 轮/天/家；实测 09-22 16:45
@@ -536,16 +539,44 @@ class Vitals:
         if do_roundtrip:                # 应答历史：仅供展示与保鲜复用
             # 预算记账（跳 needs_rt 的用户裁定）：成功即归零；跳窗算新一轮从 1 起；窗内失败累加
             now = time.time()
-            answered = rec.get("rt_state") == "answered"
+            new_state = rec.get("rt_state")
+            answered = new_state == "answered"
             new_window = (not rt) or (now - rt.get("at", 0)) >= self.RT_TTL
+            # 2026-09-24（claude 实例）：**一次 L4 失败不得作废已有的 answered 凭据**。
+            # 原行为：失败就把 _rt[aid] 覆盖成 timeout ⇒ 之后每轮 L2 sweep 都从 _rt 复原成
+            # timeout（见下方 not do_roundtrip 分支）⇒ 卡片从「可用」退回「未实测」，
+            # 而用户实测是能用 的 —— 瞬时抖动被固化成了永久降级。
+            # 现在：失败**照记**为 rt.last_fail（不藏证据），但凭据保持 answered 直到过 RT_TTL 窗。
+            keep = (not answered and new_state in RT_RETRYABLE
+                    and rt.get("rt_state") == "answered"
+                    and (now - rt.get("at", 0)) < self.RT_TTL)
             tries = 0 if answered else (1 if new_window else int(rt.get("tries") or 0) + 1)
             with self._lock:
-                self._rt[aid] = {"rt_state": rec.get("rt_state"),
-                                 "tries": tries,
-                                 "run_note": (ev.get("run_note") or "")[:150],
-                                 "run_model": ev.get("run_model"),
-                                 "menu_noul": rec.get("menu_noul"),
-                                 "source": rec.get("source"), "at": now}
+                if keep:
+                    self._rt[aid] = {"rt_state": "answered",
+                                     "tries": tries,
+                                     "run_note": rt.get("run_note"),
+                                     "run_model": rt.get("run_model"),
+                                     "menu_noul": rec.get("menu_noul"),
+                                     "source": rt.get("source") or rec.get("source"),
+                                     "at": rt.get("at"),          # 凭据时刻保持原值，不虚增
+                                     "last_fail": new_state,
+                                     "last_fail_at": now,
+                                     "last_fail_note": (ev.get("run_note") or "")[:150]}
+                else:
+                    self._rt[aid] = {"rt_state": new_state,
+                                     "tries": tries,
+                                     "run_note": (ev.get("run_note") or "")[:150],
+                                     "run_model": ev.get("run_model"),
+                                     "menu_noul": rec.get("menu_noul"),
+                                     "source": rec.get("source"), "at": now,
+                                     "last_fail": None, "last_fail_at": None}
+            if keep:
+                rec = dict(rec)
+                rec["rt_state"] = "answered"
+                rec["rt_note"] = ("本轮 L4 %s（%ss 窗口），沿用旧 answered 凭据不降级"
+                                  % (new_state, int(RT_TIMEOUT)))
+                rec["rt_last_fail"] = new_state
         if not do_roundtrip and rt and (time.time() - rt.get("at", 0)) < self.RT_TTL:
             rec = dict(rec)
             rec["rt_state"] = rt.get("rt_state") or rec.get("rt_state")
