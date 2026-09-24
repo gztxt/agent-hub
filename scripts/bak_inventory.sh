@@ -15,8 +15,10 @@ echo "备份件清点（KEEP=$KEEP，只读）"
 echo "────────────────────────────────────────────────────────────"
 total=0; arch=0
 while IFS= read -r stem; do
-  mapfile -t files < <(find . -name "$(basename "$stem").bak-*" -not -path './venv/*' \
-                        -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  # 限定目录：同名 .bak 可能存在于多个目录（如 ./data/ 与 ./data/backups/），
+  # 无目录限定的 find 会重复计数（与 bak_archive.sh 同一修法，09-24）。
+  mapfile -t files < <(find "$(dirname "$stem")" -maxdepth 1 -name "$(basename "$stem").bak-*" \
+                        -not -path './venv/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
   n=${#files[@]}; total=$((total+n))
   [ "$n" -le "$KEEP" ] && continue
   printf '%-52s 共 %3d 份' "$stem" "$n"
