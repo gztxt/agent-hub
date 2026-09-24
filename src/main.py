@@ -58,7 +58,7 @@ import staticguard
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.14"   # 后端：新装 CLI 被陈旧 vitals 判定固化的两处修（scan/run 定向重判 + 候补序真名优先）+ opencode L4 探针
+VERSION = "0.13.15"   # 后端：opencode 历史会话接入（sessions_store 补 opencode_sqlite 适配 + 前端白名单同步）
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 

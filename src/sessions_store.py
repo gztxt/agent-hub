@@ -24,6 +24,8 @@ HARD_BUDGET_S = 1.5       # 单次 list_history 硬预算，超时返回已读�
 UUID_RE = re.compile(r"\A[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z", re.I)
 JCODE_RE = re.compile(r"\Asession_[a-z]+_\d{13}_[0-9a-f]{6,16}\Z")
 HERMES_RE = re.compile(r"\A\d{8}_\d{6}_[0-9a-f]{6}\Z")
+OPENCODE_RE = re.compile(r"\Ases_[0-9a-zA-Z]{6,64}\Z")   # 实测 1.18.32：ses_ + 22 位 base62
+OPENCODE_DB = HOME / ".local" / "share" / "opencode" / "opencode.db"
 
 # 实测：grok 把用户真问题包在 <user_query> 里（chat_history.jsonl 第 4 行）；
 # 这几个前缀是注入块（拆不到 user_query 时必须跳过，否则标题会变成 system prompt）。
@@ -269,13 +271,44 @@ def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     return items, ("" if items else "codex 无交互式历史（exec 探针不计）")
 
 
+def _t_opencode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
+    """opencode 1.x 的仓库是 SQLite（实测 1.18.32：~/.local/share/opencode/opencode.db）。
+       排除子代理子会话（parent_id 非空）与归档（time_archived 非空）；
+       exists(message) 挡掉零消息空会话——它们的标题是 "New session - <ISO>" 占位，无续聊价值。
+       跳目录（09-22 裁定同样适用：条目可能来自任何工程，起 pty 用 session_cwd）。time_* 为毫秒。"""
+    if not OPENCODE_DB.exists():
+        return [], "opencode 无 opencode.db"
+    sql = ("select s.id as id, s.title as title, s.directory as dir, s.time_updated as ts, "
+           "(select json_extract(p.data,'$.text') from part p join message m on p.message_id = m.id "
+           "  where m.session_id = s.id and json_extract(m.data,'$.role') = 'user' "
+           "  and json_extract(p.data,'$.type') = 'text' "
+           "  and length(json_extract(p.data,'$.text')) > 0 "
+           "  order by p.time_created limit 1) as first_u "
+           "from session s where (s.parent_id is null or s.parent_id='') "
+           "and s.time_archived is null "
+           "and exists (select 1 from message m where m.session_id = s.id) "
+           "order by s.time_updated desc limit ?")
+    try:
+        with _ro(OPENCODE_DB) as c:
+            rows = c.execute(sql, (limit,)).fetchall()
+    except Exception as e:  # noqa: BLE001
+        return [], f"opencode 读取失败：{type(e).__name__}"
+    items = [{"agent": "opencode", "id": r["id"],
+              "title": mask_title((r["title"] or "") if not (r["title"] or "").startswith("New session - ")
+                                  else (r["first_u"] or r["title"] or "")) or "未命名会话",
+              "ts": int(r["ts"] or 0) // 1000, "msgs": None, "cwd": r["dir"] or ""}
+             for r in rows][:limit]
+    return items, ("" if items else "opencode 无可续聊历史")
+
+
 SESSION_STORES: Dict[str, dict] = {
-    "grok":   {"kind": "grok_dir",      "id_re": UUID_RE,    "resume": ["grok", "--resume", "{id}"],            "fn": _t_grok},
-    "claude": {"kind": "claude_dir",    "id_re": UUID_RE,    "resume": ["claude", "--resume", "{id}"],          "fn": _t_claude},
-    "qoder":  {"kind": "qoder_dir",     "id_re": UUID_RE,    "resume": ["qodercli", "-w", "{cwd}", "-r", "{id}"], "fn": _t_qoder},
-    "jcode":  {"kind": "jcode_json",    "id_re": JCODE_RE,   "resume": ["jcode", "--resume", "{id}"],           "fn": _t_jcode},
-    "hermes": {"kind": "hermes_sqlite", "id_re": HERMES_RE,  "resume": ["hermes", "--resume", "{id}"],          "fn": _t_hermes},
-    "codex":  {"kind": "codex_sqlite",  "id_re": UUID_RE,    "resume": ["codex", "resume", "{id}"],             "fn": _t_codex},
+    "grok":     {"kind": "grok_dir",       "id_re": UUID_RE,      "resume": ["grok", "--resume", "{id}"],             "fn": _t_grok},
+    "claude":   {"kind": "claude_dir",     "id_re": UUID_RE,      "resume": ["claude", "--resume", "{id}"],           "fn": _t_claude},
+    "qoder":    {"kind": "qoder_dir",      "id_re": UUID_RE,      "resume": ["qodercli", "-w", "{cwd}", "-r", "{id}"], "fn": _t_qoder},
+    "jcode":    {"kind": "jcode_json",     "id_re": JCODE_RE,     "resume": ["jcode", "--resume", "{id}"],            "fn": _t_jcode},
+    "hermes":   {"kind": "hermes_sqlite",  "id_re": HERMES_RE,    "resume": ["hermes", "--resume", "{id}"],           "fn": _t_hermes},
+    "codex":    {"kind": "codex_sqlite",   "id_re": UUID_RE,      "resume": ["codex", "resume", "{id}"],              "fn": _t_codex},
+    "opencode": {"kind": "opencode_sqlite", "id_re": OPENCODE_RE, "resume": ["opencode", "--session", "{id}"],        "fn": _t_opencode},
 }
 
 _CACHE: Dict[tuple, Tuple[float, dict]] = {}
@@ -341,6 +374,10 @@ def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
     if agent_id == "codex":
         return bool(_sql_one(HOME / ".codex" / "state_5.sqlite",
                              "select 1 from threads where id=? and source='cli' and archived=0", (sid,)))
+    if agent_id == "opencode":
+        return bool(_sql_one(OPENCODE_DB,
+                             "select 1 from session where id=? and (parent_id is null or parent_id='')"
+                             " and time_archived is null", (sid,)))
     return _store_path(agent_id, sid) is not None
 
 
@@ -363,6 +400,9 @@ def session_cwd(agent_id: str, sid: str, fallback: str = "") -> str:
         elif agent_id == "codex":
             r = _sql_one(HOME / ".codex" / "state_5.sqlite", "select cwd from threads where id=?", (sid,))
             c = (r["cwd"] or "") if r else ""
+        elif agent_id == "opencode":
+            r = _sql_one(OPENCODE_DB, "select directory from session where id=?", (sid,))
+            c = (r["directory"] or "") if r else ""
     except Exception:  # noqa: BLE001
         c = ""
     c = (c or "").strip()
@@ -483,6 +523,20 @@ def _title_of_session(agent: str, sid: Optional[str], cwd: Optional[str] = None)
         except Exception:  # noqa: BLE001
             return ""
         return mask_title(r["title"] if r else "")
+    if agent == "opencode":
+        try:
+            with _ro(OPENCODE_DB) as c:
+                r = c.execute("select s.title as t, "
+                              "(select json_extract(p.data,'$.text') from part p join message m on p.message_id = m.id "
+                              "  where m.session_id = s.id and json_extract(m.data,'$.role') = 'user' "
+                              "  and json_extract(p.data,'$.type') = 'text' "
+                              "  and length(json_extract(p.data,'$.text')) > 0 "
+                              "  order by p.time_created limit 1) as u "
+                              "from session s where s.id=?", (sid,)).fetchone()
+        except Exception:  # noqa: BLE001
+            return ""
+        t = (r["t"] or "") if r else ""
+        return mask_title(t if not t.startswith("New session - ") else ((r["u"] if r else "") or t))
     if agent == "qoder":
         hit = next(iter((HOME / ".qoder" / "projects").glob(f"*/{sid}.jsonl")), None)
         if not hit:

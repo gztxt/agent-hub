@@ -60,8 +60,17 @@ class TestMask(unittest.TestCase):
 
 
 class TestTable(unittest.TestCase):
-    def test_only_six_agents(self):
-        self.assertEqual(set(ss.SESSION_STORES), {"grok", "claude", "qoder", "jcode", "hermes", "codex"})
+    def test_only_seven_agents(self):
+        self.assertEqual(set(ss.SESSION_STORES), {"grok", "claude", "qoder", "jcode", "hermes", "codex", "opencode"})
+
+    def test_hist_agents_front_back_same_set(self):
+        """hub.js 的 TERM_HIST_AGENTS 与后端 SESSION_STORES 必须同集合——
+           注释里写着"同集合"却无人核对，opencode 就是漏这刀漏出来的。"""
+        hub = (tiers.repo_root() / "static" / "hub.js").read_text(encoding="utf-8")
+        m = re.search(r"const TERM_HIST_AGENTS = \[([^\]]*)\]", hub)
+        self.assertIsNotNone(m, "hub.js 里找不到 TERM_HIST_AGENTS")
+        front = {x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()}
+        self.assertEqual(front, set(ss.SESSION_STORES), "前后端历史白名单漂移")
 
     def test_supports_negative(self):
         for a in ("pi", "shell", "qwenpaw", "ccr"):
@@ -130,6 +139,16 @@ class TestRealStores(unittest.TestCase):
         d = ss.list_history("hermes", "/home/gztxt", 3)
         self.assertTrue(d["note"], "hermes 不按 cwd 过滤，note 必须写明口径")
 
+    def test_opencode_history_from_sqlite(self):
+        d = ss.list_history("opencode", CWD, 3)
+        self.assertTrue(d["items"], "opencode 实测有可续会话（1.18.32 opencode.db），不应为空")
+        it = d["items"][0]
+        self.assertRegex(it["id"], r"\Ases_")
+        self.assertNotRegex(it["title"], r"\ANew session - ", "零消息占位会话不该进历史")
+        argv = ss.resume_argv("opencode", it["id"], CWD)
+        self.assertEqual(argv, ["opencode", "--session", it["id"]])
+        self.assertTrue(ss.title_for("opencode", it["id"]), "title_for 必须能按 id 直查")
+
     def test_items_carry_their_own_cwd(self):
         """跳目录之后，条目若不带自己的 cwd，前端就无从标出「这条来自哪个工程」"""
         seen_other = False
@@ -154,7 +173,8 @@ class TestRealStores(unittest.TestCase):
 
     def test_sqlite_readonly_mtime_unchanged(self):
         for agent, p in (("hermes", Path.home() / ".hermes/state.db"),
-                         ("codex", Path.home() / ".codex/state_5.sqlite")):
+                         ("codex", Path.home() / ".codex/state_5.sqlite"),
+                         ("opencode", Path.home() / ".local/share/opencode/opencode.db")):
             if not p.exists():
                 self.skipTest(f"{p} 不存在")
             before = p.stat().st_mtime_ns
