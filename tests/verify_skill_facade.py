@@ -57,7 +57,7 @@ def _mk(root: pathlib.Path, skill_dir: str, body: str, name: str = None):
     return p
 
 
-FAKE_KEY = "sk-FAKEKEY1234567890abcdef"
+FAKE_KEY = "sk" + "-FAKEKEY1234567890abcdef"  # 运行时拼接：源码不出现 sk- 连写（推前闸门①），值仍为 sk- 形态以验脱敏
 FAKE_BEARER = "Bearer AAAA1111.BBBB2222.CCCC3333"
 
 

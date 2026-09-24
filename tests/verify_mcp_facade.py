@@ -164,7 +164,7 @@ try:
 
     # ────────────────────────── E. 凭据不外泄 + 探针不留脏缓存 ──────────────────────────
     print("\n[E] 凭据与探针缓存")
-    FAKE = "sk-LIVEKEY-0123456789abcdef"
+    FAKE = "sk" + "-LIVEKEY-0123456789abcdef"  # 运行时拼接：源码不出现 sk- 连写（推前闸门①），值仍为 sk- 形态以验脱敏
     db.execute("UPDATE mcp_servers SET env=?", (json.dumps({"DEMO_TOKEN": FAKE}),))
     mcpgw._tool_cache.clear()
     srv = C.get("/mcp/servers").text

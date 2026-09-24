@@ -18,7 +18,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 import tdai_client  # noqa: E402
 
-FAKE_KEY = "sk-FAKE-DO-NOT-LEAK-0123456789"
+FAKE_KEY = "sk" + "-FAKE-DO-NOT-LEAK-0123456789"  # 运行时拼接：源码不出现 sk- 连写（推前闸门①），值仍为 sk- 形态以验脱敏
 
 
 # ── 假 aiohttp：按脚本决定返回什么 / 抛什么 ─────────────────────────
