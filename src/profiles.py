@@ -2,7 +2,7 @@
 
 kind 语义：
   agent    编码/对话智能体（claude/pi/jcode/hermes/qwenpaw/cloudcli）
-  gateway  模型/消息网关（CCR/FCC/ccpocket）——非 Agent，无对话按钮
+  gateway  模型/消息网关（CCR/ccpocket）——非 Agent，无对话按钮
   service  系统服务（xray/proxy-panel/claude-mem/ai_manager/gotty...）——仅快捷方式
   memory   记忆后端（tdai）
   tool     工具容器（chromium/ollama）
@@ -135,11 +135,6 @@ PROFILES: List[dict] = [
      "proc_cwd_hint": "/home/gztxt/.ccr",
      "cli": None, "port": 3456, "ui": None, "panel": "http://192.168.5.102:3458/?ccr_web_token=ccr-web-fixed-token-gztxt-2026",
      "desc": "Claude↔多模型路由网关 :3456/3457/3458（生命线，只观测）"},
-    {"id": "fcc", "name": "FCC Gateway", "kind": "gateway",
-     "detect": {"proc": [r"fcc-server"], "systemd": ["fcc"]},
-     "cli": None, "port": 8082, "ui": None,
-     "panel": "http://127.0.0.1:18083", "panel_auth": "basic",
-     "desc": "free-claude-code 模型网关 :8082（Admin 面板走 :18083 中继，Basic 鉴权→仅新窗口）"},
     {"id": "ccpocket", "name": "CCPocket Bridge", "kind": "gateway",
      "detect": {"systemd": ["ccpocket-bridge"]},
      "cli": None, "port": 8765, "ui": None, "panel": None,
@@ -201,6 +196,8 @@ SHELL_PROFILE = {"id": "shell", "name": "系统终端 (bash)", "kind": "tool",
 # 「id → 候选名列表」：同一 Agent 允许多个可执行名（含 fcc- 前缀的
 # free-claude-code 包装），逐个 which，首个命中即用；names[0] 作为卡片 id。
 # 注意：不做 ~/.local/bin/fcc-* 盲枚举 —— fcc-server / fcc-desktop 等不是
+# 【2026-09-25 注】free-claude-code 包已卸载（PT-20260924-15），下方 aliases 里的 `fcc-*` 入口壳
+#   在本机已不存在，保留仅为历史命名兼容（不影响检测：`which` 打不到即跳过）。
 # Agent，盲枚举会把网关和桌面端也变成卡片。
 CLI_ALIASES: Dict[str, dict] = {
     "claude":   {"display": "Claude Code", "names": ["claude"]},

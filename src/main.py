@@ -61,10 +61,9 @@ import tdai_client
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.19"   # 后端：P3 工具注册表——/mcp/tools 回 pass-through inputSchema + 逐后端台账信封（backends/degraded/note/took_ms），
-                      #   截断打标 description_truncated、无 schema 打标 schema_missing；新增 /mcp/registry 按 agent 算生效工具与 ACL；
-                      #   _resolve_acl() 单一真源（deny 覆盖 allow、与行序无关、零规则默认放行、有规则未覆盖则拒）；
-                      #   修 mcp_call 无条件重指全局 DB 连接（会把临时库指向生产库并污染之）；前端 P4 资产面板 /assets（六态诚实区分）
+VERSION = "0.13.20"   # 后端：FCC 退役收尾——profiles 烘删 FCC 网关卡片（菜单不再列出）；
+                      #   背景见 PT-20260924-15：FCC 与 CCR 上游同 key、provider 为 CCR 子集、Claude 档实为 Qwen 别名，已于 09-24 彻底下线。
+                      #   上一版（v0.13.19 P3 工具注册表 / P4 资产面板）明细见 CHANGELOG.md。
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
