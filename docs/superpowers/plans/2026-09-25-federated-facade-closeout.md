@@ -814,14 +814,28 @@ cp src/mcpgw.py src/mcpgw.py.bak-$(date +%Y%m%d_%H%M%S)-加审计写点
 
 ```python
 def route_audit_map(module_path):
-    """AST 扫一个模块：{(METHOD, path): (是否调了 log_asset_event, 函数名)}。
+    """AST 扫一个模块：{(METHOD, path): (是否打了审计, 函数名)}。
 
     为什么用 AST 而不是 grep：grep 只能证明"文件里某处有这个词"，证明不了
     "这条路由的 handler 体内有"。漏一条写点就等于没做（writeauth 同一口径）。
+
+    **间接层只跟一层**（2026-09-25 实测修正）：memory 的 put_l2/put_l3 把审计收进了
+    模块级 helper `_audit_doc()`（避免把 touched 字段推导复制两遍），第一版护栏只看 handler 体
+    ⇒ 对着正确实现报"漏审"。解法不是把逻辑抄回 handler，而是让护栏解析一层本地调用：
+    handler 体内直接出现 log_asset_event，**或**调用了某个「体内直接出现 log_asset_event」的
+    模块级函数，才算已审。再深的链条（helper→helper→审计）故意不算 —— 否则覆盖面可以被
+    无限稀释成"看起来调了个函数"（见 test_indirection_is_limited_to_one_level）。
     """
     src = pathlib.Path(module_path).read_text(encoding="utf-8")
     tree = ast.parse(src)
     lines = src.splitlines()
+
+    def seg(node):
+        return "\n".join(lines[node.lineno - 1:getattr(node, "end_lineno", node.lineno)])
+
+    #: 模块级函数名 → 其体内是否**直接**调 log_asset_event（只扫 tree.body，不递归）
+    helpers = {n.name: ("log_asset_event" in seg(n))
+               for n in tree.body if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))}
     out = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
@@ -835,8 +849,11 @@ def route_audit_map(module_path):
             if method not in ("POST", "PUT", "PATCH", "DELETE"):
                 continue
             path = dec.args[0].value if (dec.args and isinstance(dec.args[0], ast.Constant)) else "?"
-            body = "\n".join(lines[node.lineno - 1:getattr(node, "end_lineno", node.lineno)])
-            out[(method, path)] = ("log_asset_event" in body, node.name)
+            body = seg(node)
+            called = {c.func.id for c in ast.walk(node)
+                      if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            audited = ("log_asset_event" in body) or any(helpers.get(c) for c in called)
+            out[(method, path)] = (audited, node.name)
     return out
 
 
@@ -897,6 +914,58 @@ class TestCoverage(unittest.TestCase):
         self.assertNotIn("body.env", audit_seg.replace("bool(body.env)", ""),
                          "env 值进了审计 detail = 凭据落进可导出的正文")
         self.assertNotIn("json.dumps(body.env", audit_seg)
+
+    def test_indirection_is_limited_to_one_level(self):
+        """★ 审计只准藏一层：handler→helper→helper→log_asset_event **不算已审**。
+        没有这条，覆盖面护栏可以被无限稀释成"看起来调了个函数"。"""
+        d = pathlib.Path(tempfile.mkdtemp(prefix="l0cov-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        f = d / "m.py"
+        f.write_text(
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n"
+            "def _deep():\n"
+            "    db.log_asset_event('x', 'y', 'create', 'system')\n"
+            "def _mid():\n"
+            "    _deep()\n"
+            "@router.post('/shallow')\n"
+            "async def h_shallow():\n"
+            "    _audit_one()\n"
+            "def _audit_one():\n"
+            "    db.log_asset_event('x', 'y', 'create', 'system')\n"
+            "@router.post('/deep')\n"
+            "async def h_deep():\n"
+            "    _mid()\n", encoding="utf-8")
+        m = route_audit_map(f)
+        self.assertTrue(m[("POST", "/shallow")][0], "一层本地 helper 该算已审")
+        self.assertFalse(m[("POST", "/deep")][0], "两层间接必须判未审（否则护栏可被稀释）")
+
+class TestGateSelfCheck(unittest.TestCase):
+    """★ 元闸门：本文件里每个 test_* 都必须是某个 TestCase 的**方法**。
+
+    缩进错位会让 test 函数变成另一个函数的嵌套 def ⇒ 语法通过、import 成功、
+     discover 收不到、**永远不执行**，而总例数只少一个，肉眼极难发现
+    （2026-09-25 本文件实测栽过一次；同族前例＝vitals_loop 函数头丢失致健康检查
+    成为不可达死代码、前端 TDZ 声明前访问）。口径：**代码存在 ≠ 会被执行**。
+    """
+
+    def test_no_test_function_is_nested_inside_another_function(self):
+        src = pathlib.Path(__file__).read_text(encoding="utf-8")
+        nested = []
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in ast.walk(node):
+                if (sub is not node and isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and sub.name.startswith("test_")):
+                    nested.append("%s 嵌在 %s 里" % (sub.name, node.name))
+        self.assertEqual(sorted(set(nested)), [], "这些 test_ 永不执行：%s" % sorted(set(nested)))
+
+    def test_intended_gate_count_is_not_silently_shrunk(self):
+        """例数下界钉子：少了就说明有 test 掉出收集范围（不是"跑得快"，是"没跑"）。"""
+        loader = unittest.TestLoader()
+        n = loader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
+        self.assertGreaterEqual(n, 21, "本文件应至少收集 21 例，实收 %d ⇒ 有 test 掉出收集范围" % n)
 ```
 
 - [ ] **Step 3: 跑测试确认失败**

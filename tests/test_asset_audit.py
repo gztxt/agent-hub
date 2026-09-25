@@ -113,14 +113,28 @@ class TestWritePath(_DbCase):
 
 
 def route_audit_map(module_path):
-    """AST 扫一个模块：{(METHOD, path): (是否调了 log_asset_event, 函数名)}。
+    """AST 扫一个模块：{(METHOD, path): (是否打了审计, 函数名)}。
 
     为什么用 AST 而不是 grep：grep 只能证明"文件里某处有这个词"，证明不了
     "这条路由的 handler 体内有"。漏一条写点就等于没做（writeauth 同一口径）。
+
+    **间接层只跟一层**（2026-09-25 实测修正）：memory 的 put_l2/put_l3 把审计收进了
+    模块级 helper `_audit_doc()`（避免把 touched 字段推导复制两遍），第一版护栏只看 handler 体
+    ⇒ 对着正确实现报"漏审"。解法不是把逻辑抄回 handler，而是让护栏解析一层本地调用：
+    handler 体内直接出现 log_asset_event，**或**调用了某个「体内直接出现 log_asset_event」的
+    模块级函数，才算已审。再深的链条（helper→helper→审计）故意不算 —— 否则覆盖面可以被
+    无限稀释成"看起来调了个函数"（见 test_indirection_is_limited_to_one_level）。
     """
     src = pathlib.Path(module_path).read_text(encoding="utf-8")
     tree = ast.parse(src)
     lines = src.splitlines()
+
+    def seg(node):
+        return "\n".join(lines[node.lineno - 1:getattr(node, "end_lineno", node.lineno)])
+
+    #: 模块级函数名 → 其体内是否**直接**调 log_asset_event（只扫 tree.body，不递归）
+    helpers = {n.name: ("log_asset_event" in seg(n))
+               for n in tree.body if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))}
     out = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
@@ -134,8 +148,11 @@ def route_audit_map(module_path):
             if method not in ("POST", "PUT", "PATCH", "DELETE"):
                 continue
             path = dec.args[0].value if (dec.args and isinstance(dec.args[0], ast.Constant)) else "?"
-            body = "\n".join(lines[node.lineno - 1:getattr(node, "end_lineno", node.lineno)])
-            out[(method, path)] = ("log_asset_event" in body, node.name)
+            body = seg(node)
+            called = {c.func.id for c in ast.walk(node)
+                      if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            audited = ("log_asset_event" in body) or any(helpers.get(c) for c in called)
+            out[(method, path)] = (audited, node.name)
     return out
 
 
@@ -196,6 +213,136 @@ class TestCoverage(unittest.TestCase):
         self.assertNotIn("body.env", audit_seg.replace("bool(body.env)", ""),
                          "env 值进了审计 detail = 凭据落进可导出的正文")
         self.assertNotIn("json.dumps(body.env", audit_seg)
+
+    def test_indirection_is_limited_to_one_level(self):
+        """★ 审计只准藏一层：handler→helper→helper→log_asset_event **不算已审**。
+        没有这条，覆盖面护栏可以被无限稀释成"看起来调了个函数"。"""
+        d = pathlib.Path(tempfile.mkdtemp(prefix="l0cov-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        f = d / "m.py"
+        f.write_text(
+            "from fastapi import APIRouter\n"
+            "router = APIRouter()\n"
+            "def _deep():\n"
+            "    db.log_asset_event('x', 'y', 'create', 'system')\n"
+            "def _mid():\n"
+            "    _deep()\n"
+            "@router.post('/shallow')\n"
+            "async def h_shallow():\n"
+            "    _audit_one()\n"
+            "def _audit_one():\n"
+            "    db.log_asset_event('x', 'y', 'create', 'system')\n"
+            "@router.post('/deep')\n"
+            "async def h_deep():\n"
+            "    _mid()\n", encoding="utf-8")
+        m = route_audit_map(f)
+        self.assertTrue(m[("POST", "/shallow")][0], "一层本地 helper 该算已审")
+        self.assertFalse(m[("POST", "/deep")][0], "两层间接必须判未审（否则护栏可被稀释）")
+
+
+class TestMemoryAudit(_DbCase):
+    """记忆资产的审计行形态。两条口径钉子：
+       ① detail **不记正文**（正文已在 memories 表；重复记 = 体积翻倍且多一处凭据面），只记元信息与字符数；
+       ② 软删必须如实标 soft=True（delete_l1 是 UPDATE status='deleted'，不是物理删）——
+          审计里写 "delete" 而不说清是软删，就是"不静默改数据"的反面。"""
+
+    def setUp(self):
+        super().setUp()
+        import memory as memory_mod
+        self.m = memory_mod
+        self.req = types.SimpleNamespace(state=types.SimpleNamespace(actor="user:hub-passcode"))
+
+    def _l1(self, content="端口 3102 由 agent-hub 占用", category="fact"):
+        return asyncio.run(self.m.create_l1(
+            self.m.MemoryIn(content=content, category=category), self.req))
+
+    def test_create_l1_audits_metadata_not_content(self):
+        r = self._l1()
+        rows = db.query("SELECT * FROM asset_audit WHERE asset_type='memory_l1'")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["action"], "create")
+        self.assertEqual(rows[0]["asset_slug"], str(r["id"]))
+        self.assertEqual(rows[0]["actor"], "user:hub-passcode")
+        d = json.loads(rows[0]["detail"])
+        self.assertEqual(d["category"], "fact")
+        self.assertIn("chars", d)
+        self.assertNotIn("content", d, "正文不该复制进审计")
+        self.assertNotIn("端口 3102", rows[0]["detail"])
+
+    def test_batch_writes_one_summary_row(self):
+        """批量导入记**一行汇总**：逐条写 200 行会让单次调用灌满表，
+        而审计要回答的是"谁在什么时候导了多少条"。"""
+        items = [self.m.MemoryIn(content="条目 %d" % i, category="fact") for i in range(5)]
+        r = asyncio.run(self.m.create_l1_batch(self.m.MemoryBatchIn(items=items), self.req))
+        rows = db.query("SELECT * FROM asset_audit WHERE asset_slug='batch'")
+        self.assertEqual(len(rows), 1)
+        d = json.loads(rows[0]["detail"])
+        self.assertEqual(d["count"], 5)
+        self.assertEqual(d["ids"], r["ids"])
+
+    def test_delete_l1_marks_soft_delete(self):
+        mid = self._l1()["id"]
+        asyncio.run(self.m.delete_l1(mid, self.req))
+        rows = db.query("SELECT detail FROM asset_audit WHERE asset_slug=? AND action='delete'",
+                        (str(mid),))
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(json.loads(rows[0]["detail"]).get("soft"),
+                        "软删未标注 ⇒ 读审计的人会以为数据被物理删除")
+
+    def test_put_l2_records_which_field_changed(self):
+        asyncio.run(self.m.put_l2(self.m.DocIn(content="# 新 L2", manual=None), self.req))
+        d = json.loads(db.query("SELECT detail FROM asset_audit WHERE asset_slug='L2'")[0]["detail"])
+        self.assertEqual(d["touched"], ["content"])
+        self.assertNotIn("新 L2", json.dumps(d, ensure_ascii=False))
+
+    def test_put_l3_records_manual_touch(self):
+        """manual 是用户手写补充（09-23 曾被 rebuild 静默覆盖）⇒ 它被动过必须单独留痕。"""
+        asyncio.run(self.m.put_l3(self.m.DocIn(content=None, manual="用户手写"), self.req))
+        d = json.loads(db.query("SELECT detail FROM asset_audit WHERE asset_slug='L3'")[0]["detail"])
+        self.assertEqual(d["touched"], ["manual"])
+        self.assertEqual(d["manual_chars"], len("用户手写"))
+
+    def test_rebuild_l2_audited_with_manual_untouched(self):
+        for i in range(2):
+            self._l1(content="记忆 %d" % i)
+        try:
+            asyncio.run(self.m.rebuild_l2(self.req))
+        except Exception as e:                       # noqa: BLE001
+            if "近30天无 L1 记忆可压缩" not in str(e):
+                raise
+        rows = db.query("SELECT detail FROM asset_audit WHERE action='rebuild'")
+        self.assertEqual(len(rows), 1)
+        d = json.loads(rows[0]["detail"])
+        self.assertTrue(d.get("manual_untouched"))
+        self.assertIn("items", d)
+        self.assertIn("llm", d)
+
+class TestGateSelfCheck(unittest.TestCase):
+    """★ 元闸门：本文件里每个 test_* 都必须是某个 TestCase 的**方法**。
+
+    缩进错位会让 test 函数变成另一个函数的嵌套 def ⇒ 语法通过、import 成功、
+     discover 收不到、**永远不执行**，而总例数只少一个，肉眼极难发现
+    （2026-09-25 本文件实测栽过一次；同族前例＝vitals_loop 函数头丢失致健康检查
+    成为不可达死代码、前端 TDZ 声明前访问）。口径：**代码存在 ≠ 会被执行**。
+    """
+
+    def test_no_test_function_is_nested_inside_another_function(self):
+        src = pathlib.Path(__file__).read_text(encoding="utf-8")
+        nested = []
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in ast.walk(node):
+                if (sub is not node and isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and sub.name.startswith("test_")):
+                    nested.append("%s 嵌在 %s 里" % (sub.name, node.name))
+        self.assertEqual(sorted(set(nested)), [], "这些 test_ 永不执行：%s" % sorted(set(nested)))
+
+    def test_intended_gate_count_is_not_silently_shrunk(self):
+        """例数下界钉子：少了就说明有 test 掉出收集范围（不是"跑得快"，是"没跑"）。"""
+        loader = unittest.TestLoader()
+        n = loader.loadTestsFromModule(sys.modules[__name__]).countTestCases()
+        self.assertGreaterEqual(n, 21, "本文件应至少收集 21 例，实收 %d ⇒ 有 test 掉出收集范围" % n)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
