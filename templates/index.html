@@ -761,6 +761,9 @@
                             <span class="ebar-sp"></span>
                             <button class="ebar-btn" onclick="embedRefresh()" title="重新加载内嵌界面"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
                             <button class="ebar-btn" onclick="embedNewTab()" title="在新标签页打开"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口</button>
+                            <!-- 09-25：菜单行内动作图标已 display:none、模式 tab 已停用，embed 与 term
+                                 必须在这里互留出口，否则点进哪个就再也切不到另一个（可见性由 applyChatMode 管） -->
+                            <button class="ebar-btn" id="embedToTerm" onclick="switchMode('term')" title="改用原生终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-terminal"/></svg>终端</button>
                         </div>
                         <div class="ebar-addr">
                             <span class="ebar-k">地址</span>
@@ -776,7 +779,8 @@
                         <div class="ebar-menu"><b id="termTitle"></b>
                             <span class="sess-row" id="termSessList"></span>
                             <span class="ebar-sp"></span>
-                            <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button></div>
+                            <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
+                            <button class="ebar-btn" id="termToEmbed" onclick="switchMode('embed')" title="改用内嵌的原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-monitor"/></svg>原生界面</button></div>
                         <div class="term-body"><div id="termEl"></div></div>
                     </div>
                     <!-- 模式3：对话框（有 chat 适配器的实体） -->
@@ -1158,6 +1162,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=9c9ccb83"></script>
+    <script src="/static/hub.js?v=2dfd111f"></script>
 </body>
 </html>

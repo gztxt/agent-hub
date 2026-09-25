@@ -9,3 +9,6 @@ data/
 
 # 修复工具时间戳备份（data/backups/）
 data/backups/
+
+# L2 探针的临时数据/影子实例日志（跑探针时自建，不入库）
+work/
