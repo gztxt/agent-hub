@@ -493,3 +493,86 @@ async function createJob() {
     loadJobs();
   } catch (e) { toast(e.message, 'err'); }
 }
+
+/* ── 会话导出（件 1 / spec §3）──────────────────────────────────────────
+   三个实测出来的坑，决定了这里为什么长这样：
+   ① 不能走 api()：01-core-boot.js 的 isWriteMethod() 只给 POST/PUT/PATCH/DELETE 带 token，
+      而 /api/sessions/export 是 **GET 却要写级鉴权**（后端显式 writeauth.decide("POST",…)）⇒ 必 401。
+   ② 不能用 api() 取体：它会 JSON.parse 成对象，CSV/JSON **文件字节**就毁了 ⇒ 必须 blob。
+   ③ token 不走 ?token=：那会进服务端访问日志与浏览器历史（本工作区三次凭据外流前例）⇒ 只走头。
+   文案四态互斥（照抄 07-asset-panel.js 的红向口径）：**被拒绝不许说成"没有会话"**。
+   窄屏口径：只加 1 个图标按钮，不做 format/redact 的一排开关（chrome 单行化优先级更高）；
+   CSV 与 redact=0 走 API 参数，不在本轮做 UI（YAGNI，且给原文出口做 UI 需单独裁定）。 */
+function exportStateOf(status, count, detail) {
+  if (status === 503) return 'misconfig';
+  if (status === 401) return /缺少凭据/.test(String(detail || '')) ? 'need-token' : 'bad-token';
+  if (status !== 200) return 'error';
+  return (count > 0) ? 'ok' : 'empty';
+}
+
+function exportStateText(state, count, extra) {
+  const n = (count == null || count < 0) ? '?' : String(count);
+  const code = (extra && extra.status) ? String(extra.status) : '?';
+  const hits = (extra && typeof extra.hits === 'number') ? extra.hits : 0;
+  if (state === 'ok') {
+    return '已导出 ' + n + ' 条会话（默认脱敏，命中 ' + hits + ' 处' +
+           (hits > 0 ? '，正文已打码）' : '）');
+  }
+  if (state === 'empty') return '导出成功，但这个范围内确实是 0 条会话（文件是空的，不是被拒）';
+  if (state === 'need-token') return '导出被拒：未提供凭据 —— 不是没有会话。请在「设置」里应用 TERM_TOKEN 后重试';
+  if (state === 'bad-token') return '导出被拒：凭据不匹配 —— 不是没有会话。存量口令可能已换过，已清除，请重新输入';
+  if (state === 'misconfig') return '导出被拒：服务端未配置口令（fail-closed）—— 不是没有会话';
+  // 'error' 必须是**显式分支**而不是掉进兜底：闸门按状态名逐个点名（缺一个即红），
+  // 而兜底留给"将来新增状态忘了配文案"这种情况 —— 那时也要说清不是没有会话。
+  if (state === 'error') return '导出失败（HTTP ' + code + '）—— 不是没有会话';
+  return '导出失败（未知状态 ' + state + '）—— 不是没有会话';
+}
+
+async function chatSessExport() {
+  const tk = termToken();
+  if (!tk) { toast(exportStateText('need-token', -1, {}), 'err'); return; }
+  const p = new URLSearchParams({ format: 'json', limit: '1000',
+                                  with_messages: '1', redact: '1' });
+  if (chatPick) p.set('agent_id', chatPick);
+  let r;
+  try {
+    r = await fetch('/api/sessions/export?' + p.toString(),
+                    { headers: { 'X-TERM-TOKEN': tk } });   // 头，不是 URL
+  } catch (e) {
+    toast('导出失败：网络不可达（' + e.message + '）—— 不是没有会话', 'err');
+    return;
+  }
+  const cnt = parseInt(r.headers.get('X-Export-Count') || '-1', 10);
+  const hits = parseInt(r.headers.get('X-Export-Redacted-Hits') || '0', 10);
+  if (r.status !== 200) {
+    let detail = '';
+    try { const d = await r.json(); detail = (d && d.detail) || ''; } catch (e) { detail = ''; }
+    const st = exportStateOf(r.status, cnt, detail);
+    if (st === 'bad-token') lsRemove('hub.term.token');   // 存量失效口令：清掉，下次重新问
+    toast(exportStateText(st, cnt, { status: r.status, hits: hits }), 'err');
+    return;
+  }
+  let body;
+  try { body = await r.blob(); } catch (e) {
+    toast('导出失败：读不到响应体 —— 不是没有会话', 'err'); return;
+  }
+  const cd = r.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename="?([^";]+)"?/);
+  const name = (m && m[1]) || 'agent-hub-sessions.json';   // 后端保证纯 ASCII 文件名
+  const obj = URL.createObjectURL(body);
+  const a = document.createElement('a');
+  a.href = obj;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(obj); a.remove(); }, 0);
+  toast(exportStateText(exportStateOf(200, cnt, ''), cnt, { hits: hits }), 'ok');
+}
+
+/* data-export 委托：新按钮一律走委托，不用 inline onclick（AGENTS.md 浮层配套红线，口径取最严）。
+   挂在 document 上而不是某个面板里 ⇒ 工具条重渲染后不必重新绑定。 */
+document.addEventListener('click', function (e) {
+  const b = e.target && e.target.closest ? e.target.closest('[data-export]') : null;
+  if (!b) return;
+  if (b.getAttribute('data-export') === 'sessions') chatSessExport();
+});

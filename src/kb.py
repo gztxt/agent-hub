@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 import tdai_client
+import memstats
 
 log = logging.getLogger("hub.kb")
 router = APIRouter(prefix="/api/kb", tags=["kb"])
@@ -249,6 +250,13 @@ async def kb_status():
     """资产面板用：各路是否可用、索引多新、库有多大。全实测，不猜。"""
     info = await turbovec_info()
     tdai = tdai_client.backend_status()
+    # 本地记忆便签的 staleness（件 3）。**失败不拖垮整个状态端点**：逐路表态是本项目
+    # 的立身口径（kb 四路联邦每一路都必须回 ok/error），一路炸了不许把其余路一起糊掉。
+    try:
+        mem = memstats.collect()
+    except Exception as e:                            # noqa: BLE001
+        mem = {"state": "unavailable", "rows": None,
+               "reason": "%s: %s" % (type(e).__name__, str(e)[:160])}
     # 年龄**不解析** `built_at` 字符串：实测它是 `2026-09-20T02:21:10` 这种**无时区**形态，
     # 与 aware datetime 相减直接 TypeError（闸门第一版就是在这上头 500 的，只捕了 ValueError）。
     # 改用索引文件 mtime：内核记的 UTC epoch，无时区歧义，而且万一 rebuild 没回写 meta
@@ -270,6 +278,7 @@ async def kb_status():
                      "index_mb": info.get("index_size_mb"), "error": info.get("error"),
                      "cached": info.get("cached", False)},
         "tdai": tdai,
+        "local_memory": mem,
         "wigolo": {"available": False,
                    "why": "P1 判定不接入：FTS 无 tokenize 子句、中文召回 2<LIKE 8、"
                           "LIKE 全表扫仅 9.2ms，且 agent-hub 主题命中 0 条。详见 src/kb.py 顶部"},

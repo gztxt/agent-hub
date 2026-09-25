@@ -8,6 +8,7 @@
 - chat_messages     统一对话消息
 - custom_agents     动态注册的自定义 Agent
 - manager_messages  Manager Agent 指挥官会话（含工具步骤）
+- asset_audit       资产变更审计（append-only：谁改了哪个资产；detail 落库前脱敏）
 """
 import json
 import sqlite3
@@ -101,6 +102,17 @@ CREATE TABLE IF NOT EXISTS profile_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_prof_subject ON profile_events(subject);
+CREATE TABLE IF NOT EXISTS asset_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_type TEXT NOT NULL,   -- mcp_server|mcp_acl|memory_l1|memory_doc|agent|session|setting
+    asset_slug TEXT NOT NULL,   -- server_id / acl_id / mid / L2|L3|batch / agent_id / session_id
+    action TEXT NOT NULL,       -- create|update|delete|bind|unbind|rebuild（见 AUDIT_ACTIONS）
+    actor TEXT NOT NULL,        -- user:term-token|user:hub-passcode|user:exempt|agent:<slug>|system
+    detail TEXT DEFAULT '{}',   -- JSON；落库前过脱敏，**绝不许含凭据原文**
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_asset ON asset_audit(asset_type, asset_slug);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON asset_audit(created_at);
 """
 
 
@@ -217,6 +229,36 @@ def log_profile_event(source: str, subject: str, status: str,
         " VALUES(?,?,?,?,?,?,?)",
         (source, subject, trace_id, status, duration_ms,
          json.dumps(detail, ensure_ascii=False) if detail else None, _now()))
+
+
+#: 审计动作枚举——写死在这里，避免各调用点自由发挥（自由文本 = 查不动）
+AUDIT_ACTIONS = ("create", "update", "delete", "bind", "unbind", "rebuild")
+
+
+def log_asset_event(asset_type: str, asset_slug: str, action: str, actor: str,
+                    detail: Optional[dict] = None) -> None:
+    """资产变更审计（**append-only**）。与 log_profile_event 同族但口径不同：
+    profile_events 记「调用成不成、多快」，asset_audit 记「哪个资产被谁改了」。
+
+    三条硬约束（都有 L0 闸门钉着，见 tests/test_asset_audit.py）：
+      1) **只 INSERT**：审计表一旦可被 UPDATE/DELETE 就不再是审计。
+      2) **detail 落库前整体过脱敏**：审计行会成为下一次会话导出的正文，凭据写进去＝二次外流。
+         做法是先 json.dumps 再对整串 redact_text ⇒ 嵌套层也覆盖（只扫顶层值会漏 dict 里的 dict）。
+      3) **action 不在枚举里 ⇒ 打 action_invalid 标记**，绝不静默丢弃也绝不改写。
+    """
+    d = dict(detail or {})
+    if action not in AUDIT_ACTIONS:
+        d = {**d, "action_invalid": True}
+    body = json.dumps(d, ensure_ascii=False)
+    try:
+        from sessions_export import redact_text   # 局部 import：db 是最底层，不许成环
+        body = redact_text(body)[0]
+    except Exception:                             # noqa: BLE001
+        pass                                      # 脱敏器不可用时仍要留下事件（完整性 > 打码）
+    execute(
+        "INSERT INTO asset_audit(asset_type,asset_slug,action,actor,detail,created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (asset_type, str(asset_slug), action, actor, body, _now()))
 
 
 def add_memory(content: str, category: str = "fact", source: str = "manual",

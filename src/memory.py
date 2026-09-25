@@ -18,12 +18,13 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 import db
 import llm
 import tdai_client
+import writeauth
 
 router = APIRouter()
 
@@ -157,27 +158,35 @@ async def list_l1(category: Optional[str] = None, q: Optional[str] = None,
 
 
 @router.post("/api/memory/l1")
-async def create_l1(body: MemoryIn):
+async def create_l1(body: MemoryIn, request: Request):
     if body.category not in CATEGORIES:
         raise HTTPException(400, f"category must be one of {sorted(CATEGORIES)}")
     mid = db.add_memory(body.content, body.category, body.source, body.session_id)
+    # detail 不记正文（正文已在 memories 表；重复记 = 体积翻倍且多一处凭据面）
+    db.log_asset_event("memory_l1", str(mid), "create", writeauth.actor_of(request),
+                       {"category": body.category, "source": body.source,
+                        "chars": len(body.content or ""), "session_id": body.session_id})
     return {"id": mid, "status": "created"}
 
 
 @router.post("/api/memory/l1/batch")
-async def create_l1_batch(body: MemoryBatchIn):
+async def create_l1_batch(body: MemoryBatchIn, request: Request):
     ids = []
     for item in body.items:
         cat = item.category if item.category in CATEGORIES else "fact"
         ids.append(db.add_memory(item.content, cat, item.source or "extract", item.session_id))
+    db.log_asset_event("memory_l1", "batch", "create", writeauth.actor_of(request),
+                       {"count": len(ids), "ids": ids[:50]})   # 汇总一行；ids 截 50 防单行爆体积
     return {"ids": ids, "count": len(ids)}
 
 
 @router.delete("/api/memory/l1/{mid}")
-async def delete_l1(mid: int):
+async def delete_l1(mid: int, request: Request):
     n = db.execute("UPDATE memories SET status='deleted', updated_at=? WHERE id=?", (_now(), mid))
     if not n:
         raise HTTPException(404, "memory not found")
+    db.log_asset_event("memory_l1", str(mid), "delete", writeauth.actor_of(request),
+                       {"soft": True})          # 软删（status='deleted'），不是物理删除
     return {"status": "deleted", "id": mid}
 
 
@@ -268,13 +277,27 @@ def _put_doc(layer: str, content: Optional[str], manual: Optional[str]) -> dict:
     return _get_doc(layer)
 
 
+def _audit_doc(layer: str, body: "DocIn", request) -> None:
+    """L2/L3 变更审计。touched 必须点名动了哪个字段 —— `manual` 是用户手写补充，
+    09-23 曾被 rebuild 静默覆盖过（见 writeauth.py docstring 记录的事故），它被动过要单独留痕。
+    只记字符数不记正文：正文在 memory_docs 表里，审计不是第二份副本。"""
+    touched = [k for k, v in (("content", body.content), ("manual", body.manual))
+               if v is not None]
+    db.log_asset_event("memory_doc", layer, "update", writeauth.actor_of(request),
+                       {"touched": touched,
+                        "content_chars": len(body.content) if body.content is not None else None,
+                        "manual_chars": len(body.manual) if body.manual is not None else None})
+
+
+
 @router.get("/api/memory/l2")
 async def get_l2():
     return _get_doc("L2")
 
 
 @router.put("/api/memory/l2")
-async def put_l2(body: DocIn):
+async def put_l2(body: DocIn, request: Request):
+    _audit_doc("L2", body, request)
     return _put_doc("L2", body.content, body.manual)
 
 
@@ -284,12 +307,13 @@ async def get_l3():
 
 
 @router.put("/api/memory/l3")
-async def put_l3(body: DocIn):
+async def put_l3(body: DocIn, request: Request):
+    _audit_doc("L3", body, request)
     return _put_doc("L3", body.content, body.manual)
 
 
 @router.post("/api/memory/l2/rebuild")
-async def rebuild_l2():
+async def rebuild_l2(request: Request):
     """用近 30 天 L1 压缩生成 L2.content 草稿（LLM 不可用时返回降级拼接）"""
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     rows = db.query(
@@ -314,6 +338,10 @@ async def rebuild_l2():
     else:
         content = f"# 近30天工作记忆（机械压缩 {len(rows)} 条）\n\n{raw}"
     doc = _put_doc("L2", content, None)  # manual 不动
+    db.log_asset_event("memory_doc", "L2", "rebuild", writeauth.actor_of(request),
+                       {"items": len(rows), "llm": llm_used,
+                        "manual_untouched": True})   # _put_doc(…, None) ⇒ manual 一字未动，如实记
+
     return {"status": "rebuilt", "items": len(rows), "llm": llm_used,
             "updated_at": doc["updated_at"]}
 

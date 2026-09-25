@@ -61,11 +61,15 @@ import gwprobe                      # 上游网关（CCR）连通性 + 模型注
 import healthx                      # /health 派生量的纯函数层（L0 不 import src.main，故抽出来）
 import sessions_export as export_mod
 import writeauth                    # 导出端点按写端点同等鉴权（复用 decide 的 fail-closed）
+import audit as audit_mod           # 资产变更审计的只读查询门面（GET /api/audit/list）
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.23"   # 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
+VERSION = "0.13.24"   # 后端+前端：asset_audit 资产变更审计（append-only 表 + log_asset_event 写口径 + /api/audit/list）；
+                      #   本地记忆便签 staleness 观测（memstats，**只报告不清理**）挂 /api/kb/status.local_memory；
+                      #   chat 会话工具条加导出按钮（blob 下载、token 只走头、四态文案互斥）。
+                      #   上一版 v0.13.23 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
                       #   会话批量导出端点（JSON/CSV，默认脱敏，按写端点同等鉴权）；
                       #   MANAGER_LLM_BASE_URL 默认值由已退役的 FCC :8082 改回 CCR :3456。
                       #   版本号让位：本批原自命名 0.13.22，但 master 上 ff53581（终端页空格接力，纯前端）已占用该标签
@@ -212,6 +216,7 @@ app.include_router(tasks_mod.router)
 app.include_router(mcpgw_mod.router)
 app.include_router(cronjobs_mod.router)
 app.include_router(term_mod.router)
+app.include_router(audit_mod.router)
 
 # D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
 # 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。
