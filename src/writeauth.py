@@ -79,15 +79,49 @@ def secrets_from_env() -> list:
     return [os.getenv("TERM_TOKEN", ""), os.getenv("HUB_PASSCODE", "")]
 
 
+#: 凭据的**名字**（顺序与 secrets_from_env 严格一致）。审计只记"用了哪把钥匙"，绝不记钥匙本身。
+SECRET_NAMES: Tuple[str, ...] = ("term-token", "hub-passcode")
+
+
+def credential_name(provided: str, secrets: Iterable[str]) -> str:
+    """provided 命中了哪一把凭据的**名字**；未提供/未命中 → "anonymous"。
+
+    为什么新增而不改 `decide()`：decide 的 (verdict, reason) 被中间件与
+    `/api/sessions/export` 端点共用，且 tests/test_writeauth.py 12 例钉着签名。
+    改返回值＝零收益地撞 12 例既有闸门；新增纯函数则两边都不动。
+    """
+    if not provided:
+        return "anonymous"
+    for name, s in zip(SECRET_NAMES, secrets):
+        if s and hmac.compare_digest(provided, s):
+            return name
+    return "anonymous"
+
+
+def actor_of(request) -> str:
+    """从 request.state 取审计身份；取不到 → "system"（后台循环/内部调用）。
+
+    **绝不抛**：审计身份缺失不许把业务请求打挂（审计是附加价值，不是准入条件）。
+    """
+    try:
+        a = getattr(getattr(request, "state", None), "actor", "")
+        return a or "system"
+    except Exception:  # noqa: BLE001
+        return "system"
+
+
 async def write_gate(request, call_next):
     """注册进 main.py。Starlette 里**后注册的中间件在最外层**，所以本闸门先于
     api_rate_limit 执行：被拒的请求不该占用限流预算，也不该走到 handler 产生副作用。"""
     method = request.method
     path = request.url.path
-    verdict, reason = decide(method, path,
-                             provided_token(request.headers.raw, request.url.query),
-                             secrets_from_env())
+    provided = provided_token(request.headers.raw, request.url.query)
+    secrets = secrets_from_env()
+    verdict, reason = decide(method, path, provided, secrets)
     if verdict in ("allow", "exempt"):
+        # 审计身份：只记凭据**名**，绝不记值。starlette 的 Request.state 是可写属性袋。
+        request.state.actor = ("user:exempt" if verdict == "exempt"
+                               else "user:" + credential_name(provided, secrets))
         return await call_next(request)
     status = 503 if verdict == "misconfig" else 401
     print(f"[writegate] {status}：{method} {path} 来源={request.client.host if request.client else '?'}"
