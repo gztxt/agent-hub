@@ -37,7 +37,11 @@ class Config:
         self.jcode_model = os.getenv("JCODE_CHAT_MODEL", "")
 
         # Manager Agent LLM 网关（FCC 优先，见 MEMORY PT-20260905-02）
-        self.manager_llm_base = os.getenv("MANAGER_LLM_BASE_URL", "http://127.0.0.1:8082/v1")
+        # 默认值指向 **CCR**（:3456）。旧默认是 FCC 的 :8082/v1，而 FCC 已于 2026-09-25 彻底退役
+        # （PT-20260924-15：与 CCR 上游同 key、provider 为 CCR 子集、Claude 档实为 Qwen 别名）
+        # ⇒ 留着它就是一个「.env 丢失/新克隆即指向死网关」的隐形故障源，与军规第 2 条
+        # 「端口以实连为准：CCR API 口 3456」对齐。真值仍由 .env override，不改现有生产行为。
+        self.manager_llm_base = os.getenv("MANAGER_LLM_BASE_URL", "http://127.0.0.1:3456/v1")
         self.manager_llm_key = os.getenv("MANAGER_LLM_API_KEY", "")
         self.manager_llm_model = os.getenv("MANAGER_LLM_MODEL", "tokenrouter/qwen3.8-flash")
 

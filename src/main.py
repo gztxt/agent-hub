@@ -29,7 +29,7 @@ if env_path.exists():
 import aiohttp
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -57,13 +57,22 @@ import embed_proxy as embed_proxy_mod
 import selfattest
 import staticguard
 import tdai_client
+import gwprobe                      # 上游网关（CCR）连通性 + 模型注册清单的缓存式体检
+import healthx                      # /health 派生量的纯函数层（L0 不 import src.main，故抽出来）
+import sessions_export as export_mod
+import writeauth                    # 导出端点按写端点同等鉴权（复用 decide 的 fail-closed）
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.20"   # 后端：FCC 退役收尾——profiles 烘删 FCC 网关卡片（菜单不再列出）；
-                      #   背景见 PT-20260924-15：FCC 与 CCR 上游同 key、provider 为 CCR 子集、Claude 档实为 Qwen 别名，已于 09-24 彻底下线。
-                      #   上一版（v0.13.19 P3 工具注册表 / P4 资产面板）明细见 CHANGELOG.md。
+VERSION = "0.13.23"   # 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
+                      #   会话批量导出端点（JSON/CSV，默认脱敏，按写端点同等鉴权）；
+                      #   MANAGER_LLM_BASE_URL 默认值由已退役的 FCC :8082 改回 CCR :3456。
+                      #   版本号让位：本批原自命名 0.13.22，但 master 上 ff53581（终端页空格接力，纯前端）已占用该标签
+                      #   ⇒ 本批改 0.13.23，避免两批共用一个版本号（详见 CHANGELOG）。
+                      #   v0.13.21/22 均为纯前端批次，按项目口径
+                      #   「VERSION 与清 code_stale 随下次后端改动同批」⇒ 本次一并 bump。
+                      #   上一版（v0.13.20 FCC 退役收尾 / v0.13.19 P3 工具注册表 + P4 资产面板）明细见 CHANGELOG.md。
 
 app = FastAPI(title="Agent Hub", version=VERSION)
 
@@ -280,6 +289,22 @@ async def health():
     # 纯读缓存不起网络（见 tdai_client.backend_status 注释），且**不改 status**：
     # 记忆后端不可用不等于 hub 坏了，同 code_stale 只兑情报的设计意图。
     out["memory_backend"] = tdai_client.backend_status()
+    # 上游网关（CCR）连通性 + 模型注册清单 —— 0924 方案档 §三「health 增强（运维 P3→P2）」收口。
+    # 为什么必须有：本机三次同源事故都是**模型 ID 失效而 /health 全绿**（09-06 `minimax-m3:free`
+    # HTTP 400、09-19 `'ultra'` 无效、09-23 `qwen3.8-flash` 缺 provider 前缀）——即 09-22 定名的
+    # 「静默不可用」家族。现在 watch 里的每个写死 ID 是否仍在册，直接是 /health 的可断言字段。
+    # 纯读缓存（gwprobe 自己 stale-while-revalidate，TTL 300s），**不改 status**：
+    # 上游网关不可达不等于 hub 坏了，与 code_stale / memory_backend 同一设计意图。
+    out["ccr_gateway"] = gwprobe.status()
+    # 画像最近检测时间（同属「health 增强」的另一半：CCR 连通性 + 画像检测时间 + DB 状态）。
+    # 只给 last_sweep 会被「新一轮扫了 6 家、漏了第 7 家」骗过 ⇒ 必须给最坏值 oldest_check_age_s
+    # 与 unchecked（在册却从没被扫到的家数，正是 09-22「在册却静默不可用 21 天」的形态）。
+    try:
+        out["profiles_last_check"] = healthx.profiles_last_check(
+            vitals_mod.vitals.snapshot(), vitals_mod.vitals.last_sweep, vitals_mod.SWEEP_EVERY)
+    except Exception as e:  # noqa: BLE001  # 情报字段不得把 /health 打挂
+        out["profiles_last_check"] = {"state": "error",
+                                     "error": f"{type(e).__name__}: {str(e)[:120]}"}
     if not db_ok:
         out["status"] = "degraded"
     return out
@@ -503,6 +528,76 @@ async def session_messages(session_id: str, limit: int = 100):
         "WHERE session_id=? ORDER BY id ASC LIMIT ?", (session_id, limit))}
 
 
+@app.get("/api/sessions/export")
+async def export_sessions(request: Request, format: str = "json", agent_id: Optional[str] = None,
+                          limit: int = 1000, with_messages: int = 1, redact: int = 1):
+    """批量导出 hub 自己的会话（0924 方案档 §三「会话导出 P2.5」）。
+
+    三个刻意的设计决定：
+      1) **按写端点同等鉴权**：服务绑 0.0.0.0:3102，批量导出正文是数据外流动作，影响面比
+         单条 `/messages` 大一个量级。复用 `writeauth.decide`（fail-closed：服务端没配口令
+         ⇒ 503 而不是放行），与 09-23「31 个写端点不设防」的收口同一口径。
+      2) **默认脱敏**（`redact=1`）：本工作区三次被凭据外流打过（备份镜像 82 个活凭据文件、
+         `wiki/log.md` 历史含 CCR web token、外发净仓被闸门拦下 3 个抄了真 token 的文档）。
+         导出件正是最容易被顺手 commit/转发的形态；命中数在 meta 里如实回报，**不静默改数据**，
+         要原始字节须显式 `redact=0`。
+      3) **不导出外部 CLI 的历史会话**（claude/jcode/codex/opencode/grok/hermes 的 session store）：
+         那是别的工具链的私有存档，批量外流属另一层隐私裁定，须用户点名；本端点只覆盖
+         hub 自己库里的 `chat_sessions` / `chat_messages`。
+    """
+    verdict, reason = writeauth.decide(
+        "POST", request.url.path,                       # 强制按写方法判：导出=数据外流
+        writeauth.provided_token(request.headers.raw, request.url.query),
+        writeauth.secrets_from_env())
+    if verdict not in ("allow", "exempt"):
+        print(f"[export] 拒绝 {verdict}：{request.url.path} "
+              f"来源={request.client.host if request.client else '?'} —— {reason}", flush=True)
+        raise HTTPException(status_code=503 if verdict == "misconfig" else 401, detail=reason)
+
+    fmt = "csv" if str(format).lower() == "csv" else "json"
+    n_lim = max(1, min(int(limit or 1000), 5000))       # 上限防一次性拖库打爆内存
+    sql = ("SELECT s.id, s.agent_id, s.title, s.created_at, s.updated_at, "
+           "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id=s.id) AS messages "
+           "FROM chat_sessions s")
+    params: list = []
+    if agent_id:
+        sql += " WHERE s.agent_id=?"
+        params.append(agent_id)
+    sql += " ORDER BY s.updated_at DESC LIMIT ?"
+    params.append(n_lim)
+    rows = [dict(r) for r in db.query(sql, tuple(params))]
+
+    meta = {"agent_id": agent_id or "*", "limit": n_lim, "with_messages": bool(with_messages)}
+    if fmt == "csv" and with_messages:
+        # CSV 是扁平表 ⇒ 导出正文时以「一行一条消息」呈现（表头恒定，下游可断言）
+        mrows: list = []
+        for r in rows:
+            for m in db.query("SELECT role,content,created_at FROM chat_messages "
+                              "WHERE session_id=? ORDER BY id ASC", (r.get("id"),)):
+                mrows.append({"session_id": r.get("id"), "role": m.get("role"),
+                              "created_at": m.get("created_at"), "content": m.get("content")})
+        body, ctype, fname, meta = export_mod.render(
+            mrows, export_mod.MESSAGE_COLUMNS, "csv", "messages", meta=meta, redact=bool(redact))
+    else:
+        if with_messages and fmt == "json":
+            for r in rows:
+                r["transcript"] = [
+                    {"role": m.get("role"), "created_at": m.get("created_at"),
+                     "content": m.get("content")}
+                    for m in db.query("SELECT role,content,created_at FROM chat_messages "
+                                      "WHERE session_id=? ORDER BY id ASC", (r.get("id"),))]
+        body, ctype, fname, meta = export_mod.render(
+            rows, export_mod.SESSION_COLUMNS, fmt, "sessions", meta=meta, redact=bool(redact))
+
+    print(f"[export] {meta.get('kind')} fmt={fmt} rows={meta.get('count')} "
+          f"redacted={'yes' if redact else 'no'} hits={meta.get('redacted_hits')} "
+          f"来源={request.client.host if request.client else '?'}", flush=True)
+    return Response(content=body, media_type=ctype,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"',
+                             "X-Export-Count": str(meta.get("count", 0)),
+                             "X-Export-Redacted-Hits": str(meta.get("redacted_hits", 0))})
+
+
 class SessionPatch(BaseModel):
     title: Optional[str] = None
 
@@ -724,6 +819,11 @@ async def startup():
     db.init_db(config.db_path)
     discovery = AgentDiscovery(config, db=db)
     build_adapters(config)
+    # 上游网关注入（/health 的 ccr_gateway 情报源）。watch 放两个「写死在配置里的模型 ID」：
+    # manager 用的那个 + vitals L4 探针用的那个。上游一旦改名/下架，watch.<id>=false 当天可见，
+    # 不必等探活烧一轮 token 才发现（09-23 的 M1 阻塞「拿不到在线清单」就此长期解除）。
+    gwprobe.configure(config.manager_llm_base, config.manager_llm_key,
+                      watch=[config.manager_llm_model, vitals_mod.RT_MODEL])
     tasks_mod.ensure_schema()
     tasks_mod.set_context(
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr),

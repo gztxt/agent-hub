@@ -91,6 +91,10 @@ $ venv/bin/python tests/verify_replay_gate.py
 > **09-25 00:4x 复点**：L0 271（新增 `test_entity_mode_source_of_truth.py` 6 例）；
 > L2 30 = `verify_*.py`(28，新增 `verify_claude_menu_term.py`) + `probe_*.py`(2)。
 > **09-25 01:5x 复点**：L2 31 = `verify_*.py`(29，新增 `verify_term_key_relay.py`) + `probe_*.py`(2)。
+> **09-25 09:2x 复点（会话 `01a0d5db`，worktree `wt/01a0d5db`）**：**L0 313**（新增 42 例：
+> `test_gwprobe.py` 19 / `test_healthx.py` 8 / `test_sessions_export.py` 15），`hermetic-clean` 实测
+> `ran=313 skipped=0 failures=0`；**L1 host 35 不变**（`skipped=0`）。L2 未动（本批零前端改动）。
+> 三只新闸门均 **不 import `src.main`**、零网络（`gwprobe.fetch` 被替换）、零真盘 ⇒ 分层合格。
 > 旧版“23 只 = 16 需服务 + 7 离线”的拆分已随文件集变化作废（此后新增的
 > `verify_kb_federation` / `verify_skill_facade` / `verify_mcp_facade` 都是 in-process 不占端口），
 > 但完整的二分没逐只重数 ⇒ **宁可不写数字，也不拿旧拆分冒充实测**。
@@ -148,6 +152,9 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `probe_sidebar_width_sweep.py` | 通用诊断（不钉缺陷）：320→1920 **宽度轴**一次扫完侧栏几何/可见按钮数/中心接住者/JS 异常 | 320~767：收起 48px、6 按钮、0 列表项（图标条设计如此） | 768+：展开 240px、14 按钮；**全带无空白** ⇒ 把方向从“布局/几何”逼到“事件与浮层残留” |
 | `verify_page_fallback.py` | `go()` 直接吃 `localStorage.getItem('hub.page')`，而这个值可能是**跨版本已改名的页名**（09-20 界面统一改过一批）⇒ 认不出时 `toggle('on', s.id === 'page-' + page)` 把**所有页面一起关掉** ⇒ 正文整块空白、页内零个可点元素。而 localStorage **按 origin 隔离** ⇒ 同一份代码『局域网那个源正常、Tailscale 那个源空白』 | 9 个取值里 7 个（dashboard/manager/agents/watch/terminal/乱写/overview）→ `section.page.on=(无)`、可点数=0 | 修后 9/9 全部落到 `page-classroom` 且有可点元素 ⇒ 退出码 0 |
 | `test_tdz_order.py`(L0) + `verify_hist_tdz.py` | **顶层 IIFE 早于 `let` 声明 ⇒ TDZ**：`histBootstrap()` → `histLoad()` → `renderNav()` 读到 1861 行才声明的 `_navHtml` ⇒ hub.js 当场死亡（菜单空白 + `initSidebar` 从未执行 + 抽屉停在展开态遮住正文）。门闩 = `histOpen ∈ TERM_HIST_AGENTS` **且 localStorage 有 `hub.term.token`** ⇒ 手机那份有、浏览器那份没有 ⇒ 这才是「浏览器正常/APP 异常」「局域网正常/Tailscale 异常」的真判据 | 红：**用 `Fetch.fulfillRequest` 把修复前的 HEAD 版喂进同一页面**（不往生产 static 目录写文件），逐字符复现 `JS异常 @ hub.js:1907` + `navTree子项=0` + `collapsed=false` | 绿 14/14，且主动调 `histLoad('claude')` 返回 DRIVE-OK、服务端确有 `/api/term/history` 命中（第一版只注入 localStorage 就报 8/8 绿，被日志否证为**空转**） |
+| `test_gwprobe.py`(L0) | 模型 ID 失效而 `/health` 全绿（本机三次同源事故：09-06 `minimax-m3:free` HTTP 400 / 09-19 `'ultra'` 无效 / 09-23 缺 provider 前缀）⇒ 上游注册清单必须可观测；另钉住一条**改判**：`agnes/agnes-2.0-flash` 并不在免费池（实测 14 个 ID 里 5 个 free 全是 `openrouter/*:free`），`PT-20260923-05` 的旧断言不得再当前提用 | 变异：`watch` 改成恒真（模拟上游改名看不出来）⇒ `test_watch_detects_rename_not_stuck_true` **FAIL** | 复原后 19/19 绿；另含凭据泄漏闸门（配置里的 key 值不得出现在 `status()` 任何字段）、`200 但清单为空` 必须区别于 ok、冷缓存 `unknown`+后台单飞 |
+| `test_healthx.py`(L0) | 只看 `last_sweep` 会被"新一轮扫了 6 家、漏了第 7 家"骗过 ⇒ 那一家可以在册、心跳新鲜、却从没被检测（＝09-22「在册却静默不可用 21 天」的形态）；另拦 NaN/Inf 被序列化成裸 `NaN` 把前端 `JSON.parse(/health)` 整页炸掉 | 6 家刚扫过 + 1 家无 `checked_at` ⇒ 断言 `state=ok` 但 `unchecked=1`、`oldest_check_age_s=20.0`（最坏值必须浮出来）；`STALE_ROUNDS` 边界正反各一例 | 8/8 绿；脏输入（None/字符串时间戳/`sweep_every=0`）只降级不抛 —— `/health` 是自证端点，情报字段不得把它打挂 |
+| `test_sessions_export.py`(L0) | 导出默认脱敏**必须递归**：JSON 把正文嵌在 `transcript` 里，只扫顶层字符串会整层漏掉 —— 而那一层恰恰是唯一带正文的地方；且脱敏**不得静默**（命中数要回报，`redact=0` 必须逐字 faithful） | 变异：脱敏改回"只扫顶层" ⇒ `test_nested_transcript_is_redacted` **FAIL** | 复原后 15/15 绿；含 CSV 表头恒定/缺列留空/多列丢弃/逗号换行转义、文件名 ASCII-only（端侧 WebView 的 `Content-Disposition` 中文行为不一）、未知 format 回落 JSON 但如实记录请求值 |
 | `verify_diag_panel.py` | 端侧自检面板 `?diag=1` **自身失效**就等于永远拿不到端侧事实（本机对手机/APP 零探针是长期缺口）。给它做红绿：绿=如实报『异常清单: 无』；红=**同一条 CDP 连接**掐断 `hub.js` | 红况面板精确报「资源加载失败 …/hub.js」+ `go函数=undefined` + `navTree子项=0` + **`侧栏collapsed=false`（证明 JS 不跑时抽屉停在展开态遮住正文）** | 绿 8/8 + 红 6/6 + 无 `?diag` 时面板不存在 ⇒ 17/17 |
 | `verify_collapse_symmetry.py` | 窄屏「点 agent 名称后是否自动收起侧栏」**依赖 `hub.hist` 存量** ⇒ 同一动作在局域网 / Tailscale 两个 origin 上分叉（用户报「Tailscale 好像不行」） | 改前四格矩阵：hist 空→`collapsed=False`、hist='claude'→`collapsed=True`（两 origin 各自一致、彼此不同） | 改后四格全 `collapsed=False`，对称性成立 ✅ |
 | `verify_narrow_default_iconbar.py` | 窄屏首屏是否**图标条**（用户 09-24 裁定的默认态） | C 格掐断 hub.js ⇒ `collapsed=False`(236px 铺满) | A 格无存档 ⇒ `collapsed=True`(48px 图标条)；B 格本档存 `'0'` ⇒ `False`（证明非 stuck-true） |
