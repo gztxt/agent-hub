@@ -42,6 +42,46 @@ MAX_SESSIONS = 8
 REAP_INTERVAL_S = float(os.getenv("TERM_REAP_INTERVAL", "60"))
 
 
+# 内存耗尽时 bun/JSC 会**主动** abort：ASSERTION FAILED: MemoryExhaustion →
+# JSC::LocalAllocator::allocateSlowCase 调 __builtin_trap() → ud2 → SIGILL。
+# 内核只记一行 `trap invalid opcode`，终端上原本只显示「[会话结束]」⇒ 用户无从得知
+# 是内存问题（2026-09-25 排查 opencode 菜单秒退时实测：dmesg + objdump + ulimit -v
+# 三步才定性，全程 hub 没有任何提示）。SIGKILL 同理：可能是 OOM-killer 也可能是 hub 强杀。
+_MEM_SUSPECT_SIGNALS = frozenset({signal.SIGILL, signal.SIGSEGV, signal.SIGBUS,
+                                  signal.SIGABRT, signal.SIGKILL})
+
+
+def describe_exit(status: Optional[int], hub_killed: bool = False) -> str:
+    """把 waitpid 的 status 解成人话（纯函数，供单测直接喂值）。
+
+    hub_killed：本进程是不是 hub 自己动的手（用户点 × / 空闲 TTL / 服务退出）。
+    SIGKILL 与 SIGTERM 是**歧义信号** —— 既可能是内核 OOM-killer，也可能是我们自己发的。
+    知道是自己发的就如实说，绝不把"用户主动关会话"渲染成"内存不足"吓人。
+
+    返回**纯文本**片段（不含 ANSI，调用方自己包样式）；无信息时返回空串，
+    调用方据此回落到原来的「[会话结束]」，绝不编造原因。
+    """
+    if status is None:
+        return ""
+    try:
+        if os.WIFSIGNALED(status):
+            sig = os.WTERMSIG(status)
+            try:
+                name = signal.Signals(sig).name
+            except ValueError:
+                name = f"signal {sig}"
+            if hub_killed and sig in (signal.SIGTERM, signal.SIGKILL):
+                return f"由 hub 主动终止（{name}）"
+            hint = "（疑似内存不足）" if sig in _MEM_SUSPECT_SIGNALS else ""
+            return f"被信号 {name}({sig}) 终止{hint}"
+        if os.WIFEXITED(status):
+            code = os.WEXITSTATUS(status)
+            return "正常退出" if code == 0 else f"退出码 {code}"
+    except (ValueError, OSError):
+        return ""
+    return ""
+
+
 def _check_term_token(provided: str, source: str) -> None:
     """缺 token 即拒：校验失败记一行拒绝原因（绝不记录 token 值）"""
     if not provided or not hmac.compare_digest(provided, TERM_TOKEN):
@@ -77,6 +117,8 @@ class Session:
         self.dropped: Dict[str, int] = {}   # 观看者 -> 累计丢弃字节（慢消费者必须可见）
         self.ring = bytearray()  # 输出环形缓冲：重连回放，避免"重挂后白屏"
         self._cleaned = False    # 资源回收幂等守卫
+        self.exit_status = None  # waitpid 原始 status；解出人话见 describe_exit()
+        self.hub_killed = False  # True = 这次是 hub 自己动的手（点 × / TTL / 服务退出）
         self.resume_of = ""     # v0.13.0：非空 = 由某条磁盘历史续聊而来
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
@@ -84,6 +126,7 @@ class Session:
         return {"id": self.id, "agent_id": self.agent_id, "cmd": " ".join(self.cmd),
                 "cwd": self.cwd, "alive": self.alive,
                 "created": self.created, "resume_of": self.resume_of,
+                "exit_reason": describe_exit(self.exit_status, self.hub_killed),
                 "idle_s": round(time.time() - self.last_io)}
 
     def _signal_group(self, sig):
@@ -98,6 +141,7 @@ class Session:
 
     def kill(self):
         """TUI 常忽略 SIGHUP：SIGTERM → 2s 后仍活则 SIGKILL 升级（组级）"""
+        self.hub_killed = True   # 之后看到的 SIGTERM/SIGKILL 是我们自己发的，不是 OOM
         self._signal_group(signal.SIGTERM)
         try:
             loop = asyncio.get_event_loop()
@@ -110,6 +154,8 @@ class Session:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
             if pid == 0:  # 还活着 → 强杀整组
                 self._signal_group(signal.SIGKILL)
+            elif self.exit_status is None:
+                self.exit_status = status   # 已自行退出：留下面因（首次记录优先，不被后续覆盖）
         except (ChildProcessError, ProcessLookupError, PermissionError):
             pass
         # 升级后收尾：短暂宽限再收尸并释放资源（不依赖列表还在展示它）
@@ -135,9 +181,11 @@ class Session:
             pass
         for _ in range(2):
             try:
-                pid, _st = os.waitpid(self.pid, os.WNOHANG)
+                pid, st = os.waitpid(self.pid, os.WNOHANG)
                 if pid == 0:
                     break
+                if self.exit_status is None:
+                    self.exit_status = st   # 原为 `_st` 直接丢弃 ⇒ 崩溃原因永远上不了屏
             except (ChildProcessError, ProcessLookupError, OSError):
                 break
 
@@ -301,9 +349,13 @@ def _attach_reader(sess: Session):
             if isinstance(e, OSError) and e.errno in (errno.EIO, errno.EBADF):
                 sess.alive = False
                 sess._cleanup()  # 摘 reader + 关 fd + 收尸（幂等，替代原散落逻辑）
+                # _cleanup() 已记下 exit_status ⇒ 这里能把「为什么没了」一起说出来。
+                # 原样只有一句「[会话结束]」，用户看到的就是"点一下闪退、什么都不告诉我"。
+                reason = describe_exit(sess.exit_status, sess.hub_killed)
+                tail = f"\r\n\x1b[90m[进程 {reason}]\x1b[0m" if reason else ""
                 try:
                     for q in list(sess.viewers.values()):
-                        q.put_nowait("\x1b[?25h\r\n[会话结束]".encode())
+                        q.put_nowait(("\x1b[?25h\r\n[会话结束]" + tail).encode())
                 except asyncio.QueueFull:
                     pass
 
@@ -375,8 +427,13 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             if not sess.alive:
                 break
         # 收尾：捕获 WS 已断开的情况（手机重连/切网络 → 客户端 1006），不再把异常抛回 event loop
+        # 与 on_readable 的 EIO 分支同理：有面因就一并说出来，别让「为什么没了」变成哑谜。
+        # 走到这里必然 alive=False，而 alive 只由 _cleanup() 置（全仓两处，另一处紧随其后调它）
+        # ⇒ exit_status 已记录，直接读即可，不必补调 _cleanup()。
+        reason = describe_exit(sess.exit_status, sess.hub_killed)
+        tail = f" ({reason})" if reason else ""
         try:
-            await ws.send_bytes(b"\r\n\x1b[90m[process exited]\x1b[0m")
+            await ws.send_bytes(("\r\n\x1b[90m[process exited" + tail + "]\x1b[0m").encode())
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -425,5 +482,6 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
 def kill_all():
     """服务退出：立即 TERM+KILL 双发（组级），不等 call_later（loop 即将关闭）"""
     for s in _sessions.values():
+        s.hub_killed = True      # 同上：别让"服务重启"被报成"内存不足"
         s._signal_group(signal.SIGTERM)
         s._signal_group(signal.SIGKILL)

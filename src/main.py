@@ -66,7 +66,17 @@ import audit as audit_mod           # 资产变更审计的只读查询门面（
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.24"   # 后端+前端：asset_audit 资产变更审计（append-only 表 + log_asset_event 写口径 + /api/audit/list）；
+VERSION = "0.13.25"   # 后端：终端进程退出时把「为什么没了」说清楚。waitpid 的退出状态原先被
+                      #   `_st` 直接丢弃（src/term.py 的 _cleanup / _force_kill）⇒ 崩溃原因永远上不了屏，
+                      #   用户只看到一句「[会话结束]」。新增 describe_exit() 把信号/退出码解成人话：
+                      #   SIGILL/SIGSEGV/SIGBUS/SIGABRT/SIGKILL 点名「疑似内存不足」；并用 hub_killed
+                      #   区分「hub 自己发的 SIGTERM/SIGKILL」（点 × / 空闲 TTL / 服务退出）与内核
+                      #   OOM-killer ⇒ 绝不把用户主动关会话报成内存不足。API 侧 to_dict() 透出 exit_reason。
+                      #   起因：2026-09-25 排查「菜单点 OpenCode 秒退」，只能靠 dmesg(trap invalid opcode)
+                      #   + objdump(ud2) + ulimit -v 三步反推出 bun/JSC 的 MemoryExhaustion 主动 abort。
+                      #   真因是整机 swap 耗尽（/vol1/.swap/swap2 那 4G 因开机顺序 + nofail 静默失效），
+                      #   hub 代码本身无 bug —— 本次只补「可观测性」。详见 CHANGELOG。
+                      #   上一版 v0.13.24 后端+前端：asset_audit 资产变更审计（append-only 表 + log_asset_event 写口径 + /api/audit/list）；
                       #   本地记忆便签 staleness 观测（memstats，**只报告不清理**）挂 /api/kb/status.local_memory；
                       #   chat 会话工具条加导出按钮（blob 下载、token 只走头、四态文案互斥）。
                       #   上一版 v0.13.23 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
