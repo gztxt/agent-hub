@@ -455,23 +455,33 @@ async function registerAgent() {
 /* ── 统一对话（三模式：embed 原生UI / term pty终端 / chat 对话框）── */
 
 let chatPick = lsGet('hub.chat.pick') || 'claude';
-// 刷新后回落「该实体上次所用形态」（与 pickChatEntity/gotoChat 同一套记忆键），否则会退成对话面板
-let chatMode = lsGet('hub.chatmode.' + chatPick) || 'chat';
+/* v0.13.21 换键 hub.chatmode. → hub.chatmode2.：旧键里躺着的是**默认推导**被无差别落盘形成的
+   假偏好（gotoChat 每次点击都写）。不换键，就算改了默认形态，已被旧值钉在嵌入页的浏览器仍进不去
+   终端 —— 与 09-23「交互结果不得依赖存量」同源。新键只在用户**点名**形态时写。 */
+const MODE_KEY = 'hub.chatmode2.';
+// 上次**显式**选过的形态；空串=没选过，由 applyChatMode 走 defaultModeOf（唯一真源）
+let chatMode = lsGet(MODE_KEY + chatPick) || '';
 function sessKey(id) { return 'hub.sess.' + id; }
 
 function entityById(id) { return AGENTS.find(a => a.id === id); }
+/* 工作台默认形态 —— **唯一真源**（openEntity 也走这里；两处各写一份优先级必然漂移）。
+   有原生终端的 Agent 先给终端：它的独立 Web 宿主（claude←cloudcli :3010）自带一套登录，
+   嵌进 hub 就是一张要重新登录的白页，而终端页里的 TUI 与本机命令行完全一致。
+   宿主界面保留为可切换的第二形态（终端页头部「原生界面」按钮）。 */
 function defaultModeOf(a) {
   const es = (a && a.entries) || [];
-  if (es.some(e => e.type === 'embed')) return 'embed';
-  if (es.some(e => e.type === 'term')) return 'term';
+  const has = t => es.some(e => e.type === t);
+  if (a && a.kind === 'agent' && has('term')) return 'term';
+  if (has('embed')) return 'embed';
+  if (has('term')) return 'term';
   return 'chat';
 }
 function gotoChat(id, mode) {
   chatPick = id;
   lsSet('hub.chat.pick', id);  // T9：记忆上次实体
   const a = entityById(id);
-  chatMode = mode || lsGet('hub.chatmode.' + id) || defaultModeOf(a) || 'chat';
-  lsSet('hub.chatmode.' + id, chatMode);
+  chatMode = mode || lsGet(MODE_KEY + id) || defaultModeOf(a) || 'chat';
+  if (mode) lsSet(MODE_KEY + id, mode);   // 只有点名了形态才算偏好；推导出来的不写盘
   go('chat');
   renderChatSide();
 }
@@ -494,8 +504,8 @@ function renderChatSide() {
 function pickChatEntity(id) {
   chatPick = id;
   lsSet('hub.chat.pick', id);
-  // T9：模式记忆优先——每实体上次用过的形态，无记录才回落默认
-  chatMode = lsGet('hub.chatmode.' + id) || defaultModeOf(entityById(id));
+  // T9：模式记忆优先——只认用户**显式**选过的形态（新键），没选过就走默认
+  chatMode = lsGet(MODE_KEY + id) || defaultModeOf(entityById(id));
   renderChatSide();
 }
 
@@ -505,11 +515,15 @@ function applyChatMode() {
   const en = $('chatEntName');
   if (en) en.textContent = a ? a.name : '';
   if (!a) return;   // 实体已被删除（localStorage 里留着旧 pick）：保持默认面板，不再往下猜模式
-  // 记忆的模式对该实体已失效（entry 被删/改）：回落到默认形态，否则三个 pane 会全 off → 右侧空白
-  if (!(a.entries || []).some(e => e.type === chatMode)) {
-    chatMode = defaultModeOf(a) || 'chat';
-    lsSet('hub.chatmode.' + chatPick, chatMode);
-  }
+  const es = a.entries || [];
+  // 形态对该实体不可用（没选过、或 entry 被删/改）：回落默认形态。
+  // 这是**推导**，绝不写盘 —— 一写就把默认固化成偏好，改默认也救不回来。
+  if (!es.some(e => e.type === chatMode)) chatMode = defaultModeOf(a) || 'chat';
+  // 面板头互切按钮：菜单行内的动作图标自 v0.12.3 起 display:none、模式 tab 也已停用，
+  // 站内不留这条出口，embed 与 term 就互相锁死（点进哪个就再也切不到另一个）。
+  const toTerm = $('embedToTerm'), toEmbed = $('termToEmbed');
+  if (toTerm) toTerm.style.display = es.some(e => e.type === 'term') ? '' : 'none';
+  if (toEmbed) toEmbed.style.display = es.some(e => e.type === 'embed') ? '' : 'none';
   $('embedPane').classList.toggle('on', chatMode === 'embed');
   $('termPane').classList.toggle('on', chatMode === 'term');
   $('chatPane').classList.toggle('on', chatMode === 'chat');
@@ -550,7 +564,7 @@ function renderModeBar(a) {
 }
 function switchMode(m) {
   chatMode = m;
-  lsSet('hub.chatmode.' + chatPick, m);  // T9：按实体记忆模式
+  lsSet(MODE_KEY + chatPick, m);  // T9：按实体记忆模式（这里是用户点名切换 ⇒ 算真偏好）
   applyChatMode();
 }
 
@@ -1991,15 +2005,17 @@ function toggleGroup(g) {
   lsSet('hub.nav.open', navOpen);
   renderNav();
 }
-/* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶） */
+/* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶）
+   形态一律交给 defaultModeOf()：它自己会读「上次显式选过的形态」再回落默认。
+   这里以前另写了一份 embed > term > chat 优先级 —— 那份就是 09-25 故障的本体：
+   Claude Code 是唯一同时有 embed（cloudcli 宿主端口活 ⇒ discovery 注入）与 term 的 Agent，
+   于是点行必进那张要独立登录的 iframe，而站内没有任何按钮能切回终端。 */
 function openEntity(id) {
   const a = entityById(id);
   if (!a) return;
   const es = a.entries || [];
   const has = t => es.some(e => e.type === t);
-  if (has('embed')) return gotoChat(id, 'embed');
-  if (has('term')) return gotoChat(id, 'term');
-  if (has('chat')) return gotoChat(id, 'chat');
+  if (has('embed') || has('term') || has('chat')) return gotoChat(id);
   if (has('detail')) return showDetail(id);
   const o = es.find(e => e.type === 'open');
   if (o) return window.open(lanUrl(o.url), '_blank');

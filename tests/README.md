@@ -88,6 +88,7 @@ $ venv/bin/python tests/verify_replay_gate.py
 > 计数口径：**上面三列数字均为 09-24 19:0x 实测** —— L0 265 / L1 35 取自
 > `bash scripts/run_tests.sh hermetic-clean` 与 `... host` 的 `[tier]` 行；
 > L2 29 = `ls tests/verify_*.py`(27) + `ls tests/probe_*.py`(2)。
+> **09-25 00:3x 复点**：L2 30 = `verify_*.py`(28，新增 `verify_claude_menu_term.py`) + `probe_*.py`(2)。
 > 旧版“23 只 = 16 需服务 + 7 离线”的拆分已随文件集变化作废（此后新增的
 > `verify_kb_federation` / `verify_skill_facade` / `verify_mcp_facade` 都是 in-process 不占端口），
 > 但完整的二分没逐只重数 ⇒ **宁可不写数字，也不拿旧拆分冒充实测**。
@@ -150,6 +151,7 @@ $ venv/bin/python tests/verify_replay_gate.py
 | `verify_narrow_default_iconbar.py` | 窄屏首屏是否**图标条**（用户 09-24 裁定的默认态） | C 格掐断 hub.js ⇒ `collapsed=False`(236px 铺满) | A 格无存档 ⇒ `collapsed=True`(48px 图标条)；B 格本档存 `'0'` ⇒ `False`（证明非 stuck-true） |
 | `verify_ls_guard_live.py` | `localStorage` 抛异常/quota 满/存储被禁 ⇒ 启动链断裂 | CDP 注入 `0822164` 旧字节 + setItem 抛 ⇒ `navTree=0` + `Uncaught SecurityError` | 新字节下三种破坏仍 `navTree=3 collapsed=true fails>0` 且零未捕获异常 (23/23) |
 | `verify_static_headers_matrix.py` | immutable 分支带 `etag`/`last-modified` ⇒ 端侧可拿 304 复用"提手对不上"的旧副本；及改作用域后 `/static` 全 500 而语法检查放过 | 红臂：裸 `FileResponse` 构造同文件 ⇒ 头里确实有 `etag=`（判据有力度） | 影子实例 18/18：immutable 无校验器且永不 304、revalidate 保留 ETag+304、gzip 侧同样干净、服务出参与磁盘逐字节一致、生产 pid/version 未变 |
+| `verify_claude_menu_term.py` | 菜单点「Claude Code」进不去终端页：`openEntity()` 与 `defaultModeOf()` **各写了一份** embed>term 优先级，而 claude 恰是唯一同时带 embed（discovery 见 cloudcli :3010 端口活就注入「原生会话」）与 term 的 Agent ⇒ 点行必进那张要独立登录的 iframe（实测 `:3010` 首页＝"Welcome Back / Your session expired"）；v0.12.3 又把行内动作图标 `display:none`、模式 tab 也已停用 ⇒ **站内零出口**。另一半：`gotoChat` 把**推导出的**形态无差别写进 `hub.chatmode.<id>` ⇒ 默认即成假偏好，只改默认救不回存量浏览器 | 红基线跑在修复前 HEAD（`fa14a0d`）影子实例：R3 `mode=embed`、R5 取不到 `term` 对象、R7b 无切换按钮 ⇒ 8/15 | 绿 14/14：真鼠标点行 → `#termPane` 在、`#embedPane` 不在；点「+ 新会话」→ xterm 屏幕真出现 Claude Code TUI 首屏，且服务端多出一条 claude 活会话；对照组 Pi（有 embed 无 term）仍进 embed（证明判据非恒绿）；「原生界面」按钮可切回嵌入页，且**只有这一步**写偏好 |
 
 ### 真页面探针的另一条硬规定：CDP 必须有常驻读线程
 

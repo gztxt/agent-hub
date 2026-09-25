@@ -3,15 +3,17 @@ function toggleGroup(g) {
   lsSet('hub.nav.open', navOpen);
   renderNav();
 }
-/* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶） */
+/* 点左侧实体 → 右侧加载该实体工作台（复用既有 gotoChat / showDetail，不另起炉灶）
+   形态一律交给 defaultModeOf()：它自己会读「上次显式选过的形态」再回落默认。
+   这里以前另写了一份 embed > term > chat 优先级 —— 那份就是 09-25 故障的本体：
+   Claude Code 是唯一同时有 embed（cloudcli 宿主端口活 ⇒ discovery 注入）与 term 的 Agent，
+   于是点行必进那张要独立登录的 iframe，而站内没有任何按钮能切回终端。 */
 function openEntity(id) {
   const a = entityById(id);
   if (!a) return;
   const es = a.entries || [];
   const has = t => es.some(e => e.type === t);
-  if (has('embed')) return gotoChat(id, 'embed');
-  if (has('term')) return gotoChat(id, 'term');
-  if (has('chat')) return gotoChat(id, 'chat');
+  if (has('embed') || has('term') || has('chat')) return gotoChat(id);
   if (has('detail')) return showDetail(id);
   const o = es.find(e => e.type === 'open');
   if (o) return window.open(lanUrl(o.url), '_blank');
