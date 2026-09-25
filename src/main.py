@@ -65,10 +65,12 @@ import writeauth                    # 导出端点按写端点同等鉴权（复
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.22"   # 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
+VERSION = "0.13.23"   # 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
                       #   会话批量导出端点（JSON/CSV，默认脱敏，按写端点同等鉴权）；
                       #   MANAGER_LLM_BASE_URL 默认值由已退役的 FCC :8082 改回 CCR :3456。
-                      #   v0.13.21 是纯前端批次（菜单点 Claude Code 进终端页），按项目口径
+                      #   版本号让位：本批原自命名 0.13.22，但 master 上 ff53581（终端页空格接力，纯前端）已占用该标签
+                      #   ⇒ 本批改 0.13.23，避免两批共用一个版本号（详见 CHANGELOG）。
+                      #   v0.13.21/22 均为纯前端批次，按项目口径
                       #   「VERSION 与清 code_stale 随下次后端改动同批」⇒ 本次一并 bump。
                       #   上一版（v0.13.20 FCC 退役收尾 / v0.13.19 P3 工具注册表 + P4 资产面板）明细见 CHANGELOG.md。
 
