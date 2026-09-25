@@ -28,6 +28,12 @@
 12. **版本号**：`src/main.py:68` 的 `VERSION` 由 `0.13.23` → **`0.13.24`**（本批含后端改动 ⇒ 按项目口径「VERSION 只在后端批次 bump」）。合并时若 master 上已被他人占用该号 ⇒ **让位**到下一个空号，并在 CHANGELOG 写明（先例：01a0d5db 的 0.13.22→0.13.23）。
 13. **不引入任何新依赖**（无 Docker、无 sqlite-vec、无前端框架）。
 14. **当天 commit + 沉淀**（C8）：Task 12 是义务，不是可选。
+15. **测试调用口径（执行期实测补录，09-25 15:5x）**：worktree 里**没有 `venv`**（它在主 checkout）⇒
+    本文所有 `venv/bin/python` 一律用绝对路径 **`/home/gztxt/agent-hub/venv/bin/python`**（不建符号链接，
+    避免 venv 的 `sys.prefix`/`pyvenv.cfg` 语义被搞混）。且部分测试文件用 `import tiers`（需 `tests/` 在
+    `sys.path` 上）⇒ 单独跑某几只测试时必须带 **`PYTHONPATH=tests`**，否则报
+    `ModuleNotFoundError: No module named 'tiers'`（已实测：这是 master 基线上的**既有调用口径**，
+    与本批改动无关；`scripts/run_tests.sh` 与 `discover -s tests` 已自带正确 path）。
 
 ## File Structure
 
@@ -876,13 +882,21 @@ class TestCoverage(unittest.TestCase):
                                   % (mod, k, audited[1]))
 
     def test_no_env_values_reach_audit(self):
-        """★ mcp_servers.env 装的是凭据 ⇒ 审计只准记 has_env 布尔，绝不记值。"""
+        """★ mcp_servers.env 装的是凭据 ⇒ 审计只准记 has_env 布尔，绝不记值。
+
+        判法必须区分「记布尔」与「记值」：`bool(body.env)` 是安全形态，
+        裸 `body.env` / `json.dumps(body.env…)` 才是漏值。第一版闸门把两者一视同仁
+        ⇒ 对着正确实现报红（闸门精度缺陷，2026-09-25 实测修正）。
+        做法：先摘掉安全形态，余下文本里再出现 body.env 就是漏。
+        """
         src = (_REPO / "src" / "mcpgw.py").read_text(encoding="utf-8")
         i = src.index("async def add_server(")
         body = src[i:src.index("\n@router.", i)]
-        self.assertIn("has_env", body)
-        tail = body.split("log_asset_event")[-1]
-        self.assertNotIn("body.env", tail, "env 值进了审计 detail = 凭据落进可导出的正文")
+        self.assertIn('"has_env": bool(body.env)', body, "必须只记布尔，不记值")
+        audit_seg = body.split("log_asset_event")[-1]
+        self.assertNotIn("body.env", audit_seg.replace("bool(body.env)", ""),
+                         "env 值进了审计 detail = 凭据落进可导出的正文")
+        self.assertNotIn("json.dumps(body.env", audit_seg)
 ```
 
 - [ ] **Step 3: 跑测试确认失败**

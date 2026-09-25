@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from contextlib import AsyncExitStack
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 import db
 import config
+import writeauth
 
 router = APIRouter()
 
@@ -152,7 +153,7 @@ class ServerIn(BaseModel):
 
 
 @router.post("/mcp/servers")
-async def add_server(body: ServerIn):
+async def add_server(body: ServerIn, request: Request):
     if body.transport not in ("stdio", "http"):
         raise HTTPException(400, "transport 仅支持 stdio|http")
     if body.transport == "stdio" and not body.command:
@@ -167,6 +168,11 @@ async def add_server(body: ServerIn):
         (sid, body.name, body.transport, body.command,
          json.dumps(body.args or []), json.dumps(body.env or {}),
          body.url, body.description, now, now))
+    # env 装的是凭据 ⇒ 只记布尔，绝不记值（审计行会成为下一次导出的正文）
+    db.log_asset_event("mcp_server", sid, "create", writeauth.actor_of(request),
+                       {"name": body.name, "transport": body.transport,
+                        "has_env": bool(body.env), "url": body.url})
+
     return {"id": sid, "status": "added"}
 
 
@@ -180,10 +186,11 @@ async def list_servers():
 
 
 @router.delete("/mcp/servers/{sid}")
-async def del_server(sid: str):
+async def del_server(sid: str, request: Request):
     if not db.execute("DELETE FROM mcp_servers WHERE id=?", (sid,)):
         raise HTTPException(404, "server not found")
     _tool_cache.clear()
+    db.log_asset_event("mcp_server", sid, "delete", writeauth.actor_of(request))
     return {"status": "deleted"}
 
 
@@ -228,11 +235,14 @@ class AclIn(BaseModel):
 
 
 @router.post("/mcp/acl")
-async def add_acl(body: AclIn):
+async def add_acl(body: AclIn, request: Request):
     aid = db.query("SELECT id FROM mcp_servers WHERE id=? OR name=?",
                    (body.server_id, body.server_id))[0]["id"] if body.server_id else None
     db.execute("INSERT INTO mcp_acl(agent_id,server_id,tool_pattern,allow) VALUES(?,?,?,?)",
                (body.agent_id, aid, body.tool_pattern, 1 if body.allow else 0))
+    db.log_asset_event("mcp_acl", str(aid or "*"), "bind", writeauth.actor_of(request),
+                       {"agent_id": body.agent_id, "tool_pattern": body.tool_pattern,
+                        "allow": bool(body.allow)})
     return {"status": "added"}
 
 
@@ -242,9 +252,13 @@ async def list_acl():
 
 
 @router.delete("/mcp/acl/{acl_id}")
-async def del_acl(acl_id: int):
+async def del_acl(acl_id: int, request: Request):
+    row = db.query("SELECT agent_id,server_id,tool_pattern,allow FROM mcp_acl WHERE id=?",
+                   (acl_id,))
     if not db.execute("DELETE FROM mcp_acl WHERE id=?", (acl_id,)):
         raise HTTPException(404, "rule not found")
+    db.log_asset_event("mcp_acl", str(acl_id), "unbind", writeauth.actor_of(request),
+                       dict(row[0]) if row else None)
     return {"status": "deleted"}
 
 

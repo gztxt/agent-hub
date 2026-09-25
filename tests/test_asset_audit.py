@@ -112,5 +112,90 @@ class TestWritePath(_DbCase):
         self.assertIn("l0audit-", db.current_path())
 
 
+def route_audit_map(module_path):
+    """AST 扫一个模块：{(METHOD, path): (是否调了 log_asset_event, 函数名)}。
+
+    为什么用 AST 而不是 grep：grep 只能证明"文件里某处有这个词"，证明不了
+    "这条路由的 handler 体内有"。漏一条写点就等于没做（writeauth 同一口径）。
+    """
+    src = pathlib.Path(module_path).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    lines = src.splitlines()
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call) or not isinstance(dec.func, ast.Attribute):
+                continue
+            if not (isinstance(dec.func.value, ast.Name) and dec.func.value.id == "router"):
+                continue
+            method = dec.func.attr.upper()
+            if method not in ("POST", "PUT", "PATCH", "DELETE"):
+                continue
+            path = dec.args[0].value if (dec.args and isinstance(dec.args[0], ast.Constant)) else "?"
+            body = "\n".join(lines[node.lineno - 1:getattr(node, "end_lineno", node.lineno)])
+            out[(method, path)] = ("log_asset_event" in body, node.name)
+    return out
+
+
+#: 必须审计的变更点。不在此表里的写路由**故意不审**，理由挂在 NOT_AUDITED。
+MUST_AUDIT = {
+    "mcpgw": {("POST", "/mcp/servers"), ("DELETE", "/mcp/servers/{sid}"),
+              ("POST", "/mcp/acl"), ("DELETE", "/mcp/acl/{acl_id}")},
+    "memory": {("POST", "/api/memory/l1"), ("POST", "/api/memory/l1/batch"),
+               ("DELETE", "/api/memory/l1/{mid}"), ("PUT", "/api/memory/l2"),
+               ("PUT", "/api/memory/l3"), ("POST", "/api/memory/l2/rebuild")},
+}
+
+#: 故意不审 + 理由（防止"以后有人加一条变更路由却没人发现漏审"）
+NOT_AUDITED = {
+    ("POST", "/mcp/servers/probe"): "预览语义，明确不落库（handler docstring 已写）",
+    ("POST", "/mcp/call"): "工具**调用**不是资产变更；成败/耗时已由 profile_events 记",
+}
+
+
+class TestCoverage(unittest.TestCase):
+    """★ 本闸门的核心：漏一条写点即 FAIL（"漏一条就等于没做"）。"""
+
+    def _map(self, mod):
+        return route_audit_map(_REPO / "src" / ("%s.py" % mod))
+
+    def test_mcpgw_change_routes_all_audited(self):
+        m = self._map("mcpgw")
+        self.assertEqual([k for k in MUST_AUDIT["mcpgw"] if not m.get(k, (False,))[0]], [],
+                         "mcpgw 漏审")
+
+    def test_memory_change_routes_all_audited(self):
+        m = self._map("memory")
+        self.assertEqual([k for k in MUST_AUDIT["memory"] if not m.get(k, (False,))[0]], [],
+                         "memory 漏审")
+
+    def test_unaudited_routes_have_written_reasons(self):
+        """反向钉子：不审的路由必须挂着理由，否则新增变更路由会静默漏审。"""
+        for mod in ("mcpgw", "memory"):
+            for k, audited in self._map(mod).items():
+                if not audited[0]:
+                    self.assertIn(k, NOT_AUDITED,
+                                  "%s 出现未审计且无理由的写路由 %s（handler=%s）"
+                                  % (mod, k, audited[1]))
+
+    def test_no_env_values_reach_audit(self):
+        """★ mcp_servers.env 装的是凭据 ⇒ 审计只准记 has_env 布尔，绝不记值。
+
+        判法必须区分「记布尔」与「记值」：`bool(body.env)` 是安全形态，
+        裸 `body.env` / `json.dumps(body.env…)` 才是漏值。第一版闸门把两者一视同仁
+        ⇒ 对着正确实现报红（闸门精度缺陷，2026-09-25 实测修正）。
+        做法：先摘掉安全形态，余下文本里再出现 body.env 就是漏。
+        """
+        src = (_REPO / "src" / "mcpgw.py").read_text(encoding="utf-8")
+        i = src.index("async def add_server(")
+        body = src[i:src.index("\n@router.", i)]
+        self.assertIn('"has_env": bool(body.env)', body, "必须只记布尔，不记值")
+        audit_seg = body.split("log_asset_event")[-1]
+        self.assertNotIn("body.env", audit_seg.replace("bool(body.env)", ""),
+                         "env 值进了审计 detail = 凭据落进可导出的正文")
+        self.assertNotIn("json.dumps(body.env", audit_seg)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
