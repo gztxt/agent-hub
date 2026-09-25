@@ -1864,20 +1864,32 @@ out("T_OK0", exportStateText("ok", 3, {hits: 0}));
         self.assertEqual(o["S_EMPTY"], "empty")
         self.assertEqual(o["S_OK"], "ok")
 
+    #: 文案里**故意**写的消歧否定式。朴素 substring 判定分不清"没有会话"与"不是没有会话"
+    #: （2026-09-25 实测栽过：正确文案被自己的闸门判红，与 mcpgw 的 bool(body.env) 同族
+    #: ＝闸门精度缺陷）。判定前先把否定式摘掉，剩下的才算"声称空态"。
+    NEGATIONS = ("不是没有会话", "不是被拒", "文件是空的，不是被拒")
+
+    def _claims_empty(self, text):
+        t = text
+        for n in self.NEGATIONS:
+            t = t.replace(n, "")
+        return [b for b in ("0 条会话", "没有会话", "确实是 0") if b in t]
+
     def test_rejected_never_reads_as_empty(self):
-        """★ 本闸门核心红向：被拒态文案里不许出现"0 条 / 没有会话"这类读法。"""
+        """★ 本闸门核心红向：被拒态文案不许**声称**空态（否定式提及是消歧，不算声称）。"""
         o = self._run()
-        banned = ("0 条会话", "没有会话", "确实是 0")
         for tag in ("T_NOTOK", "T_BAD", "T_503", "T_ERR"):
-            for b in banned:
-                self.assertNotIn(b, o[tag], "%s 把被拒渲染成了空态：%s" % (tag, b))
-            self.assertIn("不是没有会话", o[tag])
+            self.assertEqual(self._claims_empty(o[tag]), [],
+                             "%s 把被拒渲染成了空态：%s" % (tag, o[tag]))
+            self.assertIn("不是没有会话", o[tag], "%s 缺消歧否定式" % tag)
 
     def test_empty_state_is_honest_about_success(self):
         o = self._run()
         self.assertIn("导出成功", o["T_EMPTY"])
         self.assertIn("0 条会话", o["T_EMPTY"])
-        self.assertNotIn("被拒", o["T_EMPTY"])
+        # 判"被拒前缀"而不是裸词"被拒"：空态文案里写"不是被拒"是消歧，不是自认被拒
+        self.assertNotIn("导出被拒", o["T_EMPTY"])
+        self.assertEqual(self._claims_empty(o["T_EMPTY"]).count("没有会话"), 0)
 
     def test_ok_state_reports_redaction_hits(self):
         """不静默改数据：打码命中数必须说出来（后端 X-Export-Redacted-Hits 的兑现）。"""
@@ -1885,7 +1897,7 @@ out("T_OK0", exportStateText("ok", 3, {hits: 0}));
         self.assertIn("3", o["T_OK"])
         self.assertIn("2", o["T_OK"])
         self.assertIn("脱敏", o["T_OK"])
-        self.assertIn("0 处", o["T_OK0"], "命中 0 处也要如实说，不能省略成"没打码"")
+        self.assertIn("0 处", o["T_OK0"], "命中 0 处也要如实说，不能省略成「没打码」")
 
     def test_error_state_carries_http_code(self):
         self.assertIn("500", self._run()["T_ERR"])
@@ -1945,7 +1957,10 @@ function exportStateText(state, count, extra) {
   if (state === 'need-token') return '导出被拒：未提供凭据 —— 不是没有会话。请在「设置」里应用 TERM_TOKEN 后重试';
   if (state === 'bad-token') return '导出被拒：凭据不匹配 —— 不是没有会话。存量口令可能已换过，已清除，请重新输入';
   if (state === 'misconfig') return '导出被拒：服务端未配置口令（fail-closed）—— 不是没有会话';
-  return '导出失败（HTTP ' + code + '）—— 不是没有会话';
+  // 'error' 必须是**显式分支**而不是掉进兜底：闸门按状态名逐个点名（缺一个即红），
+  // 而兜底留给"将来新增状态忘了配文案"这种情况 —— 那时也要说清不是没有会话。
+  if (state === 'error') return '导出失败（HTTP ' + code + '）—— 不是没有会话';
+  return '导出失败（未知状态 ' + state + '）—— 不是没有会话';
 }
 
 async function chatSessExport() {
