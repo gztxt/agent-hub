@@ -82,12 +82,14 @@ class TestWritePath(_DbCase):
 
     def test_detail_redacts_credentials(self):
         """凭据形态进 detail 必须被打码（复用 sessions_export 的同一套 pattern，含嵌套层）。"""
+        # 样本一律**运行时拼接**，字面量不落文件：scripts/prepush.sh 检查① 会扫 HEAD
+        # 跟踪文件的高危模式（既有先例 tests/test_sessions_export.py:27-29 就是这么写的）。
+        sk, gh = "sk-" + "B" * 24, "ghp_" + "A" * 36
         db.log_asset_event("setting", "term-token", "update", "user:hub-passcode",
-                           {"raw": "sk-ABCDEFGHIJKLMNOP1234567890",
-                            "nested": {"k": "ghp_" + "A" * 36}})
+                           {"raw": sk, "nested": {"k": gh}})
         d = db.query("SELECT detail FROM asset_audit")[0]["detail"]
-        self.assertNotIn("sk-ABCDEFGHIJKLMNOP1234567890", d)
-        self.assertNotIn("ghp_" + "A" * 36, d)
+        self.assertNotIn(sk, d)
+        self.assertNotIn(gh, d)
         self.assertIn("<REDACTED", d)
 
     def test_unknown_action_is_flagged_not_rewritten_not_dropped(self):

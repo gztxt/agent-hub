@@ -37,7 +37,7 @@ class TestCredentialName(unittest.TestCase):
         self.assertEqual(writeauth.credential_name("", ["", ""]), "anonymous")
 
     def test_returned_name_never_leaks_the_secret(self):
-        for sec in ("sk-ABCDEFGHIJKLMNOP1234", "hunter2hunter2xx", "ghp_" + "A" * 36):
+        for sec in ("sk-" + "B" * 24, "hunter2hunter2xx", "ghp_" + "A" * 36):
             n = writeauth.credential_name(sec, [sec, ""])
             self.assertNotIn(sec, n)
             self.assertNotIn(sec[:8], n)

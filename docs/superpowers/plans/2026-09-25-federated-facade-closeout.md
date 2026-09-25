@@ -165,12 +165,14 @@ class TestWritePath(_DbCase):
 
     def test_detail_redacts_credentials(self):
         """凭据形态进 detail 必须被打码（复用 sessions_export 的同一套 pattern，含嵌套层）。"""
+        # 样本一律**运行时拼接**，字面量不落文件：scripts/prepush.sh 检查① 会扫 HEAD
+        # 跟踪文件的高危模式（既有先例 tests/test_sessions_export.py:27-29 就是这么写的）。
+        sk, gh = "sk-" + "B" * 24, "ghp_" + "A" * 36
         db.log_asset_event("setting", "term-token", "update", "user:hub-passcode",
-                           {"raw": "sk-ABCDEFGHIJKLMNOP1234567890",
-                            "nested": {"k": "ghp_" + "A" * 36}})
+                           {"raw": sk, "nested": {"k": gh}})
         d = db.query("SELECT detail FROM asset_audit")[0]["detail"]
-        self.assertNotIn("sk-ABCDEFGHIJKLMNOP1234567890", d)
-        self.assertNotIn("ghp_" + "A" * 36, d)
+        self.assertNotIn(sk, d)
+        self.assertNotIn(gh, d)
         self.assertIn("<REDACTED", d)
 
     def test_unknown_action_is_flagged_not_rewritten_not_dropped(self):
@@ -349,7 +351,7 @@ class TestCredentialName(unittest.TestCase):
         self.assertEqual(writeauth.credential_name("", ["", ""]), "anonymous")
 
     def test_returned_name_never_leaks_the_secret(self):
-        for sec in ("sk-ABCDEFGHIJKLMNOP1234", "hunter2hunter2xx", "ghp_" + "A" * 36):
+        for sec in ("sk-" + "B" * 24, "hunter2hunter2xx", "ghp_" + "A" * 36):
             n = writeauth.credential_name(sec, [sec, ""])
             self.assertNotIn(sec, n)
             self.assertNotIn(sec[:8], n)
@@ -1067,13 +1069,14 @@ import db, mcpgw
 tmp = pathlib.Path(tempfile.mkdtemp(prefix="l0gw-"))
 db.init_db(tmp / "t.db"); mcpgw.ensure_schema()
 req = types.SimpleNamespace(state=types.SimpleNamespace(actor="user:term-token"))
+PROBE_SEC = "sk-" + "B" * 24      # 运行时拼：高危模式字面量不落进仓库（prepush 检查①）
 body = mcpgw.ServerIn(name="demo", transport="stdio", command="/bin/echo", args=[],
-                      env={"SECRET": "sk-ABCDEFGHIJKLMNOP1234"}, url=None, description="")
+                      env={"SECRET": PROBE_SEC}, url=None, description="")
 print("add_server →", asyncio.run(mcpgw.add_server(body, req)))
 rows = db.query("SELECT asset_type,asset_slug,action,actor,detail FROM asset_audit")
 print("审计行 =", rows)
 assert rows and rows[0]["action"] == "create" and rows[0]["actor"] == "user:term-token"
-assert "sk-ABCDEFGHIJKLMNOP1234" not in rows[0]["detail"], "凭据泄漏进审计"
+assert PROBE_SEC not in rows[0]["detail"], "凭据泄漏进审计"
 print("PASS：真 handler 走通且凭据未泄漏")
 PY
 ```
@@ -2313,37 +2316,32 @@ curl -s -H "X-TERM-TOKEN: $TOK" -o /dev/null -w "export=%{http_code}\n" \
   "http://127.0.0.1:3102/api/sessions/export?format=json&limit=5&redact=1"
 curl -s -H "X-TERM-TOKEN: $TOK" "http://127.0.0.1:3102/api/audit/list?limit=5" \
   | python3 -c 'import json,sys;d=json.load(sys.stdin);print("audit count=",d["count"],"types=",d["types"][:3])'
-unset TOK
 echo "--- 真写一次变更，验证审计闭环（建再删一个探测用 MCP server）"
+# 探测用凭据**运行时拼**：高危模式字面量不进仓库（prepush 检查① 会扫 HEAD 跟踪文件）
+PROBE_SEC="sk-$(printf 'B%.0s' $(seq 1 24))"
 curl -s -X POST -H "Content-Type: application/json" -H "X-TERM-TOKEN: $TOK" \
-  -d '{"name":"probe-audit-tmp","transport":"stdio","command":"/bin/echo","env":{"K":"sk-ABCDEFGHIJKLMNOP1234"}}' \
+  -d "{\"name\":\"probe-audit-tmp\",\"transport\":\"stdio\",\"command\":\"/bin/echo\",\"env\":{\"K\":\"$PROBE_SEC\"}}" \
   http://127.0.0.1:3102/mcp/servers | python3 -c 'import json,sys;print("add=",json.load(sys.stdin))'
-```
-Expected: `export= 200`；`audit count= >=1`；`add=` 返回 `{"id":…,"status":"added"}`。
-**注意**：上面第 3 段用了 `$TOK`，但 `unset TOK` 在它之前 ⇒ 必须把 `unset TOK` **移到本步最后**执行
-（执行时按实际顺序调整，不许因为 unset 早了就跳过审计闭环验证）。
-随后立即删除探测条目并核对审计与脱敏：
-
-```bash
-SID="$(curl -s http://127.0.0.1:3102/api/mcp/servers | python3 -c '
+SID="$(curl -s -H "X-TERM-TOKEN: $TOK" http://127.0.0.1:3102/mcp/servers | python3 -c '
 import json,sys
 for s in json.load(sys.stdin).get("servers",[]):
     if s.get("name")=="probe-audit-tmp": print(s["id"])')"
-TOK="$(python3 -c '
-import sqlite3;c=sqlite3.connect("data/agents.db");c.row_factory=sqlite3.Row
-print(c.execute("SELECT value FROM settings WHERE key=\"term-token\"").fetchone()["value"])')"
 curl -s -X DELETE -H "X-TERM-TOKEN: $TOK" "http://127.0.0.1:3102/mcp/servers/$SID" | head -c 200; echo
 curl -s -H "X-TERM-TOKEN: $TOK" "http://127.0.0.1:3102/api/audit/list?asset_slug=$SID" \
-  | python3 -c '
-import json,sys
+  | PROBE_SEC="$PROBE_SEC" python3 -c '
+import json,os,sys
 rows=json.load(sys.stdin)["audit"]
 print("该资产审计行数=",len(rows),"actions=",[r["action"] for r in rows],"actor=",rows[0]["actor"] if rows else None)
 blob=json.dumps(rows,ensure_ascii=False)
-assert "sk-ABCDEFGHIJKLMNOP1234" not in blob, "凭据泄漏进审计"
+assert os.environ["PROBE_SEC"] not in blob, "凭据泄漏进审计"
+assert "\"has_env\": true" in blob, "env 只记布尔的口径没兑现"
 print("PASS：审计闭环成立且凭据未泄漏")'
-unset TOK
+unset TOK PROBE_SEC     # 凭据变量在**本步最后**才清（前面各段都还要用；早清＝后面的验证静默空转）
 ```
-Expected: `该资产审计行数= 2 actions= ['delete', 'create']`（最新在前）、`actor= user:term-token`、末行 `PASS`。
+Expected: `export= 200`；`audit count= >=1`；`add=` 返回 `{"id":…,"status":"added"}`；
+`该资产审计行数= 2 actions= ['delete', 'create']`（最新在前）、`actor= user:term-token`、末行 `PASS`。
+（路径口径：列 server 是 `GET /mcp/servers`，**不是** `/api/mcp/servers`；本步一次跑完建→删→查审计，
+不分成两段，避免 `$TOK` 在中途被 `unset` 后剩下各段静默变成匿名请求。）
 
 - [ ] **Step 6: 端侧结项位（如实标注中间态）**
 
