@@ -240,6 +240,28 @@ document.addEventListener('keydown', e => {
     if (si) { e.preventDefault(); si.focus(); si.select(); }
   }
 });
+/* 终端页不许把按键丢在地上（2026-09-25 用户报障「Grok 会话窗口空格不能用，一按就出现重复的文字内容」）。
+   实测：焦点一旦落到终端外（手机上点过标题/会话芯片、桌面上点过页面任意处），敲进去的字符
+   既不进 pty 也没有任何提示 —— 影子实例里把 pty 设成 `-echo -icanon` 交给 cat 逐字对账，
+   焦点=BODY 时敲 'c'+空格+'d'，pty 实收 0 份。用户的下一步必然是点一下终端再敲，而 Grok TUI
+   在主屏缓冲区里反复重画整屏（首帧无 ?1049h 备用屏）⇒ 同一份文字在 xterm 里出现两遍，
+   于是现象被报成"空格一按就重复"。
+   规则：终端页可见 + 焦点不在任何输入位（含 xterm 自己的 helper textarea，那条路本来通）
+   ⇒ 把可打印字符（空格算一个）交给终端，并 preventDefault 挡掉浏览器把空格当翻页。
+   只接力单字符：Ctrl/Cmd/Alt 组合键与 Enter/Backspace 等非可打印键一律放行 —— 那是浏览器
+   和终端各自的语义，这里不发明新行为（P2-11「快捷键不得劫持输入位」的口径原样保留）。 */
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (keyTargetIsEditing(e)) return;
+  if (typeof e.key !== 'string' || e.key.length !== 1) return;
+  const pg = $('page-chat'), tp = $('termPane');
+  if (!pg || !tp || !pg.classList.contains('on') || !tp.classList.contains('on')) return;
+  if (!term || !termWs || termWs.readyState !== 1) return;   // 没接上线就别假装送达（termSend 那条路会自己报警）
+  e.preventDefault();
+  const opts = { user: true };   // 用户亲手敲的键＝主动意图，走同一条焦点策略（P2-10：只跟"用户主动"）
+  if (termFocusWanted(opts)) term.focus();
+  term.input(e.key);
+});
 
 function tick() {
   const t = new Date().toLocaleString('zh-CN', { hour12: false });
