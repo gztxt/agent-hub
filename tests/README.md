@@ -88,7 +88,8 @@ $ venv/bin/python tests/verify_replay_gate.py
 > 计数口径：**上面三列数字均为 09-24 19:0x 实测** —— L0 265 / L1 35 取自
 > `bash scripts/run_tests.sh hermetic-clean` 与 `... host` 的 `[tier]` 行；
 > L2 29 = `ls tests/verify_*.py`(27) + `ls tests/probe_*.py`(2)。
-> **09-25 00:3x 复点**：L2 30 = `verify_*.py`(28，新增 `verify_claude_menu_term.py`) + `probe_*.py`(2)。
+> **09-25 00:4x 复点**：L0 271（新增 `test_entity_mode_source_of_truth.py` 6 例）；
+> L2 30 = `verify_*.py`(28，新增 `verify_claude_menu_term.py`) + `probe_*.py`(2)。
 > 旧版“23 只 = 16 需服务 + 7 离线”的拆分已随文件集变化作废（此后新增的
 > `verify_kb_federation` / `verify_skill_facade` / `verify_mcp_facade` 都是 in-process 不占端口），
 > 但完整的二分没逐只重数 ⇒ **宁可不写数字，也不拿旧拆分冒充实测**。

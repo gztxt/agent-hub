@@ -22,7 +22,8 @@ Claude Code 是**唯一**同时带 `embed`（discovery 见 cloudcli :3010 端口
 （templates/index.html:237），模式 tab 也早已停用（renderModeBar 无条件隐藏 #chatModeBar）
 ⇒ **站内没有任何按钮能从嵌入页切回终端页**，用户只剩「刷新」和「新窗口」。
 判据全部走真鼠标事件 + 可断言的 DOM 量与 xterm 屏幕文本，不以截图交差：
-  · R3 点行后 #termPane 在、#embedPane 不在（核心诉求）
+  · R3 点行后 #termPane 在、#embedPane 不在（核心诉求）；且这是在**旧键被污染成 embed**
+        的存档下测的 —— 用户那些浏览器就是这个状态，只改默认值救不回他们
   · R5 终端页点「+ 新会话」后，xterm 屏幕缓冲里真的出现 Claude Code TUI 首屏
   · R6 对照组：Pi Agent（有 embed 无 term）仍进 embed —— 证明 R3 不是恒绿
   · R7 嵌入入口没被删：终端页头部有「原生界面」按钮，点了能切过去
@@ -131,8 +132,13 @@ try:
         "window.__errs=[];addEventListener('error',e=>__errs.push(String(e.message)));"
         "addEventListener('unhandledrejection',e=>__errs.push('reject:'+String(e.reason).slice(0,120)));"))
 
-    # 干净存档 + 预置终端口令（等价于用户在「设置」里输过一次口令的浏览器）
-    c.eval("localStorage.clear(); localStorage.setItem('hub.term.token', %s);" % json.dumps(TOKEN))
+    # 干净存档 + 预置终端口令（等价于用户在「设置」里输过一次口令的浏览器）。
+    # 同时把**旧键**污染成 'embed'：用户那些浏览器里躺着的就是这个值（旧代码把默认推导
+    # 当偏好写进了 hub.chatmode.<id>）。新实现必须不读旧键 ⇒ R3 才是「存量浏览器也能自愈」。
+    c.eval("localStorage.clear();"
+           " localStorage.setItem('hub.term.token', %s);"
+           " localStorage.setItem('hub.chatmode.claude', 'embed');"
+           " localStorage.setItem('hub.chatmode2.pi', 'chat');" % json.dumps(TOKEN))
     c.send("Page.reload", ignoreCache=True)
     d = None
     for _ in range(20):
@@ -180,6 +186,11 @@ try:
     chk("R6 对照：点 Pi Agent → 嵌入页在、终端页不在",
         d["embed"] and not d["term"] and d["mode"] == "embed",
         "mode=%s embed=%s term=%s" % (d["mode"], d["embed"], d["term"]))
+    # 预置的 hub.chatmode2.pi='chat' 对 pi 是无效形态（它没有 chat entry）：
+    # 回落必须是**推导**，不许把推导结果写回存档（不变量②）
+    chk("R6b 无效存量形态会回落默认且不回写（加载不写盘）",
+        c.eval("localStorage.getItem('hub.chatmode2.pi')") == "chat",
+        c.eval("localStorage.getItem('hub.chatmode2.pi')"))
 
     # ── 嵌入入口没被删：终端页头部按钮可切回 ───────────────────────────
     click(c, 'button.nav-item[data-entity="claude"]')
