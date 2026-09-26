@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 import db
 import llm
+import memfed
 import tdai_client
 import writeauth
 
@@ -51,10 +52,15 @@ def _local_l1(q: str, limit: int) -> list:
     return rows
 
 
-# `sources` 只认这两个词。用白名单 + 400 而不是「未知词则忽略」，是因为忽略会造出
+# `sources` 只认白名单里的词。用白名单 + 400 而不是「未知词则忽略」，是因为忽略会造出
 # **第三种静默零结果**：`?sources=tdaii`（手一抖）→ 两路全跳 → HTTP 200、
 # `backends:[]`、无 error、count=0——与本次要修的缺陷对外表现一模一样。
-SOURCE_WHITELIST = ("local", "tdai")
+# v0.13.26 批1：白名单动态扩容进 memfed 注册表（claude_mem / pi_sessions /
+# codex_sessions / workspace_files / archived_sessions）。仍保持「local,tdai」为默认值：
+# 联邦源是 opt-in，前端（批4）与注入通道（批5）点名后再开，避免默认行径突变。
+SOURCE_WHITELIST = ("local", "tdai") + tuple(memfed.enabled_ids())
+#: 联邦源路由：memfed 搜索结果 → RRF（routes 顺序即权威度顺序，权重从注册表取）
+_FED_TAIL = tuple(memfed.enabled_ids())
 
 
 def _split_sources(sources: str) -> set:
@@ -237,6 +243,20 @@ async def search_memory(q: str = Query(min_length=1), limit: int = Query(default
             backends.append(_backend("tdai_l0", e))
             if e.get("ok"):
                 routes.append(("tdai_l0", e.get("items") or [], W_TDAI_L0))
+
+    # 联邦外部源（claude-mem / 各 CLI 会话 / 工作区文件 / 归档）：与 TDAI 并联、
+    # 各自独立超时、失败逐路报 degraded。权重低、粒度是「文件/观察级」，
+    # 在 RRF 里天然排在结构化记忆之后——不压过权威库，但不再缺席。
+    fed_want = want & set(_FED_TAIL)
+    fed_results = await memfed.search_fed(q, limit, fed_want) if fed_want else {}
+    for sid in _FED_TAIL:
+        if sid not in fed_want:
+            continue
+        r = fed_results.get(sid) or {"ok": False, "count": 0, "items": [],
+                                     "error": "未执行"}
+        backends.append(_backend(sid, r))
+        if r.get("ok") and r.get("items"):
+            routes.append((sid, r["items"], memfed.fed_weight(sid)))
 
     fused = _rrf_fuse([r[1] for r in routes],
                       weights=[r[2] for r in routes], limit=limit)
