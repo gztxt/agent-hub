@@ -770,7 +770,11 @@ async def api_port_detail(port: int):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"version": VERSION})
+    resp = templates.TemplateResponse(request, "index.html", {"version": VERSION})
+    # 2026-09-26：HTML 原先不带任何缓存头/验证器 ⇒ 浏览器与已开标签页长期不自愈，
+    # 部署新版后用户看到的仍是旧 UI。no-cache = 可存，但每次导航必须回源校验。
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 # ── 兼容旧端点：/api/memory（别名到 L1 列表）──────────────────────────
