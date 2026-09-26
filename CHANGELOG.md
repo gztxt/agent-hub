@@ -27,7 +27,7 @@
 >   只扩搜索目录、不改进程 PATH、不动 systemd 配置。闸门
 >   `tests/test_which_nvm.py`（把 PATH 换成服务的真实值再断言 `which('pi')`
 >   命中，彻底堵死"shell 里能跑就行"的假绿）。
-> - **验证**：L0 hermetic 655/655 零跳过 + L1 host 41/41 + prepush 六闸；实弹
+> - **验证**：L0 hermetic 652/652 **零跳过** + L1 host 44/44 + prepush 六闸；实弹
 >   pi/codebuddy 会话 alive=true（cwd 生效）并在测后删除；qwenpaw 仍按预期
 >   400「无终端入口」；**以服务 PATH 起实例复验**：pi 卡片 running/usable 并在
 >   候选框内（修前该卡整体消失）。

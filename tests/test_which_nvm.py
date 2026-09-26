@@ -15,14 +15,15 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import profiles  # noqa: E402
+import profiles                                       # noqa: E402
+import tiers                                          # noqa: E402
 
 # hub.service 的真实 PATH（`/proc/<pid>/environ` 实测），不是猜的
 SYSTEMD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
+@tiers.host_only          # 依赖本机 ~/.nvm 实装 ⇒ 假 HOME 的 clean runner 上无意义（L0 零跳过闸门）
 class TestWhichUnderServicePath(unittest.TestCase):
-    @unittest.skipUnless((Path.home() / ".nvm").is_dir(), "本机无 ~/.nvm（假 HOME 环境跳过）")
     def setUp(self):
         self._saved = os.environ["PATH"]
         os.environ["PATH"] = SYSTEMD_PATH
