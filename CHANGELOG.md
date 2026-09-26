@@ -4,6 +4,34 @@
 > 本文件只记「哪一版上线了什么」；施工过程与证据留在 `PENDING-TASKS.md`（PT 编号台账）。
 > 生成时间 2026-09-24 19:3x（生成器＝一次性脚本，未入库；重跑请复制本文件头部的口径）。
 
+## v0.13.26 — 批3：kb 联邦检索扩 workspace/archived 两路 + turbovec 重建脚本
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批2提交 `037d292`。
+> 改动文件：`src/kb.py`（ROUTES 3→5 路、_fed_async 转调、权重修正、status 两段）、
+> `tests/test_kb_federation.py`（新增 L0 9 例）、`tests/verify_kb_federation.py`
+> （追加 B3a~B3f 六断言）、`scripts/rebuild_turbovec.sh`（新增）。
+> 验证：L0 hermetic **448/448**（439 旧+9 新）；真源闸门 verify_kb_federation
+> **41/41 PASS**；宿主级冒烟：五路并发 1975ms，workspace 6 命中/242ms、
+> archived 6 命中/1827ms，status 段两源 available（workspace 294 文件/26ms、
+> archived 5353 文件/53ms）。
+
+### 批3交付（知识库系统「收集」层）
+
+- **ROUTES 3→5 路**：新增 `workspace`（技术文档 MEMORY.md/memory/agent-knowledge/
+  digest，实时 rg 全文）与 `archived`（会话备份 5353 文件，rg --no-ignore --hidden）。
+  实现转调批1 memfed 适配器（rg 命令行坑的权威实现，免重踩）。
+- **假接入护栏（实测修）**：低权源在满权 tdai 池下会被挤出融合前列（k=20 时
+  融合分布仍 tdai 100%，两路 backends 绿但结果不可见＝摆设）⇒ kb 语境下
+  workspace/archived 定位为**文档全文路**与 turbovec 同层，满权 1.0，靠 RRF_K
+  摊平；修后 k=12 融合分布三源均衡（4/4/4）。L0 test_fused_results_really_
+  include_fed_sources + verify B3d 断言固化。
+- **kb_status 扩两段**：workspace/archived 健康表态（走 list_fed_sources 复用
+  TTL 探测缓存，不重扫）。
+- **scripts/rebuild_turbovec.sh**：turbovec 索引重建的执行体（索引是技术文档
+  投影，重建 ≥1800s 长任务，幂等，超时硬顶 7200s，日志落 /vol1，dry-run 验证
+  rc=0）。**注册成 hub job 需先扩 JOB_SHELL_ALLOW（生产 env=共享配置敏感面，
+  逐路授权留批5）**——见 PENDING-TASKS PT-20260926-01。
+
 ## v0.13.26 — 批2：技能面扩三路 + 安装管理（软链双发现点）+ 预算化清单
 
 > 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批1提交 `8b33a21`。
