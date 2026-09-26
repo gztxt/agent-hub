@@ -72,7 +72,12 @@ import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.38"   # 本机项目/GitHub 项目页 agent 候选框补 pi 与 codebuddy：两张 Web 型卡补终端入口
+VERSION = "0.13.39"   # 修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」：终端子进程 PATH 前置 nvm node bin
+                      #   （pi 的 shebang 是 #!/usr/bin/env node，服务 PATH 无 nvm ⇒ 内核把系统
+                      #     node v20.20.2 交给它，而 pi v0.85.1 的 bundle 用 node:fs 的 globSync
+                      #    （Node 22+）⇒ SyntaxError 启动即崩。which() 的 nvm 兜底只管 hub 找
+                      #     得到 pi，管不到 pi 自己再找解释器 —— 两层都得补）
+                      #   ↑ v0.13.38：本机项目/GitHub 项目页 agent 候选框补 pi 与 codebuddy：两张 Web 型卡补终端入口
                       #   （候选框口径=entries 含 term；pi 有 CLI v0.85.1、codebuddy CLI 用 WorkBuddy
                       #     包内绝对路径——裸名 which 落空，必须带目录分隔符；qwenpaw 无 CLI 故不在列）
                       #   ↑ v0.13.37：Agents 菜单补 CodeBuddy Code 卡：`codebuddy --serve` 的原生遥控界面 :35431

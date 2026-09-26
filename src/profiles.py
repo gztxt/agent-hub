@@ -381,6 +381,19 @@ def _nvm_bins() -> List[Path]:
                   key=lambda p: p.parent.name, reverse=True)
 
 
+def extra_path_dirs() -> List[str]:
+    """终端子进程 PATH 需要**前置**的目录（目前 = nvm node bin，新版优先）。
+
+    为什么光有 which() 兜底还不够（2026-09-27 实测）：`which` 只解决"hub 自己找
+    不找得到这个 CLI"，解决不了"CLI 起来之后自己再找解释器"。`pi` 的 shebang 是
+    `#!/usr/bin/env node`，服务 PATH 里没有 nvm ⇒ 内核把它交给**系统 node v20.20.2**，
+    而 pi v0.85.1 的 bundle 用了 `node:fs` 的 `globSync`（Node 22+ 才有）⇒ 启动就
+    `SyntaxError: ... does not provide an export named 'globSync'`，终端里是一屏 JS
+    堆栈。交互 shell 里 PATH 含 nvm（v24.18.0）⇒ 一切正常，所以「本机跑没事、
+    hub 里必崩」。前置目录而不是改 node 软链、也不改 systemd 单元配置。"""
+    return [str(d) for d in _nvm_bins()]
+
+
 def which(name: str) -> Optional[str]:
     """which + 常见用户 bin 目录兜底（服务进程 PATH 可能不含 ~/.local/bin、~/.npm-global/bin、nvm）"""
     p = shutil.which(name)

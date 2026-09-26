@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## v0.13.39 — 修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」（子进程 PATH 前置 nvm node bin）
+
+> 施工会话：688b689d。基线：v0.13.38。改动文件：`src/term.py`（新增纯函数
+> `child_env()`，Session 子进程 env 改走它）、`src/profiles.py`（新增
+> `extra_path_dirs()`，复用既有的 `_nvm_bins()`）、`src/main.py`（VERSION）、
+> `tests/test_term_child_env.py`（新增 5 例，L0 hermetic）。
+>
+> - **用户报障**：候选框选 pi → 新建任务 → 终端出错（一屏 JS 源码）。
+> - **真因（不是 pi 坏了、也不是会话起不来）**：`pi` 的 shebang 是
+>   `#!/usr/bin/env node`。hub 跑在 systemd 单元里，`PATH` 不含 nvm ⇒ 内核把
+>   **系统 node v20.20.2** 交给它；而 pi v0.85.1 的 bundle 用了 `node:fs` 的
+>   `globSync`（Node 22+ 才有）⇒
+>   `SyntaxError: The requested module 'node:fs' does not provide an export named 'globSync'`
+>   启动即崩，`Node.js v20.20.2`。交互 shell 里 PATH 含 nvm（v24.18.0）⇒ 一切正常，
+>   **所以「本机跑没事、hub 里必崩」**。
+> - **为什么 v0.13.38 的 `which()` nvm 兜底不够**：那一层只保证「hub 找得到 pi 这个
+>   **文件**」，管不到「pi 起来之后自己再找**解释器**」。两层必须都补：文件解析在
+>   `profiles.which()`，解释器解析在子进程 `PATH`。
+> - **修法**：`term.child_env()` 把 `~/.nvm/versions/node/*/bin`（新版优先）前置到
+>   子进程 PATH。只补**会话子进程**、不动服务进程自身 PATH、不改 systemd 单元配置
+>   （与前版同口径：改 systemd 属共享配置面，需另行授权）。
+> - **验证**：以服务真实 PATH 起实例实弹 —— 修前 pty 输出即 SyntaxError（10 行短堆栈），
+>   修后 175349 字节、无 SyntaxError、TUI 状态栏正常渲染且 `alive=true`（与交互 shell
+>   下启动完全一致）；codebuddy 回归同样正常。L0 hermetic（新 5 例）+ L1 host + prepush 六闸。
+
 ## v0.13.38 — 两项目页 agent 候选框补 pi 与 codebuddy（Web 型卡也可按目录起会话）
 
 > 施工会话：688b689d。基线：v0.13.37。改动文件：`src/profiles.py`（pi 加
