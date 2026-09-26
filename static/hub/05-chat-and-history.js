@@ -159,7 +159,7 @@ const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activi
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目' };
+                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';

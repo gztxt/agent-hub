@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## v0.13.31 — GitHub 项目菜单 + 本机项目精度收紧（79→42）
+
+> 施工会话：本会话。基线：v0.13.30。改动文件：新增 `src/githubprojects.py`
+> （GET /api/github/repos 远端清单+strict remote 本地匹配 + POST /api/github/clone
+> 浅克隆）、`static/hub/10-github-projects.js`（GitHub 页，新第 10 分片）、
+> `tests/test_github_projects.py`（L0 35 例）、`tests/verify_github_projects.py`
+> （L2 真鼠标 9 判据）；改 `src/localprojects.py`（精度四闸 P1-P4 + _scan_roots
+> 三元组 + cloudcli 降级纯富化）、`src/audit.py`（VALID_TYPES + repo）、
+> `src/main.py`（挂路由 + VERSION 0.13.31）、`templates/index.html`（i-globe
+> sprite + 侧栏按钮 + #page-github）、`static/hub/01-core-boot.js`（ghLoaded +
+> go() 钩子）、`static/hub/05-chat-and-history.js`（PAGE_LABELS）、
+> `tests/test_localprojects.py`（精度新例 31 例）、`tests/test_ls_guard.py`
+> （分片清单 9→10）、`tests/test_term_focus_policy.py`（user:true 入口 4→5）、
+> `static/hub.js`（build 3428 行）。
+> 验证：L0 hermetic **613/613** 零跳过；L1 host 41/41；L2 真浏览器探针
+> R1-R5 全过（按钮位置/fork 开关/选中/会话直达）；生产 :3102 实测
+> localprojects count=42 dropped=28、github repos count=72 local_total=30。
+
+### v0.13.31 交付（用户需求「复用本机项目菜单加 GitHub 项目菜单，列表加载远端所有仓库，其他逻辑一致，本地没有就克隆即时同步」+「79 个项目肯定是错的，精度要优化」）
+
+- **精度收紧四闸（P1-P4）**：实测 79 = 56 git + 23 cloudcli-only，约 40 条垃圾。
+  P1 /tmp 整前缀剔除（16 条探针残留）；P2 cloudcli 从独立项目源**降级纯富化**
+  （cloudcli-only 行须过四关：非根自身/不在排除路径/盘上真实存在/是 .git 目录
+  ——杀掉 sr、网络设备合并、wt-01a0db08 等存账幽灵）；P3 git worktree **结构性**
+  剔除（.git 文件 gitdir: 指向另一已收录仓 ⇒ 派生检出；非派生保留标
+  worktree:True——不按目录名猜，用户裁定「严格按证据」）；P4 备份归档剪枝
+  （snapshots/git-backups/Hermes-backup/marketplace-cache/ARCHIVED- 前缀）。
+  结果 **79→42**；每条剔除原因进信封 dropped（#lpMeta 可见，下一类误报
+  用户自己能看见）。
+- **GET /api/github/repos**：api.github.com /user/repos 分页全量（实测 72 仓：
+  38 自建 + 34 fork），5 分钟缓存防烧限额；**本地匹配严格按 git remote URL**
+  （读 .git/config 解析 slug 对账——同仓异名 techdocs-scripts↔scripts 命中，
+  同名异仓不误配；根自身是仓的 technical-docs 也计入）。信封不带任何
+  clone_url——克隆 URL 服务端现场重构。
+- **POST /api/github/clone**：白名单 slug（REPO_RE 形状 + 远端清单成员双重
+  校验，客户端只能「点名」不能「指路」）→ `git -c credential.helper= clone
+  --depth 1` 浅克隆到 CLONE_BASE（默认 /fs/1000/ftp/技术文档，env 可改）；
+  180s 上限、argv 列表无 shell、GIT_TERMINAL_PROMPT=0、失败清半成品、
+  同仓已存在幂等 200、异仓 409、symlink 400。**token 三律**：env GITHUB_TOKEN
+  → github.txt 首行，每次现读；永不打印/进返回值/进审计；上游错误正文过
+  scrub 时 token 作位置参数（ghp_ 不在 _KEY_PATTERNS）。
+- **前端**：侧栏常驻项「GitHub 项目」（本机项目之下、AGENTS 之上）；三态列表
+  + fork 开关（默认隐藏 34 个 fork）+ 选中动作条；`ghStart` 两段式——本地有
+  直接开会话（lpStart 同路），本地无先 clone 拿 path 再开会话（即时同步）。
+- **四项裁定**：审计 action 用冻结枚举 `create`（不动 AUDIT_ACTIONS，"clone"
+  会打 action_invalid 标记）；audit.VALID_TYPES + "repo"；worktree 结构判定
+  非名字猜测；clone URL 不下发客户端。
+
 ## v0.13.30 — 本机项目菜单（项目检索 → 选 agent → 新建会话直达终端）
 
 > 施工会话：本会话。基线：v0.13.29。改动文件：新增 `src/localprojects.py`

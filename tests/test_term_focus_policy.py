@@ -6,9 +6,10 @@
 所以这里守的是"**位置**"，不是"存在"：
 
   1. `term.focus()` 全仓只能出现在 `if (termFocusWanted(opts))` 之后同一行；
-  2. 七个 termConnect 入口里，恰好 5 个带 `{ user: true }`（用户主动：
-     startAgent / termNew / termResume / lpStart(本机项目页, v0.13.30) / 芯片包装器
-     termOpenChip），2 个刻意不带（自动挂载 / 退避重连）—— 数量与身份都钉住；
+  2. 八个 termConnect 入口里，恰好 6 个带 `{ user: true }`（用户主动：
+     startAgent / termNew / termResume / lpStart(本机项目页, v0.13.30) /
+     ghStart(GitHub 项目页, v0.13.31) / 芯片包装器 termOpenChip），
+     2 个刻意不带（自动挂载 / 退避重连）—— 数量与身份都钉住；
   3. 全局 keydown 里 `if (editing) return` 必须出现在 `/` 与 Ctrl+K 分支之前；
   4. 内联 onclick 走的是带 user:true 的包装器 termOpenChip，不是裸 termConnect。
 
@@ -45,15 +46,16 @@ class TestFocusPolicy(unittest.TestCase):
                          "重连不该参与焦点判断")
 
     def test_user_entry_points_count(self):
-        """5 个用户主动入口带 user:true；2 个自动路径不带。钉数量也钉身份。
+        """6 个用户主动入口带 user:true；2 个自动路径不带。钉数量也钉身份。
 
-        v0.13.30 起 user:true 的直接调用点为 4 处（startAgent / termNew /
-        termResume / lpStart）+ 芯片包装器 termOpenChip；lpStart 是本机项目页
-        的「新建会话」按钮——用户主动点击，必须抢焦点（否则新起的会话黑屏无焦点）。"""
+        v0.13.31 起 user:true 的直接调用点为 5 处（startAgent / termNew /
+        termResume / lpStart / ghStart）+ 芯片包装器 termOpenChip；lpStart/ghStart
+        是两个项目页的「新建会话」按钮——用户主动点击，必须抢焦点（否则新起的
+        会话黑屏无焦点）。"""
         # 包装器 termOpenChip 的定义行本身也是 `termConnect(sid, agent, { user: true })`：
-        # 它是字面上的第 5 处匹配，但不是调用点。第一版就在这条上红，别把测试 bug 记成产品 bug。
+        # 它是字面上的第 6 处匹配，但不是调用点。第一版就在这条上红，别把测试 bug 记成产品 bug。
         user = [l for _, l in _lines(r"termConnect\([^)]*\{ user: true \}\)") if "function " not in l]
-        self.assertEqual(len(user), 4, f"直接调用点应恰好 4 处带 user:true，实得 {len(user)}")
+        self.assertEqual(len(user), 5, f"直接调用点应恰好 5 处带 user:true，实得 {len(user)}")
         chip = _lines(r"function termOpenChip\(sid, agent\) \{ termConnect\(sid, agent, \{ user: true \}\); \}")
         self.assertEqual(len(chip), 1, "芯片包装器丢了（内联 onclick 会退化成无守卫直连）")
         # 自动路径：重连 + 自动挂载，必须**不**带 user

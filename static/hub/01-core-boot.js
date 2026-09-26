@@ -92,6 +92,9 @@ let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false, skillsLoade
    lpLoaded 的 var 声明在 09 里会提升到 go() 可见——两处同名 var 是刻意冗余，
    保证 06 分片顶层 go() 调用（在 09 声明之前执行）读到的是 undefined 而非 TDZ。 */
 var lpLoaded = false;
+/* v0.13.31 GitHub 页同型（双 var 冗余纪律见上）；10 分片里 var ghLoaded 提升
+   保证 06 顶层 go() 先行调用读到 undefined 而非 TDZ。 */
+var ghLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
 
@@ -226,6 +229,7 @@ function go(page) {
   if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）
+  if (page === 'github' && !ghLoaded) { ghLoaded = true; loadGithubRepos(); }   // v0.13.31 GitHub 项目页（10 分片）
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）

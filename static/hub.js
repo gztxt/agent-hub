@@ -92,6 +92,9 @@ let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false, skillsLoade
    lpLoaded 的 var 声明在 09 里会提升到 go() 可见——两处同名 var 是刻意冗余，
    保证 06 分片顶层 go() 调用（在 09 声明之前执行）读到的是 undefined 而非 TDZ。 */
 var lpLoaded = false;
+/* v0.13.31 GitHub 页同型（双 var 冗余纪律见上）；10 分片里 var ghLoaded 提升
+   保证 06 顶层 go() 先行调用读到 undefined 而非 TDZ。 */
+var ghLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
 
@@ -226,6 +229,7 @@ function go(page) {
   if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）
+  if (page === 'github' && !ghLoaded) { ghLoaded = true; loadGithubRepos(); }   // v0.13.31 GitHub 项目页（10 分片）
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
@@ -2295,7 +2299,7 @@ const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activi
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目' };
+                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
@@ -3272,4 +3276,153 @@ async function lpStart() {
     gotoChat(agent, 'term');
     setTimeout(() => termConnect(d.session.id, agent, { user: true }), 100);
   } catch (e) { toast('新建会话失败：' + e.message, 'err'); }
+}
+/* ── GitHub 项目页（v0.13.31）────────────────────────────────────────
+ * 分片头注释（军规：分片源，不是 build 产物；产物在 static/hub.js 由
+ * scripts/build_hubjs.sh 按字典序拼接，直接改产物会被 test_hubjs_split 判红）。
+ *
+ * 数据源：GET /api/github/repos（远端清单 + strict remote 本地匹配，
+ * 只读不鉴权；token/token 失效由后端信封 errors 点名——「查不了」≠「没有」）。
+ * fork 默认隐藏（34 个 fork 多为别人的仓库），#ghForks 勾选即显。
+ * 新建会话（ghStart）两段式：
+ *   ① local.found → 与本机项目页同路：POST /api/term/sessions {agent_id, cwd}；
+ *   ② 本地无 → POST /api/github/clone {repo}（按钮禁用 + 克隆中 toast）
+ *      → 拿 d.path 作 cwd → 走同一条会话链 → gotoChat('term') + termConnect。
+ * 状态变量用 var：go()（01 分片，拼接序在前）会经顶层 go(lsGet('hub.page'))
+ * 同步走到本分片函数体，let 的 TDZ 静态序风险会被 test_tdz_order 判红——
+ * 08/09 分片同教训。本分片零 localStorage（fork 开关是临时态）。 */
+
+var GH = [];          // 全量远端仓库（过滤前缓存）
+var ghSel = null;     // 当前选中索引（null = 未选）
+var ghSelName = '';
+var ghLoaded = false;    // go() 懒加载标志（声明在 01 亦有 var 冗余，同 lpLoaded 纪律）
+
+function ghTime(iso) {
+  if (!iso) return '';
+  return String(iso).slice(0, 10);
+}
+
+function ghRowHtml(r, i) {
+  const on = i === ghSel ? ' on' : '';
+  const tags = (r.fork ? '<span class="tag">fork</span>' : '') +
+               (r.language ? '<span class="tag agent">' + escapeHtml(r.language) + '</span>' : '') +
+               (r.archived ? '<span class="tag">archived</span>' : '');
+  const local = (r.local && r.local.found)
+    ? '<span class="tag" style="align-self:center">本地已有</span>'
+    : '<span class="hint" style="align-self:center">本地无</span>';
+  const path = (r.local && r.local.path)
+    ? '<br><span class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
+      escapeHtml(String(r.local.path).slice(0, 72)) + '</span>' : '';
+  return '<div class="mem-item' + on + '" data-i="' + i + '" style="gap:6px;cursor:pointer"' +
+    ' onclick="ghSelect(' + i + ')"' +
+    ' title="' + escapeHtml(r.full_name || '') + '">' +
+    '<p style="min-width:0"><b>' + escapeHtml(r.name || '') + '</b>' + tags +
+    (r.pushed_at ? ' <span class="hint">' + ghTime(r.pushed_at) + '</span>' : '') + path + '</p>' +
+    local + '</div>';
+}
+
+function ghSelect(i) {
+  const r = GH[i];
+  if (!r) return;
+  ghSel = i;
+  ghSelName = r.full_name || r.name || '';
+  const nameEl = $('ghSelName');
+  if (nameEl) { nameEl.textContent = ghSelName; nameEl.title = ghSelName; }
+  const btn = $('ghStartBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.lastChild.textContent = (r.local && r.local.found) ? '新建会话' : '克隆并开会话';
+  }
+  ghRenderList();   // 重画选中态（.on）
+}
+
+function ghFilter() {
+  /* 纯函数（可被探针抽出真代码跑）：fork 默认隐藏，勾选即显。 */
+  const showForks = !!($('ghForks') && $('ghForks').checked);
+  return GH.map((r, i) => [r, i]).filter(([r]) => !r.fork || showForks);
+}
+
+function ghRenderList() {
+  const box = $('ghList');
+  if (!box) return;
+  const q = ($('ghQ') ? $('ghQ').value.trim() : '').toLowerCase();
+  const idx = ghFilter().filter(([r]) =>
+    !q || String(r.name || '').toLowerCase().includes(q) ||
+    String(r.full_name || '').toLowerCase().includes(q));
+  box.innerHTML = idx.map(([r, i]) => ghRowHtml(r, i)).join('') ||
+    '<div class="hint" style="padding:10px">' + (q ? '无匹配仓库' : '无仓库') + '</div>';
+  const hint = $('ghHint');
+  if (hint) hint.textContent = '显示 ' + idx.length + ' / ' + GH.length + ' 个仓库';
+}
+
+function ghRenderAgents() {
+  const sel = $('ghAgent');
+  if (!sel) return;
+  const cur = sel.value;
+  const items = AGENTS.filter(a => a.kind === 'agent' && (a.entries || []).some(e => e.type === 'term'));
+  sel.innerHTML = items.map(a =>
+    '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>').join('');
+  if (cur && items.some(a => a.id === cur)) sel.value = cur;   // 轮询重绘不覆盖用户选择
+  else if (!cur && items.length) sel.value = items[0].id;
+}
+
+async function loadGithubRepos(force) {
+  const box = $('ghList');
+  const hint = $('ghHint');
+  if (!box) return;
+  if (force) GH = [];
+  if (!GH.length) box.innerHTML = '<div class="hint" style="padding:10px">拉取 GitHub 仓库清单…</div>';
+  if (hint) hint.textContent = '加载中…';
+  try {
+    const d = await api('/api/github/repos' + (force ? '?force=1' : ''));
+    GH = d.repos || [];
+    ghSel = null;                     // 重拉后旧选中索引失效
+    ghRenderList();
+    ghRenderAgents();
+    if (hint) hint.textContent = (d.token === false ? 'token 不可用 · ' : '') +
+      (d.count || 0) + ' 个仓库 · 本地已有 ' + (d.local_total || 0) + ' 个';
+    const meta = $('ghMeta');
+    if (meta) meta.textContent =
+      (d.cached ? '缓存 ' + (d.age_s || 0) + 's 前' : '实时') +
+      ((d.errors || []).length ? ' ｜ ' + d.errors.join('；') : '') +
+      (d.took_ms != null ? ' ｜ ' + d.took_ms + 'ms' : '');
+  } catch (e) {
+    if (hint) hint.textContent = '加载失败';
+    box.innerHTML = '<div class="hint" style="padding:10px">加载失败：' + escapeHtml(e.message || '') +
+      ' <button class="btn sm" onclick="loadGithubRepos(true)">重试</button></div>';
+  }
+}
+
+/* 核心：选中仓库 + agent → 拉起 pty 会话 → 跳该 agent 终端工作台。
+   本地已有：lpStart 同路；本地无：先 POST /api/github/clone（即时同步），
+   拿返回 path 作 cwd 再开会话。 */
+async function ghStart() {
+  const agent = $('ghAgent') ? $('ghAgent').value : '';
+  const r = GH[ghSel];
+  if (ghSel == null || !r || !agent) { toast('先选仓库与 Agent', 'err'); return; }
+  const btn = $('ghStartBtn');
+  let cwd = (r.local && r.local.found) ? r.local.path : null;
+  try {
+    if (!cwd) {
+      if (btn) btn.disabled = true;
+      toast('克隆中：' + (r.full_name || r.name) + '（首次可能较慢）…');
+      const d = await api('/api/github/clone', {
+        method: 'POST',
+        headers: termHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ repo: r.full_name })
+      });
+      cwd = d.path;
+      if (d.existed) toast('目录已存在（同仓），直接开会话', 'ok');
+    }
+    const s = await api('/api/term/sessions', { method: 'POST',
+      headers: termHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ agent_id: agent, cwd: cwd }) });
+    toast('已在 ' + (r.name || cwd) + ' 拉起 ' + agent + ' 终端会话', 'ok');
+    gotoChat(agent, 'term');
+    setTimeout(() => termConnect(s.session.id, agent, { user: true }), 100);
+  } catch (e) {
+    toast('新建会话失败：' + (e.message || ''), 'err');
+  } finally {
+    if (btn && ghSel != null && GH[ghSel]) btn.disabled = false;
+  }
 }

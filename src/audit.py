@@ -24,7 +24,7 @@ router = APIRouter()
 #: 允许的 asset_type —— 与 db.log_asset_event 各调用点用的字面量一一对应。
 #: 写死成白名单而不是放开自由文本：查询侧要能枚举，否则前端做不出下拉。
 VALID_TYPES = ("mcp_server", "mcp_acl", "memory_l1", "memory_doc",
-               "agent", "session", "setting", "skill")
+               "agent", "session", "setting", "skill", "repo")
 
 _LIMIT_MAX = 1000
 
