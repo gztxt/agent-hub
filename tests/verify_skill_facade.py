@@ -256,17 +256,27 @@ def main():
 
     # ─────────────────────────────────────────────────────────────────────
     print("\n[G6 绿向+红向] /read 全文一致，截断必须显式表态")
-    target = None
+    # G6a 动态选一个真实技能（caveman 样本 09-26 已不在本机——前提消失型既有红的首修：
+    # 依赖会消失的外部样本 = 每次装新机器/删技能都会红。改为扫描真实目录选第一个
+    # ≥200B 的 SKILL.md，确保 G6c/G6d 截断上限(64B)真的能触发）。
+    target, tname = None, None
     for route, root in _ORIG_DIRS.items():
-        p = os.path.join(root, "caveman", "SKILL.md")
-        if os.path.exists(p):
-            target = p
+        if not os.path.isdir(root):
+            continue
+        for entry in sorted(os.listdir(root)):
+            p = os.path.join(root, entry, "SKILL.md")
+            if os.path.exists(p) and os.stat(p).st_size > 200:
+                target, tname = p, entry
+                break
+        if target:
             break
     if not target:
-        check("G6a 找到用于比对的真实技能", False, "本机没有 caveman 技能，前提变了")
+        check("G6a 找到用于比对的真实技能", False,
+              "本机技能目录扫不到任何 ≥200B 的真实 SKILL.md，前提变了")
     else:
+        print(f"    [G6] 动态样本：{tname!r}（{target}）")
         real_size = os.stat(target).st_size
-        r = C.get("/api/skill/read", params={"name": "caveman"})
+        r = C.get("/api/skill/read", params={"name": tname})
         d6 = r.json()
         check("G6a /read 200 且 bytes 与磁盘 stat 逐字节一致",
               r.status_code == 200 and d6.get("bytes") == real_size,
@@ -276,7 +286,7 @@ def main():
               f"len={len(d6.get('content') or '')} truncated={d6.get('truncated')}")
         try:
             skill.READ_MAX_BYTES = 64
-            r = C.get("/api/skill/read", params={"name": "caveman"})
+            r = C.get("/api/skill/read", params={"name": tname})
             d6c = r.json()
             check("G6c 超上限时 truncated=true 且给出 bytes_total（不静默截断）",
                   d6c.get("truncated") is True and d6c.get("bytes_total") == real_size
@@ -287,7 +297,7 @@ def main():
                   f"len={len((d6c.get('content') or '').encode('utf-8'))}")
         finally:
             skill.READ_MAX_BYTES = int(os.getenv("SKILL_READ_MAX_BYTES", str(256 * 1024)))
-        r = C.get("/api/skill/read", params={"name": "caveman", "with_body": "false"})
+        r = C.get("/api/skill/read", params={"name": tname, "with_body": "false"})
         check("G6e with_body=false 时只回元信息不回正文（省 token 的路子能用）",
               r.status_code == 200 and "content" not in r.json() and r.json().get("bytes") == real_size,
               f"keys={sorted(r.json())[:8]}")
@@ -297,7 +307,7 @@ def main():
     check("G6f 不存在的技能 → 404 且指向 /api/skill/list",
           r.status_code == 404 and "/api/skill/list" in str(r.json().get("detail")),
           f"{r.status_code} {str(r.json().get('detail'))[:70]}")
-    r = C.get("/api/skill/read", params={"name": "caveman", "route": "nope"})
+    r = C.get("/api/skill/read", params={"name": tname, "route": "nope"})
     check("G6g route 写错 → 400 且回显可用值", r.status_code == 400 and "claude" in str(r.json().get("detail")),
           f"{r.status_code} {str(r.json().get('detail'))[:70]}")
     r = C.get("/api/skill/read", params={"name": "../../../../etc/passwd"})
