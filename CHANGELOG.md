@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## v0.13.35 — 勾选框宽度真因：.toolbar input 拉伸规则误命中 checkbox
+
+> 施工会话：本会话。基线：v0.13.34。改动文件：`templates/index.html`
+> （`.toolbar input` 两条拉伸规则加 `:not([type=checkbox])`）、`src/main.py`
+> （VERSION 0.13.35）、`tests/test_localprojects.py`（新钉子
+> test_toolbar_checkbox_not_stretched）。CSS 内联于模板，HTML 本就 no-cache
+> ⇒ 用户刷新即生效，不依赖构建产物。
+> 验证：L0 hermetic 630/630 零跳过；headless dump-dom 实测 lpHidden/ghForks/
+> ghHidden 三个勾选框渲染宽 13px（原 180/140px 撑块）、flex:0 min-width:auto。
+
+### v0.13.35 交付（用户需求「勾选框还是没与文字紧贴，应该是勾选框宽度太大」）
+
+- **真因（用户诊断正确）**：不是 gap，是宽度——`.toolbar input { flex:1;
+  min-width:180px }`（v0.13.34 为搜索框拉伸写的规则）命中了工具栏里**所有**
+  input，checkbox 也被撑成 180px 宽块、文字被推到框外 ⇒ gap 设 0 也不紧贴。
+  修复：基础 180px 与窄屏 140px 两条拉伸规则都加 `:not([type=checkbox])`
+  排除；checkbox 回归浏览器自然尺寸（实测 13×13px，flex:0 min-width:auto）。
+  上版 gap 0 的改动保留（两者配合才紧贴），此版是根因修复。
+
 ## v0.13.34 — 项目页布局批：顶栏清空 + 满高列表 + 勾选框紧贴
 
 > 施工会话：本会话。基线：v0.13.33。改动文件：`static/hub/06-manager-tasks.js`

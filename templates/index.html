@@ -435,7 +435,10 @@
         textarea[readonly] { color: var(--text-2); background: var(--surface-2); }
 
         .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-        .toolbar input { flex: 1; min-width: 180px; }
+        /* v0.13.35：勾选框必须排除——本规则是拉伸搜索框的，但原写法命中工具栏
+           里所有 input，checkbox 被 flex:1 + min-width:180px 撑成一条宽块，
+           文字被推到 180px 外 ⇒ 用户报「勾选框宽度太大、贴不上文字」。 */
+        .toolbar input:not([type=checkbox]) { flex: 1; min-width: 180px; }
         pre.code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: var(--fs-sm); overflow-x: auto; color: var(--text-1); line-height: var(--lh-base); }
 
         .modal-mask { position: fixed; inset: 0; background: var(--mask); display: none; align-items: center; justify-content: center; z-index: 50; }
@@ -637,7 +640,7 @@
             .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
             .mem-grid { grid-template-columns: minmax(0, 1fr) !important; }
             .panel { padding: 12px; }
-            .toolbar input { min-width: 140px; }
+            .toolbar input:not([type=checkbox]) { min-width: 140px; }   /* v0.13.35：同样排除勾选框 */
         }
         /* 实体列表的隐藏已上提到 .chat-side 基础规则（宽窄屏一律不内嵌），
            此处只剩宽屏的单列栅格修正 */

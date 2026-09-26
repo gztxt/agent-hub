@@ -411,6 +411,16 @@ class TestStarHideQuartet(unittest.TestCase):
         lp_panel = self._panel()
         self.assertNotIn("<h3>", lp_panel, "本机项目面板不应再有 <h3> 大标题")
 
+    def test_toolbar_checkbox_not_stretched(self):
+        """v0.13.35 用户报「勾选框宽度太大、贴不上文字」：真因不是 gap，是
+        `.toolbar input { flex:1; min-width:180px }`（搜索框拉伸规则）命中了
+        checkbox ⇒ 勾选框被撑成 180px 宽块，文字被推到框外。两条拉伸规则
+        （基础 180px + 窄屏 140px）都必须排除 :not([type=checkbox])。"""
+        self.assertIn(".toolbar input:not([type=checkbox]) { flex: 1; min-width: 180px; }",
+                      self.html, "基础拉伸规则必须排除勾选框")
+        self.assertIn(".toolbar input:not([type=checkbox]) { min-width: 140px; }",
+                      self.html, "窄屏 140px 拉伸同样要排除勾选框")
+
 
 @tiers.host_only
 class TestLivePrecisionOnHost(unittest.TestCase):

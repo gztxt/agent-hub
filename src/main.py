@@ -71,8 +71,9 @@ import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.34"   # 项目页布局批：opBar 面包屑不渲染（顶部标题+分割线全无，省 37px）；
-                      #   面板 flex 满高 + 列表 flex:1（页尾项目不再被推出屏外）；勾选框与文字紧贴（gap 0）
+VERSION = "0.13.35"   # 勾选框宽度真因修复：.toolbar input 拉伸规则（搜索框用的 flex:1/min-width:180px）
+                      #   误命中 checkbox ⇒ 勾选框被撑成宽块、文字推远；两条规则加 :not([type=checkbox]) 排除。
+                      #   （上版只改了 gap，但宽度没解决——gap 0px 仍不紧贴就是因这个）
                       #   + GitHub 项目页：GET /api/github/repos（远端清单+strict remote 本地匹配）+ POST /api/github/clone
                       #   （白名单 slug→服务端重构 URL→浅克隆到 GITHUB_CLONE_BASE，审计 action=create）
                       #   + POST /start 铸 JWT 转调创建会话 → 详情抽屉项目列表 + iframe 直达 /session/{id}；
