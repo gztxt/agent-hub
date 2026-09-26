@@ -66,7 +66,12 @@ import audit as audit_mod           # 资产变更审计的只读查询门面（
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.25"   # 后端：终端进程退出时把「为什么没了」说清楚。waitpid 的退出状态原先被
+VERSION = "0.13.26"   # 前端：hallmark 视觉审计 M1~M6 收口——字面色全部收进 :root token
+                      #   （--embed-line / --embed-bg / --font-display / --on-accent），fr 轨道一律
+                      #   minmax(0,…) 防内容顶破容器，数字列 tabular-nums 兜字体回退；DESIGN.md 新增
+                      #   「视觉系统」语义索引章（权威源仍是 templates/index.html 的 :root，不复制取值）。
+                      #   取值与原字面量逐字相同 ⇒ 渲染零变化；取证见 agent-knowledge/57（真渲染四档 + gate 50）。
+                      #   上一版 v0.13.25 后端：终端进程退出时把「为什么没了」说清楚。waitpid 的退出状态原先被
                       #   `_st` 直接丢弃（src/term.py 的 _cleanup / _force_kill）⇒ 崩溃原因永远上不了屏，
                       #   用户只看到一句「[会话结束]」。新增 describe_exit() 把信号/退出码解成人话：
                       #   SIGILL/SIGSEGV/SIGBUS/SIGABRT/SIGKILL 点名「疑似内存不足」；并用 hub_killed

@@ -31,6 +31,15 @@
             --surface-2: #f4f4f5;            /* 框内次级块：助手气泡 / hover / 代码 */
             --field: #f4f4f5;                /* 输入控件填充：白卡上靠浅灰填充显形，不再只靠描边 */
             --border: #c9c9c9; --divider: #e5e5e5; --line: #c9c9c9;
+            /* ── hallmark 审计补丁 2026-09-26（M2/M6）：把此前散落在 pi-web 内嵌条里的字面色收进 token。
+               取值与原字面量逐字相同（#e0e0e0 / #eeeeee）⇒ 渲染零变化，只是不再绕过 :root。
+               它们与 --divider(#e5e5e5)/--hover(#eeeeee) 是**不同角色**（内嵌条描边/底色 vs 分隔线/悬停），
+               故新建 token 而非复用，避免为了“少一个变量”把两个语义合并、日后一改全错。
+               --font-display：显式声明本系统的 display 面孔＝mono（.home-kicker 已在用）。
+               CJK-first 控制台不引入 webfont（中文字体动辄数 MB），故 display 与 body 同源是**有意取舍**；
+               真正的 display 配对留待用户视觉签核后再议（见 agent-knowledge/57 M6）。 */
+            --embed-line: #e0e0e0; --embed-bg: #eeeeee;
+            --font-display: var(--font-mono);
             /* 文字三级：全部达 WCAG AA 正文 4.5:1 以上（对白底） */
             --text-1: #111111;               /* 18.9:1  标题 / 正文主色 */
             --text-2: #444444;               /*  9.7:1  次要文字、可点击项 */
@@ -122,6 +131,9 @@
                -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
                text-rendering: optimizeLegibility; font-synthesis: none; }
         a { color: var(--accent-2); }
+        /* hallmark M3（2026-09-26 审计）：数字列一律等宽数字。这些位置显示端口/时间戳/表格数值，
+           mono 字体命中时本就等宽，此处只兜住字体回退路径（ui-monospace/generic）导致的列错位。 */
+        .nav-port, .hh-ts, .hh-cw, .ebar-addr-v, th, td { font-variant-numeric: tabular-nums; }
         button { cursor: pointer; font-family: inherit; font-size: inherit; }
         /* ── 统一图标：所有图形走同一 sprite，尺寸只由四档 token 决定 ── */
         svg.i { flex: none; display: inline-block; width: var(--ico-sm); height: var(--ico-sm);
@@ -147,7 +159,7 @@
         .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-2); }
         .btn.ghost:hover { border-color: var(--accent-2); color: var(--text-1); }
         .btn.danger { background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger-text); }
-        .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #ffffff; }
+        .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
         .btn.sm { padding: 6px 11px; font-size: var(--fs-sm); gap: 5px; }
 
         .header { background: var(--bg); padding: 10px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -260,7 +272,7 @@
            让「无 Web UI 的 Agent」行跟「有 Web UI」行看起来不是一套图标。
            色相只留在 hover（语义：这是可执行动作），静置与 monitor/terminal 同色。*/
         .start-btn { color: var(--text-2); }
-        .start-btn:hover { background: var(--success); color: #fff; }
+        .start-btn:hover { background: var(--success); color: var(--on-accent); }
         /* 搜索结果计数 */
         .search-count { font-size: var(--fs-xs); color: var(--text-2); margin-left: 6px; }
         /* 搜索高亮 */
@@ -339,7 +351,7 @@
         .home-brand .brand-glyph { width: 30px; height: 30px; color: var(--on-accent); }   /* 实心黑块内反白 */
         .home-brand-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
         /* 字标上方的一行 mono 大字距 kicker：黑白体系里用“节奏”而不是颜色做装饰 */
-        .home-kicker { margin: 0; font-family: var(--font-mono); font-size: var(--fs-xs);
+        .home-kicker { margin: 0; font-family: var(--font-display); font-size: var(--fs-xs);
                        letter-spacing: .24em; text-transform: uppercase; color: var(--muted); }
         .home-sub { font-size: var(--fs-base); color: var(--muted); margin-top: 4px; }
         .home-desc { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text-2); border-left: 2px solid var(--border); padding-left: 14px; }
@@ -360,13 +372,18 @@
         .s-badge.installed { background: transparent; border: 1.5px solid var(--st-installed); opacity: .8; }   /* 空心方块 80% */
         .s-badge.stopped { background: var(--st-stopped); }                                                   /* 实心方块 30% */
         .s-badge.error { background: var(--st-error); border: 2px solid var(--st-error); transform: rotate(45deg); }  /* 菱形 100% + 2px */
-        @media (max-width: 1000px) { .home-wrap { grid-template-columns: 1fr; } }
+        @media (max-width: 1000px) { .home-wrap { grid-template-columns: minmax(0, 1fr); } }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
         /* ── 聊天 ── */
         /* 提示栏 110px 太窄：提示文本被挤成每行 3~4 字（v0.9 字号上调后更明显），放到 220px 可正常阅读。
            宽屏下 .chat-grid 只作用于指挥官页（#page-chat 在 @media(min-width:768px) 里已改为单列） */
-        .chat-grid { display: grid; grid-template-columns: 220px 1fr; gap: 16px; flex: 1; min-height: 420px; }
+        /* hallmark M4（gate 50）：所有 fr 轨道一律 minmax(0,…)。裸 1fr 的最小值是 auto(=min-content)，
+           轨道内若有 xterm/<pre>/表格这类“固有宽度很大”的内容，会把轨道顶破容器造成溢出；
+           minmax(0,1fr) 把最小值钉到 0，溢出改由子元素自己的 overflow-x:auto 承接。
+           注：本行的 220px 1fr 实测被窄屏媒体查询与 #page-chat 宽屏规则全覆盖（四档渲染均为 1fr）
+           ⇒ 当前是死规则；一并修是为防日后删掉那两条覆盖时把顶破行为一起复活。 */
+        .chat-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; flex: 1; min-height: 420px; }
         /* Agent 清单不再内嵌进对话页（2026-09-20 用户指令：窄屏也不需要，宽屏本来就藏）：
            实体选择统一走左侧手风琴 / 窄屏图标条抽屉，同一份清单不散落两处。
            DOM 里仍保留 #chatAgents 容器 —— hub.js renderChatSide() 拿它当渲染锚点，
@@ -403,8 +420,8 @@
         .tag.preference { background: var(--text-2); color: var(--bg); }
         .tag.agent { background: var(--btn); color: var(--on-accent); }
 
-        .mem-grid { display: grid; grid-template-columns: 1.2fr .9fr .9fr; gap: 16px; }
-        @media (max-width: 1100px) { .mem-grid { grid-template-columns: 1fr; } }
+        .mem-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .9fr) minmax(0, .9fr); gap: 16px; }
+        @media (max-width: 1100px) { .mem-grid { grid-template-columns: minmax(0, 1fr); } }
         .mem-list { max-height: 420px; overflow-y: auto; }
         .mem-item { border-bottom: 1px solid var(--divider); padding: 10px 2px; font-size: var(--fs-base); line-height: var(--lh-base); display: flex; justify-content: space-between; gap: 8px; }
         .mem-item p { flex: 1; word-break: break-word; }
@@ -458,7 +475,7 @@
            flex 容器的基线取自它第一个 flex 项的基线，所以 .ebar-menu 与 .ebar-addr 两个
            分组能跟同一行里的标题文字对到一条基线上。 */
         .ebar-head { display: flex; align-items: baseline; gap: 10px; flex: none; height: 36px;
-                     padding: 9px 10px 0; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
+                     padding: 9px 10px 0; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
         .ebar-head > .ebar-menu { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0; }
         .ebar-head > .ebar-addr { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0;
                                   margin-left: auto; gap: 6px; }
@@ -487,7 +504,7 @@
           .ebar-head > .ebar-menu > .ebar-btn { order: 4; }
         }
         .ebar-menu { display: flex; align-items: center; gap: 8px; flex: none; height: 36px;
-                     padding: 0 10px; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
+                     padding: 0 10px; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
         .ebar-menu > b { font-size: 15px; font-weight: 700; line-height: 1.2; color: var(--text-1);
                          min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ebar-sp { flex: 1 1 auto; min-width: 4px; }
@@ -497,7 +514,7 @@
                     cursor: pointer; transition: .12s; }
         .ebar-btn:hover { background: var(--hover); color: var(--text-1); border-color: var(--border); }
         .ebar-addr { display: flex; align-items: center; gap: 8px; flex: none; height: 29px; padding: 0 10px;
-                     background: #eeeeee; border-bottom: 1px solid #e0e0e0; }
+                     background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); }
         .ebar-k { font-size: 11px; color: var(--muted); letter-spacing: .04em; flex: none; }
         .ebar-addr-v { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 11px;
                        color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -578,7 +595,7 @@
                改前实测 390x844：header 87 / opBar 37 / chatToolbar 145 / composer 71 / footer 73，
                且 .chat-main 被 62vh 写死（少用 89px）⇒ 消息区仅 306px。
                以下只改排布密度，不砍功能：工具栏换成单行横向滚动，所有控件仍可点。 */
-            .chat-grid { grid-template-columns: 1fr; min-height: 0; gap: 8px; }
+            .chat-grid { grid-template-columns: minmax(0, 1fr); min-height: 0; gap: 8px; }
             .chat-main { min-height: 0; }          /* 取消 62vh 写死，由 grid 行高撑满剩余视口 */
             #opBar { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
             #chatToolbar { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none;
@@ -602,8 +619,8 @@
             /* 窄屏：一行放不下地址，退回两行（首行 surface 35px，次行 #eeeeee 29px），
                与宽屏同源同色带，只是换了排布口径 */
             #embedPane .ebar-head { display: block; height: auto; padding: 0; background: transparent; border-bottom: 0; }
-            #embedPane .ebar-head > .ebar-menu { height: 35px; padding: 0 8px; background: var(--surface); border-bottom: 1px solid #e0e0e0; }
-            #embedPane .ebar-head > .ebar-addr { height: 29px; padding: 0 8px; background: #eeeeee; border-bottom: 1px solid #e0e0e0; justify-self: stretch; }
+            #embedPane .ebar-head > .ebar-menu { height: 35px; padding: 0 8px; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
+            #embedPane .ebar-head > .ebar-addr { height: 29px; padding: 0 8px; background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); justify-self: stretch; }
             .ebar-menu > b { max-width: 38vw; }
             .ebar-addr { height: 29px; gap: 6px; padding: 0 8px; }
             .ebar-btn { padding: 0 6px; }
@@ -612,14 +629,14 @@
             #chatPane .composer input { height: 38px; }
             .footer { padding: 5px 10px; font-size: var(--fs-xs); }
             .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
-            .mem-grid { grid-template-columns: 1fr !important; }
+            .mem-grid { grid-template-columns: minmax(0, 1fr) !important; }
             .panel { padding: 12px; }
             .toolbar input { min-width: 140px; }
         }
         /* 实体列表的隐藏已上提到 .chat-side 基础规则（宽窄屏一律不内嵌），
            此处只剩宽屏的单列栅格修正 */
         @media (min-width: 768px) {
-            #page-chat .chat-grid { grid-template-columns: 1fr; }
+            #page-chat .chat-grid { grid-template-columns: minmax(0, 1fr); }
         }
     </style>
 </head>
@@ -939,7 +956,7 @@
                 </div>
                 <div id="aclList" class="hint tscroll">加载中…</div>
             </div>
-            <div class="mem-grid" style="grid-template-columns:1fr 1.3fr">
+            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)">
                 <div class="panel"><h3>Servers</h3><div id="mcServers" class="hint tscroll">加载中…</div></div>
                 <div class="panel"><h3>聚合工具（60s 缓存）</h3><div id="mcTools" class="hint">加载中…</div>
                     <div class="toolbar" style="margin-top:10px"><input id="mcCallArgs" placeholder='{"text":"hi"}' style="flex:1"><button class="btn sm" onclick="callToolSel()">测试调用选中工具</button></div>
@@ -967,7 +984,7 @@
                 <pre class="code" id="curlExample"></pre>
                 <div class="hint">未设置 HOOK_AUTH_TOKEN 时仅接受回环来源写入；对外接入请在 .env 配置 token</div>
             </div>
-            <div class="mem-grid" style="grid-template-columns:1fr 1fr">
+            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
                 <div class="panel"><h3>Token 用量聚合</h3><div id="usageTable" class="hint tscroll">加载中…</div></div>
                 <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint tscroll">加载中…</div></div>
             </div>
