@@ -24,7 +24,11 @@
   本机存档——v0.13.32 单机语义完整保留，失败 toast 只提示一次。
 - **验证**：L0 hermetic 全绿零跳过（含新 test_prefs 14 例：键白名单 404、
   normalize 截断/封顶、读写往返、坏行降级、匿名 PUT 401、审计 actor、
-  前端四件与调用点钉死）。
+  前端四件与调用点钉死）；hermetic-clean 同绿。
+- **顺带修既存环境红**：`scripts/run_tier.py` 的 fake-HOME 原落在 /tmp，
+  被 v0.13.31 P1 的 `/tmp` 前缀剔除闸整段排除 ⇒ hermetic-clean 12 例时绿时红
+  （随 TMPDIR 漂移）。假 HOME 改落 `~/hub-l0test-fixtures/` 下，与其它 L0
+  夹具同域，hermetic-clean 恢复 644/644 稳定绿。
 
 ## v0.13.35 — 勾选框宽度真因：.toolbar input 拉伸规则误命中 checkbox
 
