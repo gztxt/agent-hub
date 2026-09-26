@@ -4,6 +4,34 @@
 > 本文件只记「哪一版上线了什么」；施工过程与证据留在 `PENDING-TASKS.md`（PT 编号台账）。
 > 生成时间 2026-09-24 19:3x（生成器＝一次性脚本，未入库；重跑请复制本文件头部的口径）。
 
+## v0.13.26 — 批2：技能面扩三路 + 安装管理（软链双发现点）+ 预算化清单
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批1提交 `8b33a21`。
+> 改动文件：`src/skill.py`（_DEFAULT_DIRS 4→7 路 + install/remove/budget 三端点）、
+> `src/audit.py`（VALID_TYPES + "skill"）、`tests/test_skill_install.py`（新增 L0 15 例）、
+> `tests/test_skill_facade.py` 钉子 4→7、`tests/verify_skill_facade.py` G1c/G10a 4→7。
+> 验证：L0 hermetic **439/439**（424 旧+15 新，0 skip/0 fail）；真源闸门
+> verify_skill_facade 56/57 PASS（唯一 FAIL G6a 为**既有红**：caveman 技能已从本机
+> 消失，主 checkout 同 FAIL，非批2引入——留红报请，不顺手修）。
+> 真源扫描：7 路全 ok（claude 18 / pi 4 / techdocs 1 / superpowers 14 / agents 12 /
+> codex 7（typesafe-ai + .system 内置 6）/ workbuddy 6），62 条→去重 61（1 条软链别名）。
+
+### 批2交付（技能系统「收集+共享」层）
+
+- **发现点扩三路**：`_DEFAULT_DIRS` 新增 agents（~/.agents/skills，codex 等共享）、
+  codex（~/.codex/skills，含 .system 内置）、workbuddy（~/.workbuddy/skills）；
+  `_dedup` 按 realpath 合并同源软链（不重复计数，别名如实记录）。
+- **POST /api/skill/install**：把源发现点的技能**软链**到多个目标发现点（56 号文档结论：
+  各 CLI 发现点互不相通，软链同一权威副本是唯一不漂移手段）。安全：名字白名单
+  regex、targets ⊆ 发现点表、源须含 SKILL.md、同 realpath 幂等 no-op、异 realpath 409
+  拒绝覆盖；鉴权走 writeauth 全局中间件；审计 asset_audit bind。
+- **DELETE /api/skill/remove**：只删软链（islink 才动手）；真目录＝权威副本，
+  一律 409 拒绝（无主副本处置属独立待裁项，不在本端点顺手做）；审计 unbind。
+- **GET /api/skill/budget?max_tokens=N**：token 预算化技能清单（批5 注入通道数据源，
+  claude-mem-bridge 分层降级蓝本）：全条目贪心装填 70% 预算、降级 name-only、
+  截断如实报 truncated/total（不静默缺货）。估算 chars/2.5 粗估，宁保守勿膨胀。
+- **audit VALID_TYPES** + "skill"：GET /api/audit/list 查询侧可枚举技能审计事件。
+
 ## v0.13.26 — 批1：联邦记忆源 memfed（后端纯增量，同批收口 hallmark 视觉 M1~M6）
 
 > 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线 `638b7cb`。

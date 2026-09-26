@@ -86,7 +86,8 @@ def main():
           bk and all({"name", "ok", "count", "ms", "error"} <= set(b) for b in bk),
           f"keys={sorted(bk[0]) if bk else []}")
     disk_names = [b["name"] for b in bk if b["name"] != "tdai"]
-    check("G1c 磁盘四路全 ok 且各有条目", len(disk_names) == 4
+    check("G1c 磁盘七路全 ok 且各有条目（批2：4→7 路，含 agents/codex/workbuddy）",
+          len(disk_names) == 7
           and all(b["ok"] and b["count"] > 0 for b in bk if b["name"] != "tdai"),
           f"{[(b['name'], b['ok'], b['count']) for b in bk]}")
     check("G1d engine 不是 none，且 count 与各路之和对得上（防 count 恒 0 那个坑）",
@@ -415,8 +416,9 @@ def main():
     r = C.get("/api/skill/status", params={"force": "true"})
     s = r.json()
     disk = s.get("disk") or {}
-    check("G10a disk 四路齐且各有 available/entries/fm_missing/via_symlink/total_bytes",
-          set(disk) == {"claude", "pi", "techdocs", "superpowers"}
+    check("G10a disk 七路齐且各有 available/entries/fm_missing/via_symlink/total_bytes（批2：4→7）",
+          set(disk) == {"claude", "pi", "techdocs", "superpowers",
+                        "agents", "codex", "workbuddy"}
           and all({"available", "entries", "fm_missing", "via_symlink", "total_bytes"} <= set(v)
                   for v in disk.values()),
           f"routes={sorted(disk)}")

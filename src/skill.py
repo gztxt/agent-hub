@@ -43,9 +43,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 
+import db
 import tdai_client
+import writeauth
 
 log = logging.getLogger("hub.skill")
 router = APIRouter(prefix="/api/skill", tags=["skill"])
@@ -56,6 +59,13 @@ _DEFAULT_DIRS: Dict[str, str] = {
     "pi": "/home/gztxt/.pi/agent/skills",
     "techdocs": "/fs/1000/ftp/技术文档/skills",
     "superpowers": "/home/gztxt/.pi/agent/git/github.com/obra/superpowers/skills",
+    # v0.13.26 批2：56 号文档实测的另外三个技能发现点。~/.agents/skills 是
+    # codex 等共享发现点（39 项，含与 claude/superpowers 重名的软链）；
+    # ~/.codex/skills 与 ~/.workbuddy/skills 是各自工具链的私有发现点。
+    # _dedup 按 realpath 合并同源条目（软链只当别名列），不会重复计数。
+    "agents": "/home/gztxt/.agents/skills",
+    "codex": "/home/gztxt/.codex/skills",
+    "workbuddy": "/home/gztxt/.workbuddy/skills",
 }
 
 
@@ -547,3 +557,139 @@ async def skill_status(force: bool = Query(default=False)):
     }
     _STATUS_CACHE.update(ts=time.monotonic(), data=data)
     return data
+
+
+# ── v0.13.26 批2：技能安装管理（软链双发现点）+ 预算化清单 ───────────────
+#
+# 设计依据（56 号文档实测）：各 CLI 的技能发现点互不相通（claude 只读 ~/.claude/skills，
+# codex 等共享 ~/.agents/skills，workbuddy 读 ~/.workbuddy/skills）。让一个技能对多个
+# agent 可见的唯一手段＝把**权威副本目录**软链到各发现点——本机已有 39 条这样的软链。
+#
+# 两条安全铁律：
+# 1. **只建/删软链，不复制文件**：同源唯一副本（09-19「唯一权威副本」主权原则），
+#    重复副本必然漂移；
+# 2. **remove 只删软链**（islink 才动手）：真目录是权威本体，从 HTTP 端点删本体
+#    属不可逆破坏，一律 409 拒绝（无主副本处置另行裁定，不在本端点顺手做）。
+# 鉴权：POST/DELETE 自动过 writeauth 全局中间件（x-hub-token）；审计入 asset_audit
+# （action=bind/unbind，asset_type=skill）。
+
+_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,80}\Z")
+
+
+class InstallRequest(BaseModel):
+    name: str
+    from_route: str                      # 源发现点（软链指向它的真实目录）
+    targets: List[str]                    # 目标发现点列表
+
+
+@router.post("/install")
+async def skill_install(req: InstallRequest, request: Request):
+    """把 from_route 发现点的技能软链到 targets 各发现点（幂等：同 realpath 已存在则 no-op）。"""
+    if not _NAME_RE.match(req.name):
+        raise HTTPException(400, f"技能名不合法（只允许字母数字._-，且不以 . 开头）：{req.name!r}")
+    if req.from_route not in SKILL_DIRS:
+        raise HTTPException(400, f"未知 from_route: {req.from_route!r}；可用 {sorted(SKILL_DIRS)}")
+    bad = [t for t in req.targets if t not in SKILL_DIRS]
+    if bad:
+        raise HTTPException(400, f"未知目标发现点: {bad}；可用 {sorted(SKILL_DIRS)}")
+    if req.from_route in req.targets:
+        raise HTTPException(400, "from_route 不能同时是目标（自链无意义）")
+
+    src_root = SKILL_DIRS[req.from_route]
+    src = os.path.join(src_root, req.name)
+    if not os.path.isdir(src):
+        raise HTTPException(404, f"源技能不存在：{req.from_route}/{req.name}")
+    if not os.path.isfile(os.path.join(src, "SKILL.md")):
+        raise HTTPException(400, f"{req.from_route}/{req.name} 没有 SKILL.md，不是可安装技能")
+    src_rp = os.path.realpath(src)
+
+    created: List[str] = []
+    existed: List[str] = []
+    for t in req.targets:
+        dst = os.path.join(SKILL_DIRS[t], req.name)
+        if os.path.lexists(dst):
+            if os.path.realpath(dst) == src_rp:
+                existed.append(t)          # 幂等：同源软链已就位
+                continue
+            raise HTTPException(409, f"目标已存在且指向不同的副本：{t}/{req.name} → "
+                                     f"{os.path.realpath(dst)}（拒绝覆盖，先人工处置）")
+        os.symlink(src_rp, dst)
+        created.append(t)
+    db.log_asset_event("skill", req.name, "bind", writeauth.actor_of(request), {
+        "from_route": req.from_route, "created": created, "existed": existed,
+        "src_realpath": src_rp})
+    return {"status": "installed", "name": req.name, "created": created,
+            "existed": existed, "src": src_rp}
+
+
+@router.delete("/remove")
+async def skill_remove(name: str = Query(min_length=1, max_length=100),
+                       route: str = Query(min_length=1, max_length=40),
+                       request: Request = None):
+    """删指定发现点上的**软链**（islink 才删）。真目录=权威本体，409 拒绝。"""
+    if route not in SKILL_DIRS:
+        raise HTTPException(400, f"未知 route: {route!r}；可用 {sorted(SKILL_DIRS)}")
+    if not _NAME_RE.match(name):
+        raise HTTPException(400, f"技能名不合法：{name!r}")
+    target = os.path.join(SKILL_DIRS[route], name)
+    if not os.path.lexists(target):
+        raise HTTPException(404, f"{route}/{name} 不存在")
+    if not os.path.islink(target):
+        raise HTTPException(409, f"{route}/{name} 是真实目录（权威副本），不从本端点删除；"
+                                 f"只删软链（软链的删除不伤本体）")
+    os.unlink(target)
+    db.log_asset_event("skill", name, "unbind", writeauth.actor_of(request), {
+        "route": route, "realpath": os.path.realpath(target)})
+    return {"status": "removed", "name": name, "route": route}
+
+
+#: 预算化清单的 token 估算：CJK 与英文混排取字符/2.5 的粗估。这个数只影响装填顺序，
+#: 不影响正确性（超估=保守装填，宁少勿膨胀）。
+_CHARS_PER_TOKEN = 2.5
+
+
+@router.get("/budget")
+async def skill_budget(max_tokens: int = Query(default=800, ge=50, le=8000)):
+    """按 token 预算裁剪的技能清单（批5 注入通道 hub-facade 的数据源）。
+
+    56 号文档结论：把全部技能描述注入上下文会吃掉可观预算（39 技能 desc 全量约数
+    千 token）；agent 侧需要的是「花 N 个 token 知道有哪些技能」。策略：
+    - 全条目（name+desc）贪心装填到预算的 70%；
+    - 装不下的降级为 name-only（一行一个名字，最便宜）；
+    - name-only 也装不下则截断，返回 truncated 与 total——如实说「被裁了」。
+    """
+    t0 = time.monotonic()
+    tasks = [_scan_async(r, SKILL_DIRS.get(r, "")) for r in disk_routes()]
+    scans = await asyncio.gather(*tasks)
+    items: List[Dict[str, Any]] = []
+    for s in scans:
+        items.extend(s.get("items") or [])
+    unique, _aliases = _dedup(items)
+
+    def est(s: str) -> int:
+        return int(len(s) / _CHARS_PER_TOKEN) + 1
+
+    full_cap = int(max_tokens * 0.7)
+    full, dropped, used = [], [], 0
+    for it in sorted(unique, key=lambda x: (x.get("name") or "").lower()):
+        name = str(it.get("name") or "")
+        desc = str(it.get("description") or "").strip()
+        c = est(f"{name}: {desc}")
+        if used + c <= full_cap:
+            full.append({"name": name, "description": desc, "routes": it.get("routes"),
+                         "est_tokens": c})
+            used += c
+        else:
+            dropped.append(name)
+    name_only: List[str] = []
+    for n in dropped:
+        c = est(n)
+        if used + c <= max_tokens:
+            name_only.append(n)
+            used += c
+        else:
+            break
+    return {"budget": max_tokens, "used_est": used, "full": full,
+            "name_only": name_only,
+            "truncated": len(dropped) - len(name_only),
+            "total": len(unique), "took_ms": round((time.monotonic() - t0) * 1000, 1)}
