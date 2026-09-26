@@ -1,8 +1,138 @@
 # CHANGELOG
 
+## v0.13.26 — 批5：三路 agent 接线完成（仓外共享配置，逐路授权执行）
+
+> 施工会话：`01a0db08`。本批改动全部在 agent-hub 仓外（共享配置军规四件套，
+> 用户已逐路授权），仓内零代码改动；接线对象为生产旧码（v0.13.25，禁重启），
+> 故 MCP 工具面为旧版 9 工具——批6 合并+重启后自动升级为联邦版。
+> ① claude `~/.claude.json`：mcpServers +hub（http 型 + x-hub-token header）；
+> ② codex `~/.codex/config.toml`：[mcp_servers.hub]（streamable_http + ?token=
+> 兜底路，600 权限）；③ pi `~/.pi/agent/extensions/hub-facade.ts`（新文件：REST
+> 直连 GET 路零凭据、150ms 预算 input 自动注入、/hub-recall /hub-skills
+> /hub-health 三命令、404 友好降级「后端未更新」不误报「挂了」）；
+> ④ 生产 `.env`：JOB_SHELL_ALLOW 纳入 rebuild_turbovec.sh（cronjobs 模块级
+> 常量，重启后生效；job 注册亦须重启后执行——PT-20260926-01）。
+> 端到端证据：claude -p 真调 hub_memory_search（TDAI 3 条 5.0ms）；
+> codex exec 真调 hub_kb_search（tdai_l1+turbovec RRF 8 条）；pi -p 加载
+> 自证行 + /hub-recall 打到生产日志（GET /api/memory/search、/api/kb/search
+> 两路 200）。
+
+## v0.13.26 — 批4：前端技能中心 + 知识库中心（两页上线，六大中心齐）
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批3提交。
+> 改动文件：`templates/index.html`（+2 section：page-skills/page-kb）、
+> `static/hub/01-core-boot.js`（skillsLoaded/kbLoaded + go() 懒加载钩子）、
+> `static/hub/04-terminal-ws.js`（技能/知识库两中心渲染函数块）、
+> `static/hub/05-chat-and-history.js`（SYS_PAGES 8→10、PAGE_LABELS）、
+> `static/hub.js`（build 产物重建，md5 提手自动同步）、`src/kb.py`
+> （+GET /api/kb/browse）、`tests/test_kb_frontend_pages.py`（新增 L0 12 例）。
+> 验证：L0 hermetic **460/460**（448 旧 + 12 新，含 hubjs_split 逐字节漂移
+> 闸门）；verify_kb_federation 41/41 复验绿；node --check JS 语法绿。
+> 真渲染（临时实例 + elementFromPoint 断言）按验收分工留批6集成批次。
+
+### 批4交付（技能/知识库系统「前端展示与操作」层）
+
+- **技能中心页（page-skills）**：技能清单（名/描述/发现点过滤）、软链安装
+  （name × from_route × targets[] → POST /api/skill/install，幂等/409 语义后端
+  已由批2钉死）、token 预算化清单（/api/skill/budget?max_tokens=N，默认 800，
+  全条目/仅名/截断三段如实展示）。
+- **知识库中心页（page-kb）**：五路联邦检索（tdai/turbovec/workspace/archived
+  /local 多选，走批3 /api/kb/search）、逐路健康面板（/api/kb/status 五段、降级
+  路点名不糊成绿）、文档树浏览（/api/kb/browse：workspace 四根顶层 + sub 单层
+  下钻，根名白名单匹配防穿越）。
+- **/api/kb/browse**：只读文档树端点。根定义与 memfed._RG_TARGETS
+  ["workspace_files"] 同源（不另抄目录清单防两处漂移）；`sub` 走根名精确匹配
+  而非路径拼接（`../etc`/`..`/`/etc`/`a/b`/`.` 全部 400 拒绝，未知根 404 带
+  可用根清单）；根消失进 errors 不静默；KB_BROWSE_MAX=200 条目硬顶。
+- **懒加载成对**：go() 里 skills/kb 各挂钩子，与 memory/ports 同构；加载失败
+  toast 点名（降级路不让「查不了」糊成「没有」——资产面板 09-22 口径沿用）。
+- **L0 12 例**：browse 五例（顶层/下钻/穿越拒绝/404/根缺失不静默）+ 前端七例
+  （section 存在/SYS_PAGES/PAGE_LABELS/懒加载钩子/loader 函数/DOM id 成对/
+  inline onclick 函数真存在防手滑拼错函数名）。
+
+
 > 生成口径：`git log` 机械提取（版本号只在提交主题开头出现才起一节），另由人补「未上线批次」一节。
 > 本文件只记「哪一版上线了什么」；施工过程与证据留在 `PENDING-TASKS.md`（PT 编号台账）。
 > 生成时间 2026-09-24 19:3x（生成器＝一次性脚本，未入库；重跑请复制本文件头部的口径）。
+
+## v0.13.26 — 批3：kb 联邦检索扩 workspace/archived 两路 + turbovec 重建脚本
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批2提交 `037d292`。
+> 改动文件：`src/kb.py`（ROUTES 3→5 路、_fed_async 转调、权重修正、status 两段）、
+> `tests/test_kb_federation.py`（新增 L0 9 例）、`tests/verify_kb_federation.py`
+> （追加 B3a~B3f 六断言）、`scripts/rebuild_turbovec.sh`（新增）。
+> 验证：L0 hermetic **448/448**（439 旧+9 新）；真源闸门 verify_kb_federation
+> **41/41 PASS**；宿主级冒烟：五路并发 1975ms，workspace 6 命中/242ms、
+> archived 6 命中/1827ms，status 段两源 available（workspace 294 文件/26ms、
+> archived 5353 文件/53ms）。
+
+### 批3交付（知识库系统「收集」层）
+
+- **ROUTES 3→5 路**：新增 `workspace`（技术文档 MEMORY.md/memory/agent-knowledge/
+  digest，实时 rg 全文）与 `archived`（会话备份 5353 文件，rg --no-ignore --hidden）。
+  实现转调批1 memfed 适配器（rg 命令行坑的权威实现，免重踩）。
+- **假接入护栏（实测修）**：低权源在满权 tdai 池下会被挤出融合前列（k=20 时
+  融合分布仍 tdai 100%，两路 backends 绿但结果不可见＝摆设）⇒ kb 语境下
+  workspace/archived 定位为**文档全文路**与 turbovec 同层，满权 1.0，靠 RRF_K
+  摊平；修后 k=12 融合分布三源均衡（4/4/4）。L0 test_fused_results_really_
+  include_fed_sources + verify B3d 断言固化。
+- **kb_status 扩两段**：workspace/archived 健康表态（走 list_fed_sources 复用
+  TTL 探测缓存，不重扫）。
+- **scripts/rebuild_turbovec.sh**：turbovec 索引重建的执行体（索引是技术文档
+  投影，重建 ≥1800s 长任务，幂等，超时硬顶 7200s，日志落 /vol1，dry-run 验证
+  rc=0）。**注册成 hub job 需先扩 JOB_SHELL_ALLOW（生产 env=共享配置敏感面，
+  逐路授权留批5）**——见 PENDING-TASKS PT-20260926-01。
+
+## v0.13.26 — 批2：技能面扩三路 + 安装管理（软链双发现点）+ 预算化清单
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批1提交 `8b33a21`。
+> 改动文件：`src/skill.py`（_DEFAULT_DIRS 4→7 路 + install/remove/budget 三端点）、
+> `src/audit.py`（VALID_TYPES + "skill"）、`tests/test_skill_install.py`（新增 L0 15 例）、
+> `tests/test_skill_facade.py` 钉子 4→7、`tests/verify_skill_facade.py` G1c/G10a 4→7。
+> 验证：L0 hermetic **439/439**（424 旧+15 新，0 skip/0 fail）；真源闸门
+> verify_skill_facade 56/57 PASS（唯一 FAIL G6a 为**既有红**：caveman 技能已从本机
+> 消失，主 checkout 同 FAIL，非批2引入——留红报请，不顺手修）。
+> 真源扫描：7 路全 ok（claude 18 / pi 4 / techdocs 1 / superpowers 14 / agents 12 /
+> codex 7（typesafe-ai + .system 内置 6）/ workbuddy 6），62 条→去重 61（1 条软链别名）。
+
+### 批2交付（技能系统「收集+共享」层）
+
+- **发现点扩三路**：`_DEFAULT_DIRS` 新增 agents（~/.agents/skills，codex 等共享）、
+  codex（~/.codex/skills，含 .system 内置）、workbuddy（~/.workbuddy/skills）；
+  `_dedup` 按 realpath 合并同源软链（不重复计数，别名如实记录）。
+- **POST /api/skill/install**：把源发现点的技能**软链**到多个目标发现点（56 号文档结论：
+  各 CLI 发现点互不相通，软链同一权威副本是唯一不漂移手段）。安全：名字白名单
+  regex、targets ⊆ 发现点表、源须含 SKILL.md、同 realpath 幂等 no-op、异 realpath 409
+  拒绝覆盖；鉴权走 writeauth 全局中间件；审计 asset_audit bind。
+- **DELETE /api/skill/remove**：只删软链（islink 才动手）；真目录＝权威副本，
+  一律 409 拒绝（无主副本处置属独立待裁项，不在本端点顺手做）；审计 unbind。
+- **GET /api/skill/budget?max_tokens=N**：token 预算化技能清单（批5 注入通道数据源，
+  claude-mem-bridge 分层降级蓝本）：全条目贪心装填 70% 预算、降级 name-only、
+  截断如实报 truncated/total（不静默缺货）。估算 chars/2.5 粗估，宁保守勿膨胀。
+- **audit VALID_TYPES** + "skill"：GET /api/audit/list 查询侧可枚举技能审计事件。
+
+## v0.13.26 — 批1：联邦记忆源 memfed（后端纯增量，同批收口 hallmark 视觉 M1~M6）
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线 `638b7cb`。
+> 改动文件：新增 `src/memfed.py`（联邦源注册表+五路适配器）/`tests/test_memfed.py`（L0 27 例）/
+> `tests/verify_memfed_federation.py`（真源闸门 23 判）+ `src/memory.py` 接入 + `src/main.py` 挂路由。
+> 验证：L0 hermetic **424/424**（397 旧+27 新，0 skip/0 fail）；真源闸门 23/23 全 PASS
+> （claude_mem FTS 7 命中/85ms、pi 12、codex 12、workspace 12、archived 12/705ms，RRF 融合含外部源条目，脱敏双道过闸）。
+
+### 批1交付（记忆系统「收集」层）
+
+- **源注册表**：`src/memfed.py` REGISTRY——六源 id/label/kind/weight/desc/timeout（claude_mem
+  0.8 > workspace 0.7 > pi/codex 0.5 > archived 0.4；opencode 登记 disabled 不启用），
+  `GET /api/memory/fedsources` 逐源 probe 健康与计数（TTL 10min 缓存）。
+- **五路只读适配器**：claude-mem FTS5 MATCH（短语包裹防注入，回表 observations/session_summaries）
+  + 四路 rg 字面匹配（pi/codex jsonl 会话、工作区文件记忆、归档备份）。
+- **memory.py 联邦接入**：SOURCE_WHITELIST 动态扩容（仍默认 local,tdai——联邦源 opt-in，
+  点名 `?sources=claude_mem,pi_sessions,...` 才启用），RRF 融合含外部源，backends 逐路诊断。
+- **安全模型**（照 sessions_store）：sqlite 一律 mode=ro（WAL 退 immutable 快照）、
+  rg 子进程硬超时、出站双道脱敏（scrub+mask_title，L0 有红向钉死）、失败逐路报 degraded 不炸链。
+- **实抓 bug**：rg 默认尊重 .gitignore —— 会话备份/（.gitignore 123 行）与 ~/.codex 都被
+  系统性漏掉（实测 2/5350 文件）；`--no-ignore --hidden` 后 codex 0→227、archived 2→5353。
+  闸门 B3 红向当场抓出，不留隐患。
 
 ## v0.13.26 — hallmark 视觉审计 M1~M6 收口：字面色收 token、fr 轨道钉零、设计系统成文（前端单批）
 

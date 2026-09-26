@@ -203,6 +203,39 @@ def main():
     finally:
         hubmcp._get = _bak_get
 
+    # ─────────────────────────────────────────────────────────────────────
+    # 批3（v0.13.26）：workspace / archived 两路 rg 全文接入 + 假接入护栏
+    # ─────────────────────────────────────────────────────────────────────
+    r3 = C.get("/api/kb/search", params={
+        "q": "CCR", "routes": "workspace,archived", "k": 10})
+    d3 = r3.json()
+    bk3 = {b["name"]: b for b in d3.get("backends") or []}
+    check("B3a 两路 backends 表态齐全且都 ok",
+          "workspace" in bk3 and "archived" in bk3
+          and bk3["workspace"]["ok"] and bk3["archived"]["ok"],
+          f"{[(b['name'], b['ok']) for b in d3.get('backends') or []]}")
+    check("B3b workspace 真命中（5350+ 文件面，验证 rg --no-ignore --hidden 链路）",
+          (bk3.get("workspace") or {}).get("count", 0) > 0,
+          f"workspace={bk3.get('workspace')}")
+    check("B3c archived 真命中（会话备份 5353 文件）",
+          (bk3.get("archived") or {}).get("count", 0) > 0,
+          f"archived={bk3.get('archived')}")
+    froms3 = set()
+    for it in d3.get("results") or []:
+        froms3.update(it.get("from") or [])
+        froms3.add(it.get("source") or "")
+    check("B3d 融合结果真出现两源条目（假接入护栏：backends 绿但融合不可见=摆设）",
+          {"workspace_files", "archived_sessions"} <= froms3, f"froms={froms3}")
+    r4 = C.get("/api/kb/search", params={"q": "CCR", "routes": "ghost,workspace"})
+    check("B3e 未知 routes 400 且回显可用值（含两个新路名）",
+          r4.status_code == 400 and "workspace" in r4.text and "archived" in r4.text,
+          r4.text[:120])
+    st = C.get("/api/kb/status").json()
+    check("B3f status 带两段且 available/count 有值",
+          "workspace" in st and "archived" in st
+          and st["workspace"].get("available") and st["archived"].get("available"),
+          f"ws={st.get('workspace')} ar={st.get('archived')}")
+
     bad = [n for n, ok, _ in results if not ok]
     print("\n" + "=" * 58)
     print("总计 %d 项：PASS %d / FAIL %d" % (len(results), len(results) - len(bad), len(bad)))

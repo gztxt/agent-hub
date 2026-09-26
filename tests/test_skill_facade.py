@@ -393,8 +393,11 @@ class TestBackendAndRoutes(_TmpSkillCase):
         self.assertEqual(skill.all_routes(), ("a", "b", "tdai"))
 
     def test_default_dirs_route_names_are_pinned(self):
-        """400 报错里回显的可用值依赖这四个名字；改名会连带打破闸门与前端。"""
-        self.assertEqual(sorted(skill._DEFAULT_DIRS), ["claude", "pi", "superpowers", "techdocs"])
+        """400 报错里回显的可用值依赖这些名字；改名会连带打破闸门与前端。
+        v0.13.26 批2：4→7 路（新增 agents/codex/workbuddy 三个实测发现点，56 号文档）。"""
+        self.assertEqual(sorted(skill._DEFAULT_DIRS),
+                         ["agents", "claude", "codex", "pi", "superpowers",
+                          "techdocs", "workbuddy"])
 
     def test_load_dirs_env_override_takes_effect(self):
         os.environ["SKILL_DIRS_JSON"] = json.dumps({"only": "/tmp/x"})

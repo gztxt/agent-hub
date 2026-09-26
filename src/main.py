@@ -45,6 +45,7 @@ from writeauth import write_gate
 from registry import build_adapters, get_adapter
 import hook as hook_mod
 import memory as memory_mod
+import memfed as memfed_mod
 import kb as kb_mod
 import skill as skill_mod
 import tasks as tasks_mod
@@ -225,6 +226,7 @@ if static_path.exists():
 # 子路由（Hook / 记忆 / 指挥官）
 app.include_router(hook_mod.router)
 app.include_router(memory_mod.router)
+app.include_router(memfed_mod.router)
 app.include_router(kb_mod.router)
 app.include_router(skill_mod.router)
 app.include_router(tasks_mod.router)

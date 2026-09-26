@@ -87,7 +87,7 @@ function cssNum(name, fallback) {
   return Number.isFinite(v) ? v : fallback;
 }
 
-let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false;
+let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false, skillsLoaded = false, kbLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
 
@@ -191,6 +191,8 @@ function go(page) {
   renderNav();            // v0.7：同步左侧手风琴（实体/系统项的选中态）
   renderPageCrumb(page);  // v0.7：系统页面包屑（实体页由 renderModeBar 接管）
   if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
+  if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
+  if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'chat') renderChatSide();

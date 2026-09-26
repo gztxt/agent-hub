@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 import tdai_client
+import memfed
 import memstats
 
 log = logging.getLogger("hub.kb")
@@ -55,7 +56,18 @@ TDAI_TIMEOUT_S = float(os.getenv("KB_TDAI_TIMEOUT", "0.4"))     # 实测 3ms，4
 DEFAULT_K = int(os.getenv("KB_DEFAULT_K", "8"))
 CACHE_TTL_S = float(os.getenv("KB_INFO_TTL", "600"))            # 索引重建是人工触发的，10 分钟够新
 
-ROUTES = ("local", "tdai", "turbovec")
+ROUTES = ("local", "tdai", "turbovec", "workspace", "archived")
+
+#: workspace / archived 两路的实现＝转调批1 memfed 的 rg 适配器（文件级全文命中）。
+#: 为什么不在 kb.py 重写 rg：memfed 实测时已踩过两个坑（rg 缺 -n 会解析失配；
+#: rg 默认尊重 .gitignore → 会话备份被技术文档 .gitignore 排除、只扫到 2/5350），
+#: 那套命令行（-F -i -n -m 1 --no-ignore --hidden --max-filesize 20M）就是唯一权威
+#: 实现；复用即免重跑一遍坑。权重直接引 REGISTRY 同源值，防止两处数字漂移。
+#: ⚠ turbovec 语义索引也是技术文档的投影，workspace 路是它的**实时全文补充**
+#: （索引重建是人工触发、有滞后；rg 直扫盘面是新鲜的）——两路并存是有意的。
+
+#: kb 路名 → memfed 源 id 映射（两个名字不同源的丗代裂缝）
+_FED_ROUTE_MAP = {"workspace": "workspace_files", "archived": "archived_sessions"}
 
 # turbovec 的输出形态（照抄 cmd_search）：
 #   1. [0.512] 相对路径#chunk7
@@ -198,13 +210,22 @@ async def kb_search(q: str = Query(min_length=1),
         import memory
         tasks.append(_local_async(memory, q, k))
         names.append("local")
+    for route, sid in _FED_ROUTE_MAP.items():
+        if route in want:
+            tasks.append(_fed_async(sid, q, k))
+            names.append(route)
 
     res = await asyncio.gather(*tasks, return_exceptions=True)
     backends: List[Dict[str, Any]] = []
     rankings: List[List[Dict[str, Any]]] = []
     weights: List[float] = []
-    # 权重口径与 memory.py 同源：文档语义命中（真内容）满权，便签 0.2
-    W = {"tdai_l1": 1.0, "turbovec": 1.0, "local": 0.2}
+    # 权重口径与 memory.py 同源：文档语义命中（真内容）满权，便签 0.2。
+    # ⚠ workspace/archived 在 kb 语境下是**文档全文路**，不是记忆权威度维度——
+    # 实测 09-26：若沿用 memfed 的 0.7/0.4 权重，tdai 满权池会把它们全部挤出融合
+    # 前列（k=20 时融合分布仍是 tdai 100%），两路变成「backends 绿但结果不可见」的
+    # 假接入。kb 里它们与 turbovec 同层：满权，靠 RRF_K 摊平名次差。
+    W = {"tdai_l1": 1.0, "turbovec": 1.0, "local": 0.2,
+         "workspace": 1.0, "archived": 1.0}
     for name, r in zip(names, res):
         if isinstance(r, Exception):
             r = {"ok": False, "items": [], "ms": None,
@@ -245,10 +266,86 @@ async def _local_async(memory_mod, q: str, limit: int) -> Dict[str, Any]:
                 "error": tdai_client.scrub(f"{type(e).__name__}: {e}")[:200]}
 
 
+async def _fed_async(sid: str, q: str, limit: int) -> Dict[str, Any]:
+    """转调 memfed 的 rg 适配器（workspace/archived 两路，批3）。
+
+    单源一调（不是把两源合一个 search_fed）：kb 的 backends 表态粒度是逐路一条，
+    合并调用会把两路的 ok/error 糊到一起，违反「每路都能说清楚自己」的失败表态纪律。
+    """
+    res = await memfed.search_fed(q, limit, {sid})
+    r = res.get(sid)
+    if r is None:
+        # 源被关（REGISTRY enabled=False）或 want 集合被清空：如实表态，不静默空过
+        return {"ok": False, "items": [], "ms": None,
+                "error": f"{sid} 未启用或无结果返回（查 memfed REGISTRY）"}
+    return r
+
+
+KB_BROWSE_MAX = int(os.getenv("KB_BROWSE_MAX", "200"))   # 顶层条目硬顶，防巨型目录把面板打爆
+
+
+@router.get("/browse")
+async def kb_browse(sub: str = Query(default="", max_length=120)):
+    """文档树浏览（批4 前端「知识库中心」右下栏）：workspace 四根的顶层条目。
+
+    只读门面；根定义与 memfed._RG_TARGETS["workspace_files"] 同源（不另抄一份目录
+    清单，防止两处漂移）。`sub` 只允许**单层相对名**（白名单根内防穿越），
+    不支持 `/`/`..`/绝对路径——这不是防攻击，是防手滑跳出工作区读到无关目录。
+    """
+    roots = memfed._RG_TARGETS["workspace_files"][0]   # tuple(list_of_roots, glob)
+    out: List[Dict[str, Any]] = []
+    errs: List[str] = []
+    if sub:
+        if not re.fullmatch(r"[A-Za-z0-9_\-\u4e00-\u9fff]+", sub) or not sub.strip("."):
+            raise HTTPException(400, "sub 只能是单层目录名（不带 / .. 绝对路径）")
+        # sub 必须匹配某个根的名字（不是拼路径——那是穿越的口子），列的是根内部
+        hit = [r for r in roots if os.path.isdir(r) and os.path.basename(r.rstrip("/")) == sub]
+        if not hit:
+            raise HTTPException(404, f"{sub!r} 不是知识库根（可用：{[os.path.basename(r.rstrip('/')) for r in roots if os.path.isdir(r)]}）")
+        root = hit[0]
+        try:
+            for e in sorted(os.scandir(root), key=lambda x: (not x.is_dir(), x.name.lower()))[:KB_BROWSE_MAX]:
+                out.append({"name": e.name, "dir": e.is_dir(),
+                            "size": (e.stat().st_size if not e.is_dir() else None)})
+        except OSError as e:
+            errs.append(f"{sub}: {e}")
+    else:
+        for r in roots:
+            if not os.path.exists(r):
+                errs.append(f"根缺失: {r}")
+                continue
+            if os.path.isfile(r):
+                out.append({"name": os.path.basename(r), "dir": False,
+                            "size": os.path.getsize(r)})
+                continue
+            n_files = 0
+            for _, _, fs in os.walk(r):
+                n_files += len(fs)
+            out.append({"name": os.path.basename(r) or r, "dir": True, "files": n_files})
+    return {"entries": out, "count": len(out), "errors": errs or None}
+
+
 @router.get("/status")
 async def kb_status():
     """资产面板用：各路是否可用、索引多新、库有多大。全实测，不猜。"""
     info = await turbovec_info()
+
+    async def _fed_status(sid: str) -> Dict[str, Any]:
+        """workspace/archived 路的健康段：走 list_fed_sources（复用其 TTL 探测缓存，不重扫）。"""
+        try:
+            data = await memfed.list_fed_sources()
+            for s in data.get("sources") or []:
+                if s.get("id") == sid:
+                    p = s.get("probe") or {}
+                    return {"available": bool(p.get("ok")),
+                            "count": p.get("count"), "ms": p.get("ms"),
+                            "note": p.get("note"), "error": p.get("error")}
+            return {"available": False, "count": None, "ms": None, "note": None,
+                    "error": f"{sid} 不在联邦源注册表（被移除了？）"}
+        except Exception as e:              # noqa: BLE001
+            return {"available": False, "count": None, "ms": None, "note": None,
+                    "error": f"{type(e).__name__}: {e}"[:160]}
+
     tdai = tdai_client.backend_status()
     # 本地记忆便签的 staleness（件 3）。**失败不拖垮整个状态端点**：逐路表态是本项目
     # 的立身口径（kb 四路联邦每一路都必须回 ok/error），一路炸了不许把其余路一起糊掉。
@@ -279,6 +376,8 @@ async def kb_status():
                      "cached": info.get("cached", False)},
         "tdai": tdai,
         "local_memory": mem,
+        "workspace": await _fed_status("workspace_files"),
+        "archived": await _fed_status("archived_sessions"),
         "wigolo": {"available": False,
                    "why": "P1 判定不接入：FTS 无 tokenize 子句、中文召回 2<LIKE 8、"
                           "LIKE 全表扫仅 9.2ms，且 agent-hub 主题命中 0 条。详见 src/kb.py 顶部"},
