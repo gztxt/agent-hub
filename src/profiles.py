@@ -128,6 +128,12 @@ PROFILES: List[dict] = [
      "terminal": None, "chat": None,
      "desc": "QwenPaw 助理框架（本 Agent 宿主），WebUI :8088" +
              ("；经 hub 注入代理 :%d 统一外框" % EMBED_PROXY_PORT if EMBED_UNIFY else "；直连（注入已关）")},
+    {"id": "codebuddy", "name": "CodeBuddy Code", "kind": "agent",
+     "detect": {"proc": [r"(^|/)codebuddy( |$)"]},
+     "cli": None, "port": 35431, "ui": "http://127.0.0.1:35431",
+     "terminal": None, "chat": None,
+     "desc": "WorkBuddy 包内捆绑 CLI（`codebuddy --serve`）的遥控 Web 界面 :35431" +
+             "（" + LAN_HOST_NOTE + "）→ 原生会话"},
 
     # ── Gateways（非 Agent，仅快捷方式）──────────────────────
     {"id": "ccr", "name": "CCR Gateway", "kind": "gateway",
