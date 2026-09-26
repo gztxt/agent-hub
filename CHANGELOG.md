@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## v0.13.37 — Agents 菜单补 CodeBuddy Code 卡（`codebuddy --serve` 原生遥控界面 :35431）
+
+> 施工会话：688b689d。基线：v0.13.36。改动文件：`src/profiles.py`（唯一功能改动：
+> 新增 codebuddy 服务型 Agent 画像——`port=35431` + `ui=http://127.0.0.1:35431`，
+> 无 cli/terminal ⇒ vitals 按 web-service 形态以自有端口应答为存在证据；
+> detect 正则 `(^|/)codebuddy( |$)` 命中 `node …/cli/bin/codebuddy --serve …`）、
+> `src/main.py`（VERSION）、`tests/test_profiles_codebuddy.py`（L0 4 例：形态/
+> loopback/入口/进程识别）。
+>
+> - **入口=原生界面**：与 pi/qwenpaw 同形态（嵌入会话+新窗口+详情），不提供 pty
+>   终端入口——`embed > term > chat` 的形态优先级下，加 terminal 会顶掉默认 embed。
+> - **为什么 `cli` 必须留空**：`codebuddy` 二进制只在 WorkBuddy 包内
+>   （`/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/`），不在 PATH；
+>   写成 CLI 型会被 vitals 判 not_installed 整卡被拦。
+> - **UI 写 loopback**：前端 `lanUrl()` 按访问主机名改写，LAN/Tailscale/APP 三
+>   origin 各自可达；写死 IP 会跨网失效。
+> - **验证**：L0 hermetic 648/648 零跳过 + L1 host 41/41；`/api/agents` 端点级
+>   确认卡片（status=running, verdict=usable, entries=embed/open/detail）；真渲染
+>   取证（headless chromium 1440×900 实拍 + Page.getFrameTree）：点击后 iframe
+>   1166×596 加载 `:35431` 原生登录页，侧栏卡片在位（截图
+>   `work/probe/render-codebuddy-embed.png`）。远端界面自身要求 Password（serve
+>   启动时打印），属其原生行为，不经 hub。
+
 ## v0.13.36 — 两项目页收藏/隐藏落服务端（跨浏览器/端侧一致）
 
 > 施工会话：01a0dc26（接续 09-26 晚 429 中断的前会话，会话检索续做）。

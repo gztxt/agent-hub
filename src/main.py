@@ -72,7 +72,10 @@ import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.36"   # 两项目页收藏/隐藏落服务端：app_prefs KV 表 + GET/PUT /api/prefs/{key}
+VERSION = "0.13.37"   # Agents 菜单补 CodeBuddy Code 卡：`codebuddy --serve` 的原生遥控界面 :35431
+                      #   （画像唯一改动：src/profiles.py；无 cli/terminal ⇒ vitals 按 web-service
+                      #     形态以自有端口应答为存在证据。卡片入口=嵌入会话+新窗口+详情）
+                      #   ↑ v0.13.36：两项目页收藏/隐藏落服务端：app_prefs KV 表 + GET/PUT /api/prefs/{key}
                       #   （键白名单 projects.lp/gh，写走 write_gate+显式 decide 双保险）；
                       #   前端载入拉后端偏好为准、切换回写，localStorage 降级为离线兜底。
                       #   + GitHub 项目页：GET /api/github/repos（远端清单+strict remote 本地匹配）+ POST /api/github/clone
