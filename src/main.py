@@ -67,13 +67,14 @@ import runlog as runlog_mod         # 运行日志：三中心检索留痕 + GET
 import cloudcli as cloudcli_mod     # CloudCLI 项目直达：项目清单（直读 auth.db）+ 会话启动代理
 import localprojects as localprojects_mod  # 本机项目清单（多根 git 扫描 + cloudcli 合并）
 import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆（本机项目页的远端半程）
+import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项目页收藏/隐藏落服务端
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.35"   # 勾选框宽度真因修复：.toolbar input 拉伸规则（搜索框用的 flex:1/min-width:180px）
-                      #   误命中 checkbox ⇒ 勾选框被撑成宽块、文字推远；两条规则加 :not([type=checkbox]) 排除。
-                      #   （上版只改了 gap，但宽度没解决——gap 0px 仍不紧贴就是因这个）
+VERSION = "0.13.36"   # 两项目页收藏/隐藏落服务端：app_prefs KV 表 + GET/PUT /api/prefs/{key}
+                      #   （键白名单 projects.lp/gh，写走 write_gate+显式 decide 双保险）；
+                      #   前端载入拉后端偏好为准、切换回写，localStorage 降级为离线兜底。
                       #   + GitHub 项目页：GET /api/github/repos（远端清单+strict remote 本地匹配）+ POST /api/github/clone
                       #   （白名单 slug→服务端重构 URL→浅克隆到 GITHUB_CLONE_BASE，审计 action=create）
                       #   + POST /start 铸 JWT 转调创建会话 → 详情抽屉项目列表 + iframe 直达 /session/{id}；
@@ -248,6 +249,7 @@ app.include_router(runlog_mod.router)
 app.include_router(cloudcli_mod.router)
 app.include_router(localprojects_mod.router)
 app.include_router(github_mod.router)
+app.include_router(prefs_mod.router)
 
 # D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
 # 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。

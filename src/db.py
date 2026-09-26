@@ -116,6 +116,13 @@ CREATE TABLE IF NOT EXISTS asset_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_asset ON asset_audit(asset_type, asset_slug);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON asset_audit(created_at);
+-- v0.13.36 应用级偏好 KV：两项目页收藏/隐藏状态落服务端（此前只在浏览器
+-- localStorage，换浏览器/端侧即失效）。键白名单在 prefs.py，不是自由 KV。
+CREATE TABLE IF NOT EXISTS app_prefs (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,             -- JSON（形状由 prefs.PrefValue 校验）
+    updated_at TEXT NOT NULL
+);
 """
 
 

@@ -38,6 +38,43 @@ function _ghSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
+/* v0.13.36 收藏/隐藏落服务端（同 09 分片 lpSyncPrefs/lpPushPref 的 gh 对称版）：
+   载入后拉一次后端偏好为准并回写 localStorage；行内切换后回写服务端。
+   后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变）。 */
+var ghPrefSynced = false;
+var ghPrefErrShown = false;
+
+function ghCountsText() {
+  return (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
+    (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
+}
+
+async function ghSyncPrefs() {
+  if (ghPrefSynced) return;
+  ghPrefSynced = true;
+  try {
+    const d = await api('/api/prefs/projects.gh');
+    if (d && d.value) {
+      ghStars = new Set(d.value.stars || []);
+      ghHiddenSet = new Set(d.value.hidden || []);
+      _ghSave('hub.gh.stars', ghStars);
+      _ghSave('hub.gh.hidden', ghHiddenSet);
+      ghRenderList();
+    }
+  } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
+}
+
+async function ghPushPref() {
+  try {
+    await api('/api/prefs/projects.gh', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stars: [...ghStars], hidden: [...ghHiddenSet] }) });
+    ghPrefErrShown = false;
+  } catch (e) {
+    if (!ghPrefErrShown) { ghPrefErrShown = true; toast('收藏/隐藏已存本机，云端同步失败', 'err'); }
+  }
+}
+
 function ghTime(iso) {
   if (!iso) return '';
   return String(iso).slice(0, 10);
@@ -81,6 +118,7 @@ function ghToggleStar(i) {
   else ghStars.add(fn);
   _ghSave('hub.gh.stars', ghStars);
   ghRenderList();
+  ghPushPref();
 }
 
 function ghToggleHide(i) {
@@ -94,6 +132,7 @@ function ghToggleHide(i) {
   }
   _ghSave('hub.gh.hidden', ghHiddenSet);
   ghRenderList();
+  ghPushPref();
   const hint = $('ghHint');
   if (hint && ghHiddenSet.size) hint.textContent += '（已隐藏 ' + ghHiddenSet.size + ' 项）';
 }
@@ -156,9 +195,7 @@ function ghRenderList() {
   box.innerHTML = idx.map(([r, i]) => ghRowHtml(r, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配仓库' : '无仓库') + '</div>';
   const hint = $('ghHint');
-  if (hint) hint.textContent = '显示 ' + idx.length + ' / ' + GH.length + ' 个仓库' +
-    (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
-    (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
+  if (hint) hint.textContent = '显示 ' + idx.length + ' / ' + GH.length + ' 个仓库' + ghCountsText();
 }
 
 function ghRenderAgents() {
@@ -186,9 +223,8 @@ async function loadGithubRepos(force) {
     ghRenderList();
     ghRenderAgents();
     if (hint) hint.textContent = (d.token === false ? 'token 不可用 · ' : '') +
-      (d.count || 0) + ' 个仓库 · 本地已有 ' + (d.local_total || 0) + ' 个' +
-      (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
-      (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
+      (d.count || 0) + ' 个仓库 · 本地已有 ' + (d.local_total || 0) + ' 个' + ghCountsText();
+    ghSyncPrefs();
     const meta = $('ghMeta');
     /* v0.13.33 用户裁定「拉取一次后本地缓存，每次拉取就是浪费资源」：
        服务端内存缓存永久有效（重启才清），只有「刷新」按钮（force=1）强拉。

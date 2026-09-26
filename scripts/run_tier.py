@@ -75,7 +75,14 @@ def main(argv):
     fake_home = "--fake-home" in argv
     saved_home = os.environ.get("HOME")
     if fake_home:
-        tmp = tempfile.mkdtemp(prefix="hub-clean-home-")
+        # 假 HOME 必须落在 ~/hub-l0test-fixtures 下、**不能落 /tmp**：
+        # v0.13.31 P1 扫描闸把 /tmp 整前缀剔除（EXCLUDE_PATH_PREFIXES），假 HOME
+        # 一旦在 /tmp，test_localprojects/test_github_projects 的夹具全被排除
+        # ⇒ hermetic-clean 12 例假红（2026-09-26 排障定案：换台机器/换 TMPDIR
+        # 就时绿时红，正是这种环境耦合）。与其它 L0 夹具同域即可。
+        _base = Path(saved_home or str(Path.home())) / "hub-l0test-fixtures"
+        _base.mkdir(parents=True, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="hub-clean-home-", dir=str(_base))
         os.environ["HOME"] = tmp
         os.environ["HUB_HOST_TESTS"] = "0"      # 干净 runner 上 host 层必须整层跳过
         print(f"[tier] 已把 HOME 换成空目录 {tmp}（模拟干净 CI runner）")
