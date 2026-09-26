@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## v0.13.34 — 项目页布局批：顶栏清空 + 满高列表 + 勾选框紧贴
+
+> 施工会话：本会话。基线：v0.13.33。改动文件：`static/hub/06-manager-tasks.js`
+> （renderPageCrumb 对两项目页清空 ⇒ opBar 收起）、`templates/index.html`
+> （两 panel flex 满高 + 列表 flex:1 + 勾选 label gap 0 + margin-bottom 0）、
+> `src/main.py`（VERSION 0.13.34）、`static/hub.js`（build 3604 行）。
+> 验证：L0 hermetic **629/629** 零跳过；L1 host 41/41；L2 布局探针
+> opBar void(h=0)/列表 flex 满高/滚到底最后一行可见/gap=0px/零 JS 错。
+
+### v0.13.34 交付（用户需求「两项目页顶部标题和分割线删除；页尾项目看不到；勾选框与文字紧贴」）
+
+- **顶部标题+分割线**：renderPageCrumb 对 localprojects/github 清空 crumb ⇒
+  syncOpBar 判 void ⇒ 整条 opBar 收起（高度归零）——上一版只删了面板内
+  <h3>，opBar 里还留着一条「本机项目」+底边线，这就是用户仍看到的标题
+  和分割线。其余页面面包屑照旧。
+- **页尾项目可见**：原列表 max-height:calc(100vh - 320px) 是拍脑袋常数，
+  窄视口下把面板底推出屏外。改为结构化高度：panel flex:1 + min-height:0
+  （吃满 section.page 的剩余高度）、列表 flex:1 + min-height:0 + overflow-y、
+  meta flex:none——列表永远精确止于视口底，页尾行滚必可达。
+- **勾选框紧贴文字**：三个 label（lpHidden/ghForks/ghHidden）gap 4px→0，
+  加 flex:none 防 toolbar 收缩挤压。
+
 ## v0.13.33 — GitHub 清单缓存裁定：拉一次永久缓存 + 选中单仓核对
 
 > 施工会话：本会话。基线：v0.13.32。改动文件：`src/githubprojects.py`

@@ -857,14 +857,17 @@
         </section>
 
         <!-- 本机项目（v0.13.30）：多根 git 扫描 + cloudcli 合并；点项目 → 选 agent → 新建会话直达终端。
-             v0.13.32：去掉面板大标题（面包屑已示页名，标题+下方留白是重复装饰）；
-             收藏/隐藏为行内图标（localStorage 持久，隐藏项须勾选「显示隐藏」才回列表）。 -->
+             v0.13.32：去掉面板大标题；收藏/隐藏为行内图标（localStorage 持久，
+             隐藏项须勾选「显示隐藏」才回列表）。
+             v0.13.34：① opBar 面包屑不再渲染（整条收起——顶部标题+分割线全无）；
+             ② 面板改为 flex 满高、列表 flex:1 自适应——原 max-height:calc(100vh-320px)
+             是拍脑袋常数，窄视口下页尾项目被推出屏外；③ 勾选框与文字紧贴（gap 0）。 -->
         <section class="page" id="page-localprojects">
-            <div class="panel">
+            <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:0">
                 <div class="toolbar">
                     <input id="lpQ" type="search" placeholder="按名称 / 路径过滤…" aria-label="过滤项目" autocomplete="off">
                     <button class="btn sm ghost" onclick="loadLocalProjects(true)" title="重新扫描本机项目"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重扫</button>
-                    <label style="display:inline-flex;align-items:center;gap:4px" title="隐藏的项目默认不显示，勾选后全部回列"><input type="checkbox" id="lpHidden" onchange="lpRenderList()">显示隐藏</label>
+                    <label style="display:inline-flex;align-items:center;gap:0;flex:none" title="隐藏的项目默认不显示，勾选后全部回列"><input type="checkbox" id="lpHidden" onchange="lpRenderList()">显示隐藏</label>
                     <span class="hint" id="lpHint"></span>
                 </div>
                 <!-- 选中动作条：先点列表里的一项，再选 agent，点新建会话即跳终端 -->
@@ -877,23 +880,25 @@
                     </span>
                     <button class="btn sm" id="lpStartBtn" disabled onclick="lpStart()" title="在该项目目录拉起所选 Agent 的新终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新建会话</button>
                 </div>
-                <div class="tscroll" id="lpList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+                <div class="tscroll" id="lpList" style="flex:1;min-height:0;overflow-y:auto">
                     <div class="hint" style="padding:10px">加载中…</div>
                 </div>
-                <div class="hint" id="lpMeta" style="margin-top:6px"></div>
+                <div class="hint" id="lpMeta" style="margin-top:6px;flex:none"></div>
             </div>
         </section>
 
         <!-- GitHub 项目（v0.13.31）：远端仓库清单 + strict remote 本地匹配；本地无 → 即时克隆后开会话。
-             v0.13.32：同本机项目页——去大标题；收藏/隐藏行内图标 + 顶部「显示隐藏」开关。 -->
+             v0.13.32：同本机项目页——去大标题；收藏/隐藏行内图标 + 顶部「显示隐藏」开关。
+             v0.13.34：① opBar 面包屑不渲染（顶部标题+分割线全无）；② 面板 flex
+             满高、列表 flex:1（页尾仓库不再被推出屏外）；③ 勾选框与文字紧贴。 -->
         <section class="page" id="page-github">
-            <div class="panel">
+            <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:0">
                 <div class="toolbar">
                     <input id="ghQ" type="search" placeholder="按名称 / 全名过滤…" aria-label="过滤仓库" autocomplete="off">
-                    <label style="display:inline-flex;align-items:center;gap:4px" title="fork 默认隐藏——34 个 fork 多为别人的仓库">
+                    <label style="display:inline-flex;align-items:center;gap:0;flex:none" title="fork 默认隐藏——34 个 fork 多为别人的仓库">
                         <input type="checkbox" id="ghForks" onchange="ghRenderList()">显示 fork
                     </label>
-                    <label style="display:inline-flex;align-items:center;gap:4px" title="隐藏的仓库默认不显示，勾选后全部回列"><input type="checkbox" id="ghHidden" onchange="ghRenderList()">显示隐藏</label>
+                    <label style="display:inline-flex;align-items:center;gap:0;flex:none" title="隐藏的仓库默认不显示，勾选后全部回列"><input type="checkbox" id="ghHidden" onchange="ghRenderList()">显示隐藏</label>
                     <button class="btn sm ghost" onclick="loadGithubRepos(true)" title="重新拉取远端清单"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
                     <span class="hint" id="ghHint"></span>
                 </div>
@@ -907,10 +912,10 @@
                     </span>
                     <button class="btn sm" id="ghStartBtn" disabled onclick="ghStart()" title="本地没有则先克隆到工作目录，再在该目录拉起所选 Agent 的终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新建会话</button>
                 </div>
-                <div class="tscroll" id="ghList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+                <div class="tscroll" id="ghList" style="flex:1;min-height:0;overflow-y:auto">
                     <div class="hint" style="padding:10px">加载中…</div>
                 </div>
-                <div class="hint" id="ghMeta" style="margin-top:6px"></div>
+                <div class="hint" id="ghMeta" style="margin-top:6px;flex:none"></div>
             </div>
         </section>
 
@@ -1392,6 +1397,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=10c94546"></script>
+    <script src="/static/hub.js?v=8bc4f9d5"></script>
 </body>
 </html>

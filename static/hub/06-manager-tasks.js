@@ -24,6 +24,16 @@ function renderPageCrumb(page) {
   const crumb = $('crumb'), tabs = $('opTabs');
   if (!crumb) return;
   if (page === 'chat') return;   // 实体工作台由 renderModeBar 接管，别互相覆盖
+  /* v0.13.34 用户裁定（2026-09-26）：两个项目页（本机/GitHub）顶部不要标题
+     和分割线——侧栏常驻项已经是入口语义，页内再顶一条「本机项目」+ opBar
+     底边线是重复装饰。清空 crumb ⇒ syncOpBar 判 void ⇒ 整条 opBar 收起
+     （高度也省 37px）。其余页面照旧。 */
+  if (page === 'localprojects' || page === 'github') {
+    crumb.innerHTML = '';
+    if (tabs) tabs.innerHTML = '';
+    syncOpBar();
+    return;
+  }
   if (tabs) tabs.innerHTML = '';
   const label = escapeHtml(PAGE_LABELS[page] || page);
   const top = '';
