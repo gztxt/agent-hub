@@ -18,6 +18,8 @@ import urllib.request
 from typing import Optional
 
 import tdai_client
+import memfed
+import kb as kb_mod
 from mcp.server.mcpserver import MCPServer
 
 HUB_URL = os.getenv("HUB_MCP_SELF_URL", "http://127.0.0.1:3102")
@@ -33,7 +35,10 @@ def _get(path: str, **params) -> dict:
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
     url = f"{HUB_URL}{path}" + (f"?{qs}" if qs else "")
     try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT_S) as resp:
+        # x-hub-channel: mcp —— runlog 埋点靠它区分「MCP 工具转调」与「浏览器直连」。
+        # 头可伪造，但只影响遥测归因（误标为 web），不涉鉴权；比按 UA 猜可靠。
+        req = urllib.request.Request(url, headers={"x-hub-channel": "mcp"})
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         # 上游的 4xx/5xx **正文里才有诊断**（例如 /api/skill/read 的 409 带 candidates、
@@ -85,14 +90,17 @@ def hub_list_ports(agent: str = "") -> str:
 
 
 @server.tool()
-def hub_memory_search(q: str, limit: int = 10) -> str:
-    """检索本机记忆：本地 L1 与权威库 TDAI **并联**后 RRF 融合（不是「本地无命中才查 TDAI」）。
+def hub_memory_search(q: str, limit: int = 10,
+                      sources: str = "local,tdai," + ",".join(memfed.enabled_ids())) -> str:
+    """检索本机记忆：默认**全部记忆源并联**后 RRF 融合（本地 L1 + TDAI 权威库 + 各 agent
+    记忆库 claude-mem/claude 原生/pi/codex/grok/hermes/workbuddy + 工作区文件 + 归档会话）。
     返回命中的记忆条目 + 逐路健康度；这是找回本机历史决策与约束的首选工具。
     **看到 count=0 请继续读 degraded / backends**：只有它们能区分「真没有这条记忆」
-    与「上游挂了」——两者对外都是空结果，但含义完全相反。"""
+    与「上游挂了」——两者对外都是空结果，但含义完全相反。
+    只想查权威库时显式传 sources="local,tdai"（更快）；sources 写错直接 400 不静默空结果。"""
     if limit > 50:
         limit = 50
-    data = _get("/api/memory/search", q=q, limit=limit)
+    data = _get("/api/memory/search", q=q, limit=limit, sources=sources)
     if "error" in data:
         return json.dumps(data, ensure_ascii=False)
     return json.dumps({
@@ -131,14 +139,15 @@ def hub_memory_context() -> str:
 
 
 @server.tool()
-def hub_kb_search(q: str, k: int = 8, routes: str = "local,tdai,turbovec") -> str:
-    """**联邦检索**：并发调起本机已有的几路检索面（记忆权威库 TDAI、技术文档向量索引
-    turbovec、hub 本地便签）后 RRF 融合。找「本机以前是否记过这件事 / 有无相关文档」时优先用它，
-    而不是只查记忆。
+def hub_kb_search(q: str, k: int = 8, routes: str = ",".join(kb_mod.ROUTES)) -> str:
+    """**联邦检索**：并发调起本机五路检索面（记忆权威库 TDAI、技术文档向量索引
+    turbovec、hub 本地便签、工作区全文、归档会话）后 RRF 融合。找「本机以前是否记过这件事 /
+    有无相关文档」时优先用它，而不是只查记忆。
 
     返回 `results` + 逐路 `backends` + `degraded` + `note`。**看到 count=0 必读 degraded/note**：
     「真没有」与「那路挂了」在这里是可区分的，别把两者当成一件事。
-    routes 可用值：local / tdai / turbovec（写错直接 400，不给你静默空结果的机会）。"""
+    routes 可用值：local / tdai / turbovec / workspace / archived（写错直接 400，
+    不给你静默空结果的机会）。"""
     if k > 30:
         k = 30
     data = _get("/api/kb/search", q=q, k=k, routes=routes)
@@ -223,6 +232,27 @@ def hub_skill_status() -> str:
     TDAI 注册表有几行、以及磁盘与注册表的缺口（`gap.note`）。
     动手前先调它一次，别把「某一路 degraded」当成「本机没有那个技能」。"""
     return json.dumps(_get("/api/skill/status"), ensure_ascii=False)
+
+
+@server.tool()
+def hub_cloudcli_projects() -> str:
+    """列用户在 CloudCLI（Claude 原生 Web 界面）的全部项目：精确名称、路径、
+    是否星标、活跃会话数、最近活动时间。直读 auth.db（与 cloudcli 服务活死解耦）。
+    用户要在某个项目上开始工作时，先看这个清单再决定派发目标。"""
+    data = _get("/api/cloudcli/projects")
+    if "error" in data:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps({
+        "count": data.get("count", 0),
+        "ok": data.get("ok"),
+        "projects": [{
+            "name": p.get("name"),          # 精确名称：自定义名 > basename
+            "path": p.get("path"),
+            "starred": p.get("starred"),
+            "sessions": p.get("sessions"),
+            "last_activity": p.get("last_activity"),
+        } for p in (data.get("projects") or [])],
+    }, ensure_ascii=False)
 
 
 if ALLOW_WRITE:

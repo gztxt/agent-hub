@@ -1,5 +1,156 @@
 # CHANGELOG
 
+## v0.13.29 — CloudCLI 项目直达（列表 + 点击快速开始）
+
+> 施工会话：本会话。基线：v0.13.28。改动文件：新增 `src/cloudcli.py`（projects/start
+> 两端点 + JWT 铸造 + cc.start 埋点）、`tests/test_cloudcli.py`（L0 22 例）；改
+> `src/main.py`（挂路由 + VERSION 0.13.29）、`src/runlog.py`（SUBJECTS + cc.start）、
+> `src/hubmcp.py`（+hub_cloudcli_projects 工具）、`static/hub/01-core-boot.js`
+> （showDetail('claude') 挂项目加载钩子）、`static/hub/04-terminal-ws.js`
+> （loadCloudcliProjects/cloudcliStart——iframe 直达 /session/{id}）、`static/hub.js`
+> （build 3160 行）。
+> 验证：L0 hermetic **540/540**（524 旧+16 后端例 + 6 前端例）；全链实测（铸 token →
+> GET projects 28 项 → POST start 创建会话 201 → DELETE 清理）；CloudCLI 服务不可达
+> 时 projects 照常（直读 db 解耦）。
+
+### v0.13.29 交付（用户需求「cloudcli 项目检索要完善/加载所有项目/精确名称/点击快速开始」）
+
+- **GET /api/cloudcli/projects**：直读 /vol1/cloudcli/auth.db（`file:...?mode=ro`
+  只读，与 cloudcli 服务活死**解耦**）——全部活跃项目，**名称精确**（custom_project_name
+  优先回落 basename）、星标、活跃会话数、最近活动一条 JOIN 拿齐；归档项目不出现。
+- **POST /api/cloudcli/start**：按写方法判（writeauth fail-closed）→ 铸 2h JWT
+  （app_config.jwt_secret 现读不缓存 + users 首行，HS256 纯手搓零依赖）→ 转调
+  cloudcli `POST /api/providers/sessions`（provider=claude）→ {sessionId, url}。
+  cloudcli 不可达 ⇒ 502 如实报错（列表不受影响）。cc.start 埋 runlog。
+- **前端直达**：Claude 详情抽屉尾部自动挂「CloudCLI 项目（N 个）」面板（加载中/
+  失败/数据三态）；点「▶ 开始会话」→ gotoChat('claude') 进 embed → iframe src 覆写
+  `/session/{id}`（**dataset.src 同步**防 applyChatMode 重置，地址行同步显示）→
+  抽屉关闭 + toast。iframe 内鉴权态由 cloudcli 自己的 localStorage 管（跨源但同
+  浏览器持久，hub 不传 token 不越权）。
+- **MCP +hub_cloudcli_projects**：外部 agent 可查「用户在 CloudCLI 有哪些项目」
+  （含会话活跃度，派发决策参考）。start 不进 MCP（写动作留给人）。
+
+## v0.13.28 — 全 agent 记忆源 + 检索回退 + kb 页优化（批1~4 一批收口）
+
+> 施工会话：本会话。基线：v0.13.27。改动文件：`src/memfed.py`（REGISTRY 6→10 源、
+> _RG_TARGETS +4）、`src/hubmcp.py`（hub_memory_search +sources 参数全源默认、
+> hub_kb_search 默认五路）、`src/main.py`（VERSION 0.13.28）、`templates/index.html`
+> （memFedSrcs +4 option、kbRoutes local 补勾、QueryBar×2、kbBadges、CSS .tag.src-*
+> 三变体）、`static/hub/04-terminal-ws.js`（memFedClear/kbClear、renderQueryBar、
+> fedBadges 抽取共用、SRC_ABBR/srcTag、kb 路径行+下钻按钮）、新增
+> `tests/test_mcp_fulltext_defaults.py`（4 例）、更新 `tests/test_memfed.py`
+> （27→32 例）、`tests/test_center_ui_l0.py`（16→24 例）、`static/hub.js`（build 3090 行）。
+> 验证：L0 hermetic **524/524**（507 旧+17 新）；MCP 直调冒烟（不传 sources ⇒ backends
+> 11 路全源；kb 默认五路引擎串）；四新源生产 probe 全 ok（68/23/164/12 文件）；
+> grok 专属词「Grok Memory Index」真实召回。
+
+### v0.13.28 交付（用户三需求：全源覆盖 / 检索回退 / kb 页优化）
+
+- **批1 四新源（「是否是本机所有 agent 的记忆」→ 是）**：claude_projects（
+  ~/.claude/projects/**/memory/*.md，68 文件，weight 0.8 与 claude_mem 同级）、grok_memory
+  （memory/*.md + sessions/**/prompt_history.jsonl，23 文件，0.6）、hermes_memory
+  （memories/*.md + sessions/session_*.json，164 文件，0.6）、workbuddy_memory
+  （USER/SOUL/IDENTITY.md + memory/ + sessions/，12 文件，0.6）。全走 rg_text 适配器零新代码；
+  probe/白名单/RRF/runlog 埋点全链自动接管。glob 坑实测钉死：claude_projects 必须
+  `**/memory/*.md`（`*` 不跨 / 实测 0 命中）；.bak/request_dump 被天然排除（闸门钉）。
+- **批2 MCP 透传（「所有 agent 能够加载检索调用」的 MCP 侧落点）**：
+  hub_memory_search 新增 sources 参数，默认 `"local,tdai," + enabled_ids()` 动态派生
+  （新增源自动跟上不落一轮）；hub_kb_search 默认改 `",".join(kb.ROUTES)` 五路。
+  REST 默认**不动**（"local,tdai" 是防注入链路默认突变的有意决策）。旧调用形态
+  （不传 sources）不 400，backends 11 路。
+- **批3 检索回退（「搜索完成后无法回退」）**：QueryBar header 条（当前检索「q」· N 条 ·
+  清空↺）两页同构；memFedClear/kbClear 还原初始文案+清 hint/badges/输入框；
+  **CENTER_HEALTH 故意不清**（侧栏体检态与检索结果语义解耦，清空≠洗健康态——钉子钉死）。
+- **批4 kb 页观感**：源徽标 SRC_ABBR 缩写（CM/CP/PI/CX/GK/HM/WB/WS/AR/TV/TD/L1）+
+  .tag.src-doc/src-session/src-index 三变体（明度区分不彩虹，v0.9 设计系统口径）——
+  修复裸拼 `class="tag turbovec"` CSS 无定义静默灰底；fedBadges 逐路徽标行从 memFed
+  抽出共用（kb 也挂，替换只 toast 的半吊子降级表态）；kb 结果卡加路径行 + 四根下钻
+  按钮（workspace/archived 命中 → kbBrowse(首段)，复用单层能力零后端改动）；
+  kbRoutes local 补默认勾（与 MCP 五路对齐）。
+
+## v0.13.27 — 批3：三中心 UI 统一（加载三态 / 技能正文 / 文档树下钻 / 联邦检索入口）
+
+> 施工会话：本会话。基线：批2。改动文件：`static/hub/01-core-boot.js`（boxBusy/
+> boxFail 助手 + CENTER_HEALTH + OVERLAY_IDS+skillDocDrawer + api() err.http/payload）、
+> `static/hub/04-terminal-ws.js`（六 loader 三态 + skillRead + kbBrowse 下钻 +
+> memFedSearch）、`static/hub/05-chat-and-history.js`（侧栏三中心健康点）、
+> `templates/index.html`（skillDocDrawer 抽屉 + kbCrumb + memFed 面板 + 占位统一）、
+> `tests/test_overlay_exclusion.py`（DRAWERS+skillDocDrawer 闸门加严）、新增
+> `tests/test_center_ui_l0.py`（L0 16 例）、`static/hub.js`（build 重建 2995 行）。
+> 验证：L0 hermetic **507/507**（491 旧+16 新）；node --check 绿；TestClient 静态面
+> 冒烟 14 项全过（占位/面板/抽屉/CSS/提手/JS 函数面）。
+
+### 批3交付（三中心「操作逻辑·统一加载·显示·调用」层）
+
+- **B 统一加载三态**：boxBusy/boxFail 全站助手；六 loader（loadMemories/loadSkills/
+  loadSkillBudget/kbSearch/loadKbStatus/kbBrowse）统一「busy→数据/失败上屏+重试按钮」
+  （此前失败只 toast，列表区停旧内容——分不清「没数据」与「挂了」）。初始占位统一
+  「加载中…」。侧栏三中心行挂 CENTER_HEALTH 健康点（s-badge 色族：ok/warn/err）。
+- **C 技能正文查看**：技能行「查看」按钮 → skillRead(name, route) → skillDocDrawer
+  抽屉（OVERLAY_IDS 第三员，唯一性/遮罩/导航清收自动接管；overlay 闸门同步加严）。
+  409 多路冲突读 err.payload.detail.candidates 渲染候选按钮；truncated 如实提示
+  bytes_total。api() 错误对象 additive 挂 err.http/err.payload（批2 已铺）。
+- **D 文档树下钻**：kbBrowse(sub) 参数化；顶层目录条目可点下钻（后端 kb.py 白名单
+  校验单层）；kbCrumb 面包屑（知识库根 ▸ sub ×回根）；根内子目录如实标「暂只支持
+  下钻一层」不装多层；errors 逐条上屏不静默。
+- **E 记忆页联邦检索**：page-memory 顶部联邦面板（memFedQ 输入 + memFedSrcs 六源
+  多选 + memFedBadges 逐路徽标 + memFedResults）。徽标四态口径与资产面板一致：
+  绿=ok 有命中 / 黄=ok 零命中 / 红=挂了点名（不糊成绿）。按需触发，进页不自动跑
+  （防埋点污染+防无谓联邦开销）。
+
+## v0.13.27 — 批2：运行日志前端页（page-runlog 上线，六闸门更新）
+
+> 施工会话：本会话。基线：批1。改动文件：新增 `static/hub/08-runlog.js`（分片源）、
+> `tests/test_runlog_frontend.py`（L0 11 例）；改 `templates/index.html`（+page-runlog
+> section）、`static/hub/05-chat-and-history.js`（SYS_PAGES 9→10 + PAGE_LABELS）、
+> `static/hub/01-core-boot.js`（go() 钩子 + api() 错误对象 additive 挂 err.http/
+> err.payload）、`tests/test_ls_guard.py`（分片清单 7→8 + 红基线 AFTER_RED 名单）、
+> `static/hub.js`（build 重建 2857 行）。
+> 验证：L0 hermetic **491/491**（480 旧+11 新）；TestClient 端到端冒烟（埋点→
+> runlog 查询 200/无凭据 401/MCP 通道归因 web+mcp 并存实证）。
+
+### 批2交付（运行日志「展示」层）
+
+- **page-runlog**：时间/source/subject/状态点/耗时/通道/降级路数/查询词 八列表格；
+  source/subject/status/window 四过滤 + id 游标翻页（before_id，不用 OFFSET）。
+- **鉴权 UX 三态**（互斥）：busy → 数据/空窗；401/503 →「输入口令并重试」按钮
+  （点击才 termToken() 弹框，不在 loadRunlog 里自动弹——05:297 教训）；GET 的
+  token 由 runlogFetch 自带（api() 只给写方法带）。
+- **api() additive**：错误对象挂 err.http/err.payload，既有调用方只读 .message
+  不受影响；runlog 页靠 http 判鉴权态，后续技能 409 靠 detail.candidates 渲染。
+- **RL_FIRST/RL_CUR 用 var**（不用 let）：go() 经 loadRunlog 读它们，let 的 TDZ
+  静态序风险被 test_tdz_order 判红——07-asset-panel 同教训，改 var 即绿。
+
+## v0.13.27 — 批1：运行日志后端（三中心检索留痕 + /api/runlog 查询门面）
+
+> 施工会话：本会话。基线：v0.13.26 批6 收口后（`3b85cb3`）。
+> 改动文件：新增 `src/runlog.py`（track 装饰器 + /api/runlog）、`tests/test_runlog.py`
+> （L0 20 例）；改 `src/memory.py`（search/context 两端点挂装饰器）、`src/kb.py`
+> （search/browse/status 三端点）、`src/skill.py`（list/read 两端点）、`src/hubmcp.py`
+> （_get 带 x-hub-channel: mcp 通道头）、`src/db.py`（idx_prof_source 索引）、
+> `src/hook.py`（画像聚合排除 rest）、`src/main.py`（挂路由 + VERSION 0.13.27）。
+> 验证：L0 hermetic **480/480**（460 旧+20 新，0 skip）；import 冒烟 + 装饰器
+> 成功/失败/DB炸/通道四路径直调实证。
+
+### 批1交付（运行日志「收集」层）
+
+- **零新表**：复用 profile_events（source='rest'，detail JSON 列存 q/limit/routes/
+  channel/routes_ok/degraded/count）。`@runlog.track(subject)` 装饰器包 6+1 个只读
+  检索端点（mem.search/mem.context/kb.search/kb.browse/kb.status/skill.list/
+  skill.read），失败路径留痕后原样 re-raise（HTTP 诊断语义一字不动）。
+- **埋点≠准入**：_fire 整体 try/except，DB 炸只 print 不 raise——红向用例
+  「db.execute 猴补丁炸掉仍 200」钉死。
+- **MCP 通道归因**：hubmcp._get 发 x-hub-channel: mcp 头，REST 端点读头记
+  channel=mcp/web（头可伪造但仅遥测归因，非鉴权）。REST 层埋点天然覆盖 9 个 MCP
+  工具的转调链。
+- **GET /api/runlog**：source/subject/status 过滤 + window 时间窗 + id 游标翻页
+  （append-only 表不用 OFFSET）。鉴权照抄 /api/audit/list 先例：GET 但按写方法判
+  （运行日志含查询词可反推意图），401/503 fail-closed。
+- **连带项**：hook.py 画像聚合 `WHERE source != 'rest'`（防高频检索霸榜把 agent
+  画像挤出前 50）；防噪声红线（/api/agents、/api/ports、/health 不埋）写死在
+  runlog.py 注释并有静态闸门。
+- **q 落库前 scrub + 截 120 字符**（凭据脱敏与 kb/skill 错误路径同源）。
+
 ## v0.13.26 — 批5：三路 agent 接线完成（仓外共享配置，逐路授权执行）
 
 > 施工会话：`01a0db08`。本批改动全部在 agent-hub 仓外（共享配置军规四件套，

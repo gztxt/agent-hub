@@ -116,7 +116,13 @@ async function api(path, opt) {
   try { data = JSON.parse(text); } catch (e) { data = { raw: text }; }
   if (!r.ok) {
     const msg = (data && data.detail && (data.detail.error || (Array.isArray(data.detail) ? data.detail.map(d => d.msg).join(';') : data.detail))) || ('HTTP ' + r.status);
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    /* v0.13.27 additive：把 HTTP 状态码与响应体挂到错误对象上（既有调用方只读
+       .message 不受影响）。runlog 页靠 http===401/503 区分「鉴权态」与「故障态」；
+       技能正文 409 靠 detail.candidates 渲染路候选——不再靠正则猜文案。 */
+    err.http = r.status;
+    err.payload = data;
+    throw err;
   }
   return data;
 }
@@ -134,6 +140,28 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ── v0.13.27 三态加载助手（B 统一加载）──────────────────────────────
+ * 三中心的 loader 统一走 busy→数据/失败 三态（此前失败只 toast，列表区停旧内容
+ * ——用户分不清「没数据」与「还没加载」与「加载挂了」）。遥测页「加载中…」
+ * 占位先例（index.html:988-991）从页内文案升格为全站函数。
+ * 主内容区 inline onclick 合法（侧栏禁令不涉这里——浮层三条配套红线原文口径）。 */
+function boxBusy(id, msg) {
+  const el = $(id);
+  if (el) el.innerHTML = '<div class="hint">' + escapeHtml(msg || '加载中…') + '</div>';
+  return !!el;
+}
+function boxFail(id, err, retryFn) {
+  const el = $(id);
+  if (!el) return;
+  const retry = retryFn ? ' <button class="btn sm" onclick="' + retryFn + '()">重试</button>' : '';
+  el.innerHTML = '<div class="hint" style="color:var(--st-error,var(--danger))">加载失败：' +
+    escapeHtml(String(err && err.message || err || '')) + retry + '</div>';
+}
+
+/* 三中心健康（供侧栏系统项挂 s-badge 点；loader 完成时写入）。
+ * var 声明防 TDZ：renderNav（05 分片，拼接序在前）会读它。 */
+var CENTER_HEALTH = { memory: '', skills: '', kb: '' };
+
 /* ── 浮层唯一性（2026-09-23 事故：窄屏「设置」抽屉盖掉 92% 画面且没人关）────────
    三个浮层（侧栏抽屉 / detailDrawer / settingsDrawer）此前各开各的：
    开设置不关侧栏、导航不收抽屉、遮罩只管侧栏 —— 窄屏抽屉宽 min(400px,92vw)，
@@ -142,7 +170,7 @@ function escapeHtml(s) {
    ② 导航 = 清抽屉（go 里做，不留给调用方自觉）；
    ③ 遮罩只有一个计算出口（06 的 syncOverlayMask），且点它一定关干净 ——
       手机上没有 ESC 键，点空白是唯一逃生路径。 */
-const OVERLAY_IDS = ['detailDrawer', 'settingsDrawer'];
+const OVERLAY_IDS = ['detailDrawer', 'settingsDrawer', 'skillDocDrawer'];
 const overlayOpen = id => { const el = $(id); return !!(el && el.classList.contains('on')); };
 window.overlayAnyOpen = () => OVERLAY_IDS.some(overlayOpen);
 function closeDrawers() {
@@ -195,6 +223,7 @@ function go(page) {
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
+  if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
   if (page === 'chat') renderChatSide();
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
   if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
@@ -348,6 +377,10 @@ function showDetail(id) {
       escapeHtml(e.type) + (e.url ? ': ' + escapeHtml(e.url) : '') + '</span>').join('') : '<span class="hint">无</span>');
   $('detailBody').innerHTML = html || '<span class="hint">无附加信息</span>';
   openOverlay('detailDrawer');
+  /* v0.13.29：claude 实体的详情抽屉追加「CloudCLI 项目」面板——用户核心诉求
+     「加载本机所有项目、精确显示名称、点击快速开始」。列表直读 auth.db 与
+     cloudcli 服务活死解耦；点「开始会话」走 cloudcliStart（04 分片）。 */
+  if (id === 'claude' && typeof loadCloudcliProjects === 'function') loadCloudcliProjects();
 }
 function closeDetail() { closeOverlay('detailDrawer'); }
 

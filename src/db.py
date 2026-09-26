@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS profile_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_prof_subject ON profile_events(subject);
+-- v0.13.27 runlog：/api/runlog 按 source 过滤 + id 游标分页（id<? 而非 OFFSET——
+-- append-only 表 OFFSET 翻页越翻越慢，游标恒定代价）。幂等建索引，存量库启动自动补。
+CREATE INDEX IF NOT EXISTS idx_prof_source ON profile_events(source, id);
 CREATE TABLE IF NOT EXISTS asset_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     asset_type TEXT NOT NULL,   -- mcp_server|mcp_acl|memory_l1|memory_doc|agent|session|setting

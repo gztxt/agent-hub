@@ -26,7 +26,8 @@ from _hub_extract import extract_function, read_hub   # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 TPL = REPO / "templates" / "index.html"
-DRAWERS = ["detailDrawer", "settingsDrawer"]
+# v0.13.27：+skillDocDrawer（技能正文抽屉）——闸门随浮层清单加严
+DRAWERS = ["detailDrawer", "settingsDrawer", "skillDocDrawer"]
 
 
 def _html():

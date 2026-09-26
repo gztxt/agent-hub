@@ -155,11 +155,11 @@ const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '�
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
                    ['skills', '技能中心', 'zap'], ['kb', '知识库', 'book'],
                    ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
-                   ['assets', '资产', 'layers']];
+                   ['assets', '资产', 'layers'], ['runlog', '运行日志', 'radar']];
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产' };
+                      assets: '资产', runlog: '运行日志' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
@@ -349,9 +349,14 @@ function renderNav() {
       const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
       if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navRow).join('');
     } else if (g === 'system') {
+      /* v0.13.27：三中心（memory/skills/kb）行尾挂健康点（CENTER_HEALTH，
+         loader 完成时写入；空=未加载不显示，ok/warn/err 对应 s-badge 色族）。 */
+      const hlth = p => (typeof CENTER_HEALTH !== 'undefined' && CENTER_HEALTH[p]) ?
+        '<span class="s-badge ' + (CENTER_HEALTH[p] === 'ok' ? 'running' : CENTER_HEALTH[p] === 'warn' ? 'installed' : 'error') + '"></span>' : '';
+      const HLTH_PAGE = { memory: 1, skills: 1, kb: 1 };
       body = list.map(([p, label, ic]) =>
         '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
-        ico(ic) + '<span class="lbl">' + label + '</span></button>').join('');
+        ico(ic) + '<span class="lbl">' + label + '</span>' + (HLTH_PAGE[p] ? hlth(p) : '') + '</button>').join('');
     } else {
       body = list.map(navRow).join('');
     }

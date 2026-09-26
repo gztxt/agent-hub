@@ -52,7 +52,8 @@ class _TmpCase(unittest.TestCase):
 class TestRegistry(_TmpCase):
     def test_enabled_sources_present(self):
         ids = memfed.enabled_ids()
-        for expect in ("claude_mem", "pi_sessions", "codex_sessions",
+        for expect in ("claude_mem", "claude_projects", "pi_sessions", "codex_sessions",
+                       "grok_memory", "hermes_memory", "workbuddy_memory",
                        "workspace_files", "archived_sessions"):
             self.assertIn(expect, ids)
 
@@ -72,10 +73,14 @@ class TestRegistry(_TmpCase):
                 self.assertGreaterEqual(src.timeout_s, 0.5)
 
     def test_weights_ordered_by_authority(self):
-        """RRF 量纲约束：结构化观察(0.8) > 工作区成文(0.7) > 会话原始(0.5) > 归档(0.4)。"""
+        """RRF 量纲约束：结构化观察(0.8) > 工作区成文(0.7) > 会话原始(0.5) > 归档(0.4)。
+        v0.13.28：claude_projects(0.8) 与 claude_mem 同级（人工撰写的项目级事实）；
+        grok/hermes/workbuddy(0.6) 落在成文(0.7)与会话(0.5)之间（混合源）。"""
         w = {s.id: s.weight for s in memfed.REGISTRY.values()}
         self.assertGreater(w["claude_mem"], w["workspace_files"])
-        self.assertGreater(w["workspace_files"], w["pi_sessions"])
+        self.assertEqual(w["claude_projects"], w["claude_mem"])
+        self.assertGreater(w["workspace_files"], w["grok_memory"])
+        self.assertGreater(w["grok_memory"], w["pi_sessions"])
         self.assertGreaterEqual(w["pi_sessions"], w["archived_sessions"])
 
 
@@ -206,6 +211,84 @@ class TestRgText(_TmpCase):
     def test_category_by_source_suffix(self):
         r = memfed._search_rg_text("pi_sessions", "CCR", 10, 2.0)
         self.assertEqual(r["items"][0]["category"], "session")
+
+
+class TestV1328NewSources(_TmpCase):
+    """v0.13.28 四新源（claude_projects/grok/hermes/workbuddy）的 glob 形态钉子。
+
+    glob 坑要钉死：claude_projects 用 `**/memory/*.md`（`*` 不跨 / 实测 0 命中）；
+    grok/hermes 大括号混合 glob；workbuddy 多根+顶层单文件。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # claude_projects 夹具：项目目录下 memory/*.md
+        proj = self.tmp / "projects"
+        (proj / "my-app" / "memory").mkdir(parents=True)
+        (proj / "my-app" / "memory" / "facts.md").write_text("claude 原生记忆关键词 CPTEST\n", encoding="utf-8")
+        (proj / "other" / "notes").mkdir(parents=True)          # 非 memory 目录：不该被扫到
+        (proj / "other" / "notes" / "x.md").write_text("CPTEST 但不在 memory 下\n", encoding="utf-8")
+        memfed._RG_TARGETS["claude_projects"] = ([str(proj)], "**/memory/*.md")
+        # grok 夹具：memory/*.md + sessions/**/prompt_history.jsonl
+        gk = self.tmp / "grok"
+        (gk / "memory").mkdir(parents=True)
+        (gk / "memory" / "MEMORY.md").write_text("grok 记忆关键词 GKTEST\n", encoding="utf-8")
+        (gk / "sessions" / "enc%2Fdir").mkdir(parents=True)
+        (gk / "sessions" / "enc%2Fdir" / "prompt_history.jsonl").write_text("grok 提问关键词 GKTEST\n", encoding="utf-8")
+        memfed._RG_TARGETS["grok_memory"] = ([str(gk / "memory"), str(gk / "sessions")],
+                                             "{*.md,prompt_history.jsonl}")
+        # hermes 夹具
+        hm = self.tmp / "hermes"
+        (hm / "memories").mkdir(parents=True)
+        (hm / "memories" / "MEMORY.md").write_text("hermes 记忆关键词 HMTEST\n", encoding="utf-8")
+        (hm / "sessions").mkdir(parents=True)
+        (hm / "sessions" / "session_001.json").write_text("hermes 会话关键词 HMTEST\n", encoding="utf-8")
+        (hm / "sessions" / "request_dump_001.json").write_text("不该被扫到 HMTEST\n", encoding="utf-8")
+        memfed._RG_TARGETS["hermes_memory"] = ([str(hm / "memories"), str(hm / "sessions")],
+                                               "{*.md,session_*.json}")
+        # workbuddy 夹具：顶层单文件 + memory/ + sessions/
+        wb = self.tmp / "workbuddy"
+        wb.mkdir()
+        (wb / "USER.md").write_text("workbuddy 人格关键词 WBTEST\n", encoding="utf-8")
+        (wb / "memory").mkdir()
+        (wb / "memory" / "m.md").write_text("workbuddy 记忆关键词 WBTEST\n", encoding="utf-8")
+        (wb / "memory" / "m.md.bak-2026").write_text("备份件不扫 WBTEST\n", encoding="utf-8")
+        (wb / "sessions").mkdir()
+        (wb / "sessions" / "s.json").write_text("workbuddy 会话关键词 WBTEST\n", encoding="utf-8")
+        memfed._RG_TARGETS["workbuddy_memory"] = (
+            [str(wb / "USER.md"), str(wb / "SOUL.md"), str(wb / "IDENTITY.md"),
+             str(wb / "memory"), str(wb / "sessions")], "{*.md,*.json}")
+
+    def test_claude_projects_glob_crosses_dirs(self):
+        r = memfed._search_rg_text("claude_projects", "CPTEST", 10, 2.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["count"], 1, "**/memory/*.md 必须跨目录命中；*/memory/*.md 实测 0")
+        self.assertIn("memory", r["items"][0]["id"])   # id 是全路径 path:line，含 memory/ 段
+
+    def test_grok_mixed_glob_and_encoded_dir(self):
+        r = memfed._search_rg_text("grok_memory", "GKTEST", 10, 2.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["count"], 2, "memory md + URL编码目录里的 prompt_history 都要命中")
+        self.assertNotIn("grok 记忆关键词", " ".join(i["content"] for i in r["items"]) if r["count"] != 2 else "")
+
+    def test_hermes_glob_excludes_request_dump(self):
+        r = memfed._search_rg_text("hermes_memory", "HMTEST", 10, 2.0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["count"], 2, "session_*.json 命中、request_dump_* 排除、md 命中")
+
+    def test_workbuddy_top_files_and_bak_excluded(self):
+        r = memfed._search_rg_text("workbuddy_memory", "WBTEST", 10, 2.0)
+        self.assertTrue(r["ok"])
+        # USER.md + memory/m.md + sessions/s.json = 3；.bak 文件名不以 .md 结尾被 glob 排除
+        self.assertEqual(r["count"], 3)
+        for it in r["items"]:
+            self.assertNotIn(".bak", it["id"], "备份件绝不入检索结果")
+
+    def test_missing_grok_root_degrades_alone(self):
+        memfed._RG_TARGETS["grok_memory"] = ([str(self.tmp / "gone")], "{*.md,prompt_history.jsonl}")
+        out = asyncio.run(memfed.search_fed("GKTEST", 5, {"grok_memory", "claude_projects"}))
+        self.assertFalse(out["grok_memory"]["ok"], "根缺失 ⇒ 该源降级不炸联邦")
+        self.assertTrue(out["claude_projects"]["ok"], "邻居源不受牵连")
 
 
 # ── 并发检索 / 错误隔离 ───────────────────────────────────────────────

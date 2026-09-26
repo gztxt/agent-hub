@@ -63,11 +63,15 @@ import healthx                      # /health 派生量的纯函数层（L0 不 
 import sessions_export as export_mod
 import writeauth                    # 导出端点按写端点同等鉴权（复用 decide 的 fail-closed）
 import audit as audit_mod           # 资产变更审计的只读查询门面（GET /api/audit/list）
+import runlog as runlog_mod         # 运行日志：三中心检索留痕 + GET /api/runlog 查询门面
+import cloudcli as cloudcli_mod     # CloudCLI 项目直达：项目清单（直读 auth.db）+ 会话启动代理
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.26"   # 前端：hallmark 视觉审计 M1~M6 收口——字面色全部收进 :root token
+VERSION = "0.13.29"   # CloudCLI 项目直达：/api/cloudcli/projects 直读 auth.db（28 项目精确名称+会话活跃度）
+                      #   + POST /start 铸 JWT 转调创建会话 → 详情抽屉项目列表 + iframe 直达 /session/{id}；
+                      #   MCP +hub_cloudcli_projects
                       #   （--embed-line / --embed-bg / --font-display / --on-accent），fr 轨道一律
                       #   minmax(0,…) 防内容顶破容器，数字列 tabular-nums 兜字体回退；DESIGN.md 新增
                       #   「视觉系统」语义索引章（权威源仍是 templates/index.html 的 :root，不复制取值）。
@@ -234,6 +238,8 @@ app.include_router(mcpgw_mod.router)
 app.include_router(cronjobs_mod.router)
 app.include_router(term_mod.router)
 app.include_router(audit_mod.router)
+app.include_router(runlog_mod.router)
+app.include_router(cloudcli_mod.router)
 
 # D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
 # 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。

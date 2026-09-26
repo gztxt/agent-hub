@@ -1,8 +1,9 @@
 """联邦记忆源适配器（v0.13.26 批1：把「本机所有 agent 记忆」接进检索联邦）
 
-背景：hub 的记忆联邦此前只有 local(便签4行)+TDAI(权威库)两路；本机真实存在五处
-有检索价值的记忆资产从未接入：claude-mem 观察库、pi/codex 会话 jsonl、工作区文件
-记忆（MEMORY.md/memory/agent-knowledge/digest）、归档会话备份。本模块只做**只读检索**，
+背景：hub 的记忆联邦此前只有 local(便签4行)+TDAI(权威库)两路；v0.13.26 批1 起接入
+claude-mem 观察库、pi/codex 会话 jsonl、工作区文件记忆、归档会话备份；**v0.13.28
+补齐剩余四家**（用户问「是否是本机所有 agent 的记忆」后盘点补漏）：claude 原生记忆库
+（~/.claude/projects/**/memory/）、grok、hermes、workbuddy。本模块只做**只读检索**，
 「收集整理分类」的呈现层在记忆中心页（批4），聚合检索走 memory.py 的 RRF。
 
 安全模型（与 sessions_store.py 同源，一处不留例外）：
@@ -64,17 +65,36 @@ class FedSource:
 
 #: opencode 源：表结构具备（message/part/session）但 09-26 已判「会话写共享库、不合格
 #: 作派发对象」；记忆检索上同样降级处理——登记不启用，等用户点名再开（禁顺手启用）。
+#: v0.13.28 四新源（用户：「是否是本机所有 agent 的记忆」——不是，所以补齐）：
+#:   claude_projects（0.8 人工撰写的项目级事实，权威度等同观察库）
+#:   grok_memory / hermes_memory / workbuddy_memory（0.6 成文原则与原始会话混合，
+#:   权重取 workspace(0.7) 与 sessions(0.5) 之间）。
 REGISTRY: Dict[str, FedSource] = {
     "claude_mem": FedSource(
         id="claude_mem", label="claude-mem 观察库", kind="sqlite_fts", weight=0.8,
         desc="~/.claude-mem/claude-mem.db（observations FTS5 + session_summaries）",
         timeout_s=1.5),
+    "claude_projects": FedSource(
+        id="claude_projects", label="claude 原生记忆库", kind="rg_text", weight=0.8,
+        desc="~/.claude/projects/**/memory/*.md（各项目目录下的人工事实文件）"),
     "pi_sessions": FedSource(
         id="pi_sessions", label="pi 会话记录", kind="rg_text", weight=0.5,
         desc="~/.pi/agent/sessions/**/*.jsonl（文件级命中）"),
     "codex_sessions": FedSource(
         id="codex_sessions", label="codex 会话记录", kind="rg_text", weight=0.5,
         desc="~/.codex/sessions/**/*.jsonl（文件级命中）"),
+    "grok_memory": FedSource(
+        id="grok_memory", label="grok 记忆与会话", kind="rg_text", weight=0.6,
+        desc="~/.grok/memory/*.md + ~/.grok/sessions/**/prompt_history.jsonl",
+        timeout_s=1.8),
+    "hermes_memory": FedSource(
+        id="hermes_memory", label="hermes 记忆与会话", kind="rg_text", weight=0.6,
+        desc="~/.hermes/memories/*.md + ~/.hermes/sessions/session_*.json",
+        timeout_s=2.5),
+    "workbuddy_memory": FedSource(
+        id="workbuddy_memory", label="workbuddy 记忆", kind="rg_text", weight=0.6,
+        desc="~/.workbuddy/{USER,SOUL,IDENTITY}.md + memory/ + sessions/",
+        timeout_s=1.8),
     "workspace_files": FedSource(
         id="workspace_files", label="工作区文件记忆", kind="rg_text", weight=0.7,
         desc=f"{WORKSPACE}/MEMORY.md + memory/ + agent-knowledge/ + digest/"),
@@ -89,9 +109,22 @@ REGISTRY: Dict[str, FedSource] = {
 }
 
 #: 各 rg_text 源的搜索根 + glob。列表顺序即 rg 扫描顺序（都很浅，无所谓优先级）。
+#: glob 坑（实测）：rg 的 `*` 不跨 `/`——claude_projects 必须写 `**/memory/*.md`
+#: （`*/memory/*.md` 实测命中 0）。grok/hermes 大括号混合 glob 实测命中正常
+#: （rg -g "{*.md,prompt_history.jsonl}" 23 文件）。
+#: 已知小疵（记录不改）：_rg_item 按 endswith("sessions") 判 category，四个新 id
+#: 全落 "knowledge"——含会话命中时分类略糊，不影响检索与融合（RRF 只看 rank+weight）。
 _RG_TARGETS: Dict[str, tuple] = {
     "pi_sessions": ([str(HOME / ".pi" / "agent" / "sessions")], "*.jsonl"),
     "codex_sessions": ([str(HOME / ".codex" / "sessions")], "*.jsonl"),
+    "claude_projects": ([str(HOME / ".claude" / "projects")], "**/memory/*.md"),
+    "grok_memory": ([str(HOME / ".grok" / "memory"), str(HOME / ".grok" / "sessions")],
+                    "{*.md,prompt_history.jsonl}"),
+    "hermes_memory": ([str(HOME / ".hermes" / "memories"), str(HOME / ".hermes" / "sessions")],
+                      "{*.md,session_*.json}"),
+    "workbuddy_memory": ([str(HOME / ".workbuddy" / "USER.md"), str(HOME / ".workbuddy" / "SOUL.md"),
+                          str(HOME / ".workbuddy" / "IDENTITY.md"), str(HOME / ".workbuddy" / "memory"),
+                          str(HOME / ".workbuddy" / "sessions")], "{*.md,*.json}"),
     "workspace_files": ([str(WORKSPACE / "MEMORY.md"),
                          str(WORKSPACE / "memory"),
                          str(WORKSPACE / "agent-knowledge"),

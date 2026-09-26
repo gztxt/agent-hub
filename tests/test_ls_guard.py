@@ -40,10 +40,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARDS = sorted((ROOT / "static" / "hub").glob("[0-9][0-9]-*.js"))
-# P4（v0.13.19）新分片在红基线 SHA 上**不存在**，逐文件取旧体时必须跳过。
+# P4（v0.13.19）之后的分片在红基线 SHA 上**不存在**，逐文件取旧体时必须跳过。
 # 故意列成显式名单而不是「取不到就静默 skip」：一旦有人把红基线整段注掉，
 # RED_TOTAL 那道全站计数断言会立刻变空转（那正是 09-24 侦察报的假绿家族）。
-SHARDS_AFTER_RED = ["07-asset-panel.js"]
+# 08-runlog.js（v0.13.27）：新分片，红基线期不存在。
+SHARDS_AFTER_RED = ["07-asset-panel.js", "08-runlog.js"]
 HUBJS = ROOT / "static" / "hub.js"   # 产物也一起纳入零丢行断言
 HUB = ROOT / "static" / "hub.js"
 TPL = ROOT / "templates" / "index.html"
@@ -290,7 +291,7 @@ class TestLsGuardStatic(unittest.TestCase):
         self.assertEqual([p.name for p in SHARDS],
                          ["01-core-boot.js", "02-nav-and-poll.js", "03-agents-cards.js",
                           "04-terminal-ws.js", "05-chat-and-history.js", "06-manager-tasks.js",
-                          "07-asset-panel.js"],
+                          "07-asset-panel.js", "08-runlog.js"],
                          "分片清单变了 ⇒ 逐文件计数与红基线要一起核")
 
     def test_R1_no_bare_localStorage_in_shards(self):

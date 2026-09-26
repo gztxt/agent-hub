@@ -47,6 +47,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 import db
+import runlog
 import tdai_client
 import writeauth
 
@@ -324,7 +325,9 @@ def _match_q(it: Dict[str, Any], ql: str) -> bool:
 
 
 @router.get("/list")
-async def skill_list(q: str = Query(default="", max_length=200,
+@runlog.track("skill.list")
+async def skill_list(request: Request,
+                     q: str = Query(default="", max_length=200,
                                    description="对 name/description/path/route 做不区分大小写子串过滤"),
                      limit: int = Query(default=200, ge=1, le=500),
                      routes: Optional[str] = Query(
@@ -438,7 +441,9 @@ def _guard_inside_whitelist(path: str) -> str:
 
 
 @router.get("/read")
-async def skill_read(name: str = Query(min_length=1, max_length=200),
+@runlog.track("skill.read")
+async def skill_read(request: Request,
+                     name: str = Query(min_length=1, max_length=200),
                      route: Optional[str] = Query(default=None),
                      with_body: bool = Query(default=True, description="false 则只回元信息不回正文")):
     """读一个技能的全文（脱敏后）。同名多路 ⇒ 409 报候选，**不静默挑一个**。"""

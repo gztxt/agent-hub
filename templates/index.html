@@ -419,6 +419,12 @@
         .tag.constraint { background: transparent; border: 1px dashed var(--danger-border); color: var(--danger-text); }
         .tag.preference { background: var(--text-2); color: var(--bg); }
         .tag.agent { background: var(--btn); color: var(--on-accent); }
+        /* v0.13.28 联邦源徽标三变体：明度区分不彩虹（v0.9 设计系统「色相只在语义上」）。
+           旧写法裸拼 `class="tag turbovec"` 等动态类名——CSS 无定义 ⇒ 静默回退默认灰底，
+           源身份辨识度为零（kb 结果卡实测如此）。缩写恒两位（SRC_ABBR），位宽稳定。 */
+        .tag.src-doc { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+        .tag.src-session { background: var(--surface-2); color: var(--muted); }
+        .tag.src-index { background: transparent; border: 1px dashed var(--border); color: var(--text-2); }
 
         .mem-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .9fr) minmax(0, .9fr); gap: 16px; }
         @media (max-width: 1100px) { .mem-grid { grid-template-columns: minmax(0, 1fr); } }
@@ -440,8 +446,8 @@
         .modal .row input { flex: 1; }
 
         /* ── 实体详情/设置抽屉（右侧滑出）── */
-        #detailDrawer, #settingsDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
-        #detailDrawer.on, #settingsDrawer.on { right: 0; }
+        #detailDrawer, #settingsDrawer, #skillDocDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
+        #detailDrawer.on, #settingsDrawer.on, #skillDocDrawer.on { right: 0; }
         .token-box { font-family: var(--font-mono); font-size: var(--fs-sm); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
 
         /* ── 命令面板（⌘K）── */
@@ -840,9 +846,39 @@
 
         <!-- 记忆中心 -->
         <section class="page" id="page-memory">
+            <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
+                 记忆中心页只有 L1 LIKE。按需触发（进页不自动跑：防埋点污染+防无谓联邦开销）。
+                 v0.13.28：源 6→10（补 claude_projects/grok/hermes/workbuddy 四家）。 -->
+            <div class="panel">
+                <h3>联邦检索（本地 L1 + TDAI 权威库 + 8 路外部源，RRF 融合）</h3>
+                <div class="toolbar">
+                    <input id="memFedQ" placeholder="跨全部记忆源检索（如：端口 / 备份 / CCR）…" style="max-width:280px" onkeydown="if(event.key==='Enter')memFedSearch()">
+                    <button class="btn sm" onclick="memFedSearch()">检索</button>
+                    <select id="memFedSrcs" multiple size="8" title="检索源（多选）" style="min-width:150px">
+                        <option value="local" selected>本地 L1</option>
+                        <option value="tdai" selected>TDAI L1</option>
+                        <option value="claude_mem" selected>claude-mem</option>
+                        <option value="claude_projects" selected>claude 原生记忆</option>
+                        <option value="pi_sessions">pi 会话</option>
+                        <option value="codex_sessions">codex 会话</option>
+                        <option value="grok_memory" selected>grok 记忆</option>
+                        <option value="hermes_memory" selected>hermes 记忆</option>
+                        <option value="workbuddy_memory" selected>workbuddy 记忆</option>
+                        <option value="workspace_files" selected>工作区文件</option>
+                        <option value="archived_sessions" selected>归档会话</option>
+                    </select>
+                    <span class="hint" id="memFedHint"></span>
+                </div>
+                <div id="memFedBadges" class="hint" style="margin:4px 0"></div>
+                <!-- v0.13.28 批3：检索态 header 条——「当前检索 q · N 条 · 清空」，搜完可回退主界面 -->
+                <div id="memFedQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
+                <div id="memFedResults" class="mem-list">输入关键词开始联邦检索</div>
+            </div>
             <div class="mem-grid">
                 <div class="panel">
-                    <h3>L1 · 可检索记忆</h3>
+                    <h3>L1 · 本地便签（hub 自有 SQLite——非主记忆源）</h3>
+                    <div class="hint" style="margin:4px 0">⚠ 本表只是 hub 的演示/手写便签（当前 4 行陈旧样例）。
+                    <b>主记忆检索走顶部「联邦检索」</b>（TDAI 权威库 315 条 + 6 路外部源，数据新至昨日）。</div>
                     <div class="toolbar">
                         <input id="memQ" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadMemories()">
                         <select id="memCat" onchange="loadMemories()">
@@ -991,6 +1027,34 @@
             <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
         </section>
 
+        <!-- v0.13.27：运行日志页——三中心检索留痕的查询面（读 /api/runlog，按写鉴权）。
+             「为后续迭代提供参考」的落点：谁在调三中心、多快、哪路常降级，一页可翻。 -->
+        <section class="page" id="page-runlog">
+            <div class="panel">
+                <h3>运行日志（三中心调用留痕：来源 / 耗时 / 通道 / 降级路 / 查询词）</h3>
+                <div class="toolbar">
+                    <select id="rlSource" style="max-width:130px"><option value="">全部 source</option></select>
+                    <select id="rlSubject" style="max-width:130px"><option value="">全部 subject</option></select>
+                    <select id="rlStatus" style="max-width:110px"><option value="">全部状态</option><option>success</option><option>fail</option></select>
+                    <select id="rlWindow" style="max-width:130px">
+                        <option value="0">全部时间</option>
+                        <option value="24">近 24 小时</option>
+                        <option value="168">近 7 天</option>
+                        <option value="720">近 30 天</option>
+                    </select>
+                    <button class="btn sm" onclick="loadRunlog(true)">筛选</button>
+                    <span class="hint" id="rlHint"></span>
+                </div>
+                <div class="hint" style="margin:6px 0">读取本页需终端口令（与审计导出同口径：运行日志含查询词，按写端点鉴权）。</div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>时间</th><th>source</th><th>subject</th><th>状态</th><th>耗时</th><th>通道</th><th>降级路</th><th>查询词</th></tr></thead>
+                <tbody id="runlogBody"></tbody></table>
+            </div>
+            <div class="toolbar"><span class="hint" id="rlMore"></span>
+                <button class="btn ghost sm" id="rlMoreBtn" onclick="loadRunlogMore()" style="display:none">下一页</button></div>
+        </section>
+
         <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
              不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
              列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
@@ -1004,7 +1068,7 @@
                     <button class="btn sm" onclick="loadSkills()">刷新</button>
                     <span class="hint" id="skillHint"></span>
                 </div>
-                <div id="skillList" class="mem-list">未加载</div>
+                <div id="skillList" class="mem-list">加载中…</div>
             </div>
             <div class="mem-grid">
                 <div class="panel">
@@ -1024,7 +1088,7 @@
                     <h3>token 预算化清单（注入通道用）</h3>
                     <div class="toolbar"><input id="skillTok" type="number" value="800" min="50" max="8000" style="max-width:90px" onchange="loadSkillBudget()">
                     <span class="hint">max_tokens</span></div>
-                    <div id="skillBudget" class="hint tscroll">未加载</div>
+                    <div id="skillBudget" class="hint tscroll">加载中…</div>
                 </div>
             </div>
         </section>
@@ -1040,21 +1104,25 @@
                         <option value="turbovec" selected>语义索引</option>
                         <option value="workspace" selected>工作区全文</option>
                         <option value="archived" selected>归档会话</option>
-                        <option value="local">本地便签</option>
+                        <option value="local" selected>本地便签</option>
                     </select>
                     <span class="hint" id="kbHint"></span>
                 </div>
+                <div id="kbBadges" class="hint" style="margin:4px 0"></div>
+                <!-- v0.13.28 批3：检索态 header 条（与记忆页同构，搜完可回退） -->
+                <div id="kbQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
                 <div id="kbResults" class="mem-list">输入关键词开始检索</div>
             </div>
             <div class="mem-grid">
                 <div class="panel">
                     <h3>各路健康</h3>
-                    <div id="kbStatus" class="hint tscroll">未加载</div>
+                    <div id="kbStatus" class="hint tscroll">加载中…</div>
                     <button class="btn ghost sm" style="margin-top:8px" onclick="loadKbStatus()">刷新</button>
                 </div>
                 <div class="panel">
-                    <h3>文档树（工作区文件）</h3>
-                    <div id="kbBrowse" class="hint tscroll">未加载</div>
+                    <h3>文档树（工作区文件 · 点目录下钻一层）</h3>
+                    <div id="kbCrumb" class="toolbar" style="margin-bottom:6px"></div>
+                    <div id="kbBrowse" class="hint tscroll">加载中…</div>
                 </div>
             </div>
         </section>
@@ -1098,6 +1166,15 @@
             </div>
         </div>
     </div>
+
+    <!-- 技能正文抽屉（v0.13.27：技能中心「查看」→ /api/skill/read 全文，409 多路选路） -->
+    <aside id="skillDocDrawer" role="dialog" aria-label="技能正文">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b id="skillDocTitle" style="font-size:var(--fs-lg)"></b>
+            <button class="btn ghost sm" aria-label="关闭技能正文" onclick="closeSkillDoc()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <pre class="code" id="skillDocBody" style="white-space:pre-wrap;word-break:break-word">未加载</pre>
+    </aside>
 
     <!-- 实体详情抽屉 -->
     <aside id="detailDrawer" role="dialog" aria-label="实体详情">
@@ -1245,6 +1322,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=2b01f38b"></script>
+    <script src="/static/hub.js?v=d7445494"></script>
 </body>
 </html>

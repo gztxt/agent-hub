@@ -37,11 +37,12 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 import tdai_client
 import memfed
 import memstats
+import runlog
 
 log = logging.getLogger("hub.kb")
 router = APIRouter(prefix="/api/kb", tags=["kb"])
@@ -177,7 +178,9 @@ def _backend(name: str, r: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.get("/search")
-async def kb_search(q: str = Query(min_length=1),
+@runlog.track("kb.search")
+async def kb_search(request: Request,
+                    q: str = Query(min_length=1),
                     k: int = Query(default=DEFAULT_K, le=30),
                     routes: str = Query(default=",".join(ROUTES)),
                     doc_k: int = Query(default=5, le=20, description="turbovec 取几条")):
@@ -285,7 +288,8 @@ KB_BROWSE_MAX = int(os.getenv("KB_BROWSE_MAX", "200"))   # 顶层条目硬顶，
 
 
 @router.get("/browse")
-async def kb_browse(sub: str = Query(default="", max_length=120)):
+@runlog.track("kb.browse")
+async def kb_browse(request: Request, sub: str = Query(default="", max_length=120)):
     """文档树浏览（批4 前端「知识库中心」右下栏）：workspace 四根的顶层条目。
 
     只读门面；根定义与 memfed._RG_TARGETS["workspace_files"] 同源（不另抄一份目录
@@ -326,7 +330,8 @@ async def kb_browse(sub: str = Query(default="", max_length=120)):
 
 
 @router.get("/status")
-async def kb_status():
+@runlog.track("kb.status")
+async def kb_status(request: Request):
     """资产面板用：各路是否可用、索引多新、库有多大。全实测，不猜。"""
     info = await turbovec_info()
 

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 import db
 import llm
 import memfed
+import runlog
 import tdai_client
 import writeauth
 
@@ -197,7 +198,9 @@ async def delete_l1(mid: int, request: Request):
 
 
 @router.get("/api/memory/search")
-async def search_memory(q: str = Query(min_length=1), limit: int = Query(default=10, le=50),
+@runlog.track("mem.search")
+async def search_memory(request: Request,
+                        q: str = Query(min_length=1), limit: int = Query(default=10, le=50),
                         sources: str = Query(default="local,tdai"),
                         episodic: int = Query(default=0, ge=0, le=20)):
     """记忆检索：本地 L1（LIKE）与 TDAI 权威库（语义）**并联**后 RRF 融合。
@@ -369,7 +372,9 @@ async def rebuild_l2(request: Request):
 # ── 注入通道 ──────────────────────────────────────────────────────────
 
 @router.get("/api/memory/context")
-async def injection_context(q: Optional[str] = None, max_chars: int = Query(default=6000, le=20000),
+@runlog.track("mem.context")
+async def injection_context(request: Request, q: Optional[str] = None,
+                            max_chars: int = Query(default=6000, le=20000),
                             sources: str = Query(default="local,tdai"),
                             scenes: int = Query(default=0, ge=0, le=20)):
     """SessionStart 注入包：L3 + L2(content+manual) + 相关 L1（本地与权威库融合）。
