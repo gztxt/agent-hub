@@ -27,6 +27,12 @@ EMBED_UNIFY = os.getenv("EMBED_UNIFY", "1") == "1"
 EMBED_PROXY_PORT = int(os.getenv("EMBED_PROXY_PORT", "3103"))
 QWENPAW_UI = ("http://127.0.0.1:%d" % EMBED_PROXY_PORT) if EMBED_UNIFY else "http://127.0.0.1:8088"
 
+# CodeBuddy Code 的 CLI 只在 WorkBuddy 包内，不在 PATH（2026-09-27 实测：
+# `which codebuddy` 落空，`shutil.which(<绝对路径>)` 原样返回）。终端入口因此必须写
+# 绝对路径，否则 term.py 的 `which(cmd[0])` 判定失败、会话拉不起来。
+CODEBUDDY_CLI = os.getenv("CODEBUDDY_CLI",
+                          "/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy")
+
 # 进程扫描缓存（一次 discovery 周期复用）
 _proc_cache = {"ts": 0.0, "procs": []}
 
@@ -95,8 +101,10 @@ PROFILES: List[dict] = [
     {"id": "pi", "name": "Pi Agent", "kind": "agent",
      "detect": {"proc": [r"next-server", r"(^|/)pi( |$)"], "systemd": ["pi-web"]},
      "cli": None, "port": 30141, "ui": "http://127.0.0.1:30141",
-     "terminal": None, "chat": None,
-     "desc": "Pi Coding Agent，原生 Web 会话界面 :30141"},
+     "terminal": {"cmd": "pi", "cwd": "/fs/1000/ftp/技术文档"},
+     "chat": None,
+     "desc": "Pi Coding Agent，原生 Web 会话界面 :30141；CLI（v0.85.1，默认交互 TUI）" +
+             "可在本机/GitHub 项目页按目录拉起终端会话"},
     {"id": "jcode", "name": "JCode", "kind": "agent",
      "detect": {"proc": [r"(^|/)jcode( |$)"]},
      "cli": "jcode", "port": None, "ui": None,
@@ -131,9 +139,13 @@ PROFILES: List[dict] = [
     {"id": "codebuddy", "name": "CodeBuddy Code", "kind": "agent",
      "detect": {"proc": [r"(^|/)codebuddy( |$)"]},
      "cli": None, "port": 35431, "ui": "http://127.0.0.1:35431",
-     "terminal": None, "chat": None,
+     # 终端入口用**绝对路径**：该 CLI 只在 WorkBuddy 包内、不在 PATH，`which("codebuddy")`
+     # 必然落空；shutil.which() 对带目录分隔符的路径原样返回（实测通过），
+     # term.py 的 `which(cmd[0])` 因此走得通 ⇒ 可在项目目录拉起 TUI 会话。
+     "terminal": {"cmd": CODEBUDDY_CLI, "cwd": "/fs/1000/ftp/技术文档"},
+     "chat": None,
      "desc": "WorkBuddy 包内捆绑 CLI（`codebuddy --serve`）的遥控 Web 界面 :35431" +
-             "（" + LAN_HOST_NOTE + "）→ 原生会话"},
+             "（" + LAN_HOST_NOTE + "）→ 原生会话；CLI 亦可在项目目录拉起终端会话"},
 
     # ── Gateways（非 Agent，仅快捷方式）──────────────────────
     {"id": "ccr", "name": "CCR Gateway", "kind": "gateway",

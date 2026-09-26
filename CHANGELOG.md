@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## v0.13.38 — 两项目页 agent 候选框补 pi 与 codebuddy（Web 型卡也可按目录起会话）
+
+> 施工会话：688b689d。基线：v0.13.37。改动文件：`src/profiles.py`（pi 加
+> `terminal.cmd=pi`；codebuddy 加 `terminal.cmd=<WorkBuddy 包内绝对路径>`；
+> 新增 `CODEBUDDY_CLI` 常量，可用环境变量覆盖）、`src/main.py`（VERSION）、
+> `tests/test_profiles_codebuddy.py`（重写为 8 例：含「候选框口径」测试类）。
+>
+> - **用户报障**：本机项目 / GitHub 项目页的 agent 候选框少了 pi、QwenPaw、codebuddy。
+> - **根因不是「会话起不来」**：候选框过滤器 `09-local-projects.js:165` /
+>   `10-github-projects.js:205` 只收 `entries` 含 `term` 的卡片；这三张是 Web 型画像
+>   （embed+新窗口），没有终端入口 ⇒ 被过滤。实弹反证：补入口后
+>   `POST /api/term/sessions {agent_id: pi|codebuddy, cwd: 项目目录}` 均返回 `alive=true`。
+> - **处置**：有 CLI 的补终端入口——pi（v0.85.1，默认交互 TUI，在 nvm bin 下）、
+>   codebuddy（2.137.1）。**qwenpaw 无 CLI（`which` 落空）⇒ 保持仅原生界面。**
+> - **codebuddy 的 cmd 必须是绝对路径**：裸名 `which` 落空（二进制只在 WorkBuddy 包内），
+>   `shutil.which` 对带目录分隔符的路径原样返回，term.py 的 `which(cmd[0])` 才走得通。
+> - **原生界面不受影响**：形态优先级 `embed > term > chat`，两卡 entries 顺序仍
+>   `embed, open, term, detail` ⇒ 点卡片默认仍进 :30141 / :35431 原生界面。
+> - **验证**：L0 hermetic 652/652 零跳过 + L1 host 41/41 + prepush 六闸；实弹
+>   pi/codebuddy 会话 alive=true（cwd 生效）并在测后删除；qwenpaw 仍按预期
+>   400「无终端入口」。
+
 ## v0.13.37 — Agents 菜单补 CodeBuddy Code 卡（`codebuddy --serve` 原生遥控界面 :35431）
 
 > 施工会话：688b689d。基线：v0.13.36。改动文件：`src/profiles.py`（唯一功能改动：
