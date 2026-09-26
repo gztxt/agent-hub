@@ -156,6 +156,23 @@ class TestTdzOrder(unittest.TestCase):
         b = next(i for i, ln in enumerate(src, 1) if "(function histBootstrap" in ln)
         self.assertLess(d, b, "let _navHtml@%d 必须在 histBootstrap@%d 之前" % (d, b))
 
+    def test_project_state_initialized_before_bootstrap_go(self):
+        """v0.13.32 真事故（2026-09-26 实测抓红）：用户存了
+        hub.page='localprojects' 后刷新，06 顶层 go(lsGet('hub.page')) 会同步调
+        loadLocalProjects()（函数声明提升），而 LP 的 `var LP = []` 初始化在 09
+        分片顶层（拼接序在 06 之后）⇒ 函数读 LP.length 抛 TypeError ⇒ promise
+        reject ⇒ 列表永远停在「加载中…」。修法：LP/GH/lpStars…lpHiddenSet/
+        ghStars/ghHiddenSet 的初始化前置到 01（lpLoaded 同型双 var 纪律）。
+        本钉子断言：01 里的初始化行必须早于 06 的 bootstrap go() 行。"""
+        src = HUB.read_text(encoding="utf-8").split("\n")
+        boot = next(i for i, ln in enumerate(src, 1)
+                    if ln.startswith("go(lsGet('hub.page')"))
+        for decl in ("var LP = [], GH = [];", "var lpStars = new Set()"):
+            d = next(i for i, ln in enumerate(src, 1) if ln.startswith(decl))
+            self.assertLess(d, boot,
+                            "%s@%d 必须在 bootstrap go()@%d 之前（否则刷新回项目页即崩）"
+                            % (decl, d, boot))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -343,7 +343,7 @@ class TestFrontendQuartet(unittest.TestCase):
 
     def test_dom_ids_used_by_js_exist_in_html(self):
         for dom_id in ("lpQ", "lpHint", "lpList", "lpSelName", "lpAgent",
-                       "lpStartBtn", "lpMeta"):
+                       "lpStartBtn", "lpMeta", "lpHidden"):
             self.assertIn(f'id="{dom_id}"', self.html,
                           f"#{dom_id} 在 JS 里被引用但 HTML 缺失 ⇒ null 崩溃")
 
@@ -363,6 +363,53 @@ class TestFrontendQuartet(unittest.TestCase):
         body = self.js[i:i + 800]
         self.assertIn("/api/term/sessions", body)
         self.assertIn("cwd: lpSel", body)
+
+
+class TestStarHideQuartet(unittest.TestCase):
+    """v0.13.32 收藏/隐藏（用户需求：每个项目后面加收藏/隐藏图标，收藏置顶、
+    隐藏不显示除非勾选顶部显示框；同时去掉面板大标题）。
+
+    静态钉四件：① 行内动作函数与图标存在；② 状态持久走 lsSet 守卫键；
+    ③ 渲染排序「收藏在前」+ 隐藏过滤受 #lpHidden 控制；④ 面板不再有 <h3>。"""
+
+    def setUp(self):
+        self.html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
+        self.js = (_REPO / "static" / "hub.js").read_text(encoding="utf-8")
+
+    def _panel(self):
+        i = self.html.find('id="page-localprojects"')
+        j = self.html.find('id="page-github"')
+        return self.html[i:j if j > i else len(self.html)]
+
+    def test_row_action_functions_defined(self):
+        for fn in ("lpToggleStar", "lpToggleHide"):
+            self.assertIn(f"function {fn}(", self.js, f"{fn} 缺失 ⇒ 图标点了没反应")
+
+    def test_state_persisted_via_guarded_ls(self):
+        """持久化必须走 lsSet 守卫键（test_ls_guard R1 禁裸 localStorage）。"""
+        self.assertIn("'hub.lp.stars'", self.js)     # 键名必须出现在源码里
+        self.assertIn("'hub.lp.hidden'", self.js)
+        self.assertIn("lsSet(key", self.js)          # _lpSave 保存路径
+        self.assertNotIn("localStorage.setItem", self.js.replace(
+            "window.localStorage.setItem", ""))       # 守卫内部那处除外
+
+    def test_star_rows_sort_first_and_hidden_filtered(self):
+        i = self.js.find("function lpRenderList(")
+        body = self.js[i:i + 1200]
+        self.assertIn("lpStars.has", body, "渲染必须按收藏分流")
+        self.assertIn("concat", body, "收藏置顶用 concat 保持稳定序")
+        self.assertIn("lpHiddenSet.has", body, "隐藏行必须被过滤")
+        self.assertIn("lpHidden", body, "过滤必须受顶部「显示隐藏」开关控制")
+
+    def test_star_and_eye_icons_rendered(self):
+        self.assertIn("ico('star')", self.js, "收藏图标必须用 i-star sprite")
+        self.assertIn("ico('eye')", self.js, "隐藏图标必须用 i-eye sprite")
+        self.assertIn('id="i-star"', self.html, "i-star sprite 必须存在")
+
+    def test_panel_title_removed(self):
+        """用户 2026-09-26 裁定：两个项目页去掉面板大标题（面包屑已示页名）。"""
+        lp_panel = self._panel()
+        self.assertNotIn("<h3>", lp_panel, "本机项目面板不应再有 <h3> 大标题")
 
 
 @tiers.host_only

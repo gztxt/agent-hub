@@ -95,6 +95,16 @@ var lpLoaded = false;
 /* v0.13.31 GitHub 页同型（双 var 冗余纪律见上）；10 分片里 var ghLoaded 提升
    保证 06 顶层 go() 先行调用读到 undefined 而非 TDZ。 */
 var ghLoaded = false;
+/* v0.13.32 TDZ 补丁（真事故驱动的修复）：06 顶层 go(lsGet('hub.page')) 在
+   09/10 分片顶层初始化**之前**就能调到 loadLocalProjects()/loadGithubRepos()
+   （函数声明提升），而 LP/GH/lpStars… 的 `var X = …` 初始化还没跑 ⇒ 函数里
+   读 LP.length 直接 TypeError ⇒ promise reject ⇒ 列表永远停在「加载中…」。
+   修法与 lpLoaded 同型：状态声明+初始化前置到 01（拼接序最先），09/10 里的
+   同名 var 是刻意冗余（提升后赋值不再能覆盖函数已经写入的数据——赋值均为
+   「首次空态」形状，函数体只在数据就位后才写非空值，语义不变）。 */
+var LP = [], GH = [];
+var lpStars = new Set(), lpHiddenSet = new Set();
+var ghStars = new Set(), ghHiddenSet = new Set();
 
 /* ── 基础 ─────────────────────────────────────────── */
 

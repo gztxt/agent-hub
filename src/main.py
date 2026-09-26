@@ -71,7 +71,8 @@ import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.31"   # 本机项目精度收紧（79→42：/tmp 前缀+备份归档剪枝+worktree 结构剔除+cloudcli 降级纯富化）
+VERSION = "0.13.32"   # 项目页交互批：两项目页去面板大标题；行内收藏（★置顶）/隐藏（localStorage 持久，
+                      #   勾「显示隐藏」回列）——纯前端批，?v= 提手随 build 自动换
                       #   + GitHub 项目页：GET /api/github/repos（远端清单+strict remote 本地匹配）+ POST /api/github/clone
                       #   （白名单 slug→服务端重构 URL→浅克隆到 GITHUB_CLONE_BASE，审计 action=create）
                       #   + POST /start 铸 JWT 转调创建会话 → 详情抽屉项目列表 + iframe 直达 /session/{id}；

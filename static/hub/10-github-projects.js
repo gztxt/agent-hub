@@ -9,14 +9,28 @@
  *   ① local.found → 与本机项目页同路：POST /api/term/sessions {agent_id, cwd}；
  *   ② 本地无 → POST /api/github/clone {repo}（按钮禁用 + 克隆中 toast）
  *      → 拿 d.path 作 cwd → 走同一条会话链 → gotoChat('term') + termConnect。
+ * v0.13.32 行内动作（同 09 分片）：
+ *   收藏（★）——ghStars（localStorage，键 = full_name）置顶 + 行首高亮；
+ *   隐藏——ghHiddenSet（localStorage）；勾选 #ghHidden「显示隐藏」才回列（半透明）。
  * 状态变量用 var：go()（01 分片，拼接序在前）会经顶层 go(lsGet('hub.page'))
  * 同步走到本分片函数体，let 的 TDZ 静态序风险会被 test_tdz_order 判红——
- * 08/09 分片同教训。本分片零 localStorage（fork 开关是临时态）。 */
+ * 08/09 分片同教训。localStorage 一律走 lsGet/lsSet 守卫（test_ls_guard R1）。 */
 
 var GH = [];          // 全量远端仓库（过滤前缓存）
 var ghSel = null;     // 当前选中索引（null = 未选）
 var ghSelName = '';
 var ghLoaded = false;    // go() 懒加载标志（声明在 01 亦有 var 冗余，同 lpLoaded 纪律）
+
+/* v0.13.32 收藏/隐藏状态（同 09 的 _lpSet 形态；解析失败按空集，不打断渲染）。 */
+function _ghSet(key) {
+  try { return new Set(JSON.parse(lsGet(key) || '[]')); } catch (e) { return new Set(); }
+}
+var ghStars = _ghSet('hub.gh.stars');
+var ghHiddenSet = _ghSet('hub.gh.hidden');
+
+function _ghSave(key, set) {
+  lsSet(key, JSON.stringify([...set]));
+}
 
 function ghTime(iso) {
   if (!iso) return '';
@@ -25,6 +39,8 @@ function ghTime(iso) {
 
 function ghRowHtml(r, i) {
   const on = i === ghSel ? ' on' : '';
+  const starred = ghStars.has(r.full_name);
+  const hidden = ghHiddenSet.has(r.full_name);
   const tags = (r.fork ? '<span class="tag">fork</span>' : '') +
                (r.language ? '<span class="tag agent">' + escapeHtml(r.language) + '</span>' : '') +
                (r.archived ? '<span class="tag">archived</span>' : '');
@@ -34,12 +50,46 @@ function ghRowHtml(r, i) {
   const path = (r.local && r.local.path)
     ? '<br><span class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
       escapeHtml(String(r.local.path).slice(0, 72)) + '</span>' : '';
-  return '<div class="mem-item' + on + '" data-i="' + i + '" style="gap:6px;cursor:pointer"' +
+  const acts = '<span class="nav-acts" style="display:inline-flex;gap:2px;align-self:center">' +
+    '<span class="act-btn" style="' + (starred ? 'color:var(--warn,#d90)' : '') + '"' +
+    ' onclick="event.stopPropagation();ghToggleStar(' + i + ')"' +
+    ' title="' + (starred ? '取消收藏' : '收藏——置顶排序') + '">' + ico('star') + '</span>' +
+    '<span class="act-btn" onclick="event.stopPropagation();ghToggleHide(' + i + ')"' +
+    ' title="' + (hidden ? '取消隐藏' : '隐藏——不再显示（可勾选顶部「显示隐藏」找回）') + '">' +
+    ico('eye') + '</span></span>';
+  return '<div class="mem-item' + on + '" data-i="' + i +
+    '" style="gap:6px;cursor:pointer' + (hidden ? ';opacity:.45' : '') + '"' +
     ' onclick="ghSelect(' + i + ')"' +
     ' title="' + escapeHtml(r.full_name || '') + '">' +
-    '<p style="min-width:0"><b>' + escapeHtml(r.name || '') + '</b>' + tags +
+    '<p style="min-width:0">' + (starred ? '<span style="color:var(--warn,#d90)">★ </span>' : '') +
+    '<b>' + escapeHtml(r.name || '') + '</b>' + tags +
     (r.pushed_at ? ' <span class="hint">' + ghTime(r.pushed_at) + '</span>' : '') + path + '</p>' +
-    local + '</div>';
+    local + acts + '</div>';
+}
+
+function ghToggleStar(i) {
+  const r = GH[i];
+  if (!r) return;
+  const fn = r.full_name;
+  if (ghStars.has(fn)) ghStars.delete(fn);
+  else ghStars.add(fn);
+  _ghSave('hub.gh.stars', ghStars);
+  ghRenderList();
+}
+
+function ghToggleHide(i) {
+  const r = GH[i];
+  if (!r) return;
+  const fn = r.full_name;
+  if (ghHiddenSet.has(fn)) ghHiddenSet.delete(fn);
+  else {
+    ghHiddenSet.add(fn);
+    if (ghSel === i) { ghSel = null; ghSelName = ''; }   // 隐藏选中项即解除选中
+  }
+  _ghSave('hub.gh.hidden', ghHiddenSet);
+  ghRenderList();
+  const hint = $('ghHint');
+  if (hint && ghHiddenSet.size) hint.textContent += '（已隐藏 ' + ghHiddenSet.size + ' 项）';
 }
 
 function ghSelect(i) {
@@ -58,22 +108,31 @@ function ghSelect(i) {
 }
 
 function ghFilter() {
-  /* 纯函数（可被探针抽出真代码跑）：fork 默认隐藏，勾选即显。 */
+  /* 纯函数（可被探针抽出真代码跑）：fork 默认隐藏，勾选即显；
+     隐藏行仅在 #ghHidden 勾选时回列。 */
   const showForks = !!($('ghForks') && $('ghForks').checked);
-  return GH.map((r, i) => [r, i]).filter(([r]) => !r.fork || showForks);
+  const showHidden = !!($('ghHidden') && $('ghHidden').checked);
+  return GH.map((r, i) => [r, i]).filter(([r]) =>
+    (!r.fork || showForks) && (!ghHiddenSet.has(r.full_name) || showHidden));
 }
 
 function ghRenderList() {
   const box = $('ghList');
   if (!box) return;
   const q = ($('ghQ') ? $('ghQ').value.trim() : '').toLowerCase();
-  const idx = ghFilter().filter(([r]) =>
+  /* 顺序：收藏置顶（保持原相对序）→ 未收藏。 */
+  const pairs = ghFilter();
+  const ordered = pairs.filter(([r]) => ghStars.has(r.full_name))
+    .concat(pairs.filter(([r]) => !ghStars.has(r.full_name)));
+  const idx = ordered.filter(([r]) =>
     !q || String(r.name || '').toLowerCase().includes(q) ||
     String(r.full_name || '').toLowerCase().includes(q));
   box.innerHTML = idx.map(([r, i]) => ghRowHtml(r, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配仓库' : '无仓库') + '</div>';
   const hint = $('ghHint');
-  if (hint) hint.textContent = '显示 ' + idx.length + ' / ' + GH.length + ' 个仓库';
+  if (hint) hint.textContent = '显示 ' + idx.length + ' / ' + GH.length + ' 个仓库' +
+    (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
+    (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
 }
 
 function ghRenderAgents() {
@@ -101,7 +160,9 @@ async function loadGithubRepos(force) {
     ghRenderList();
     ghRenderAgents();
     if (hint) hint.textContent = (d.token === false ? 'token 不可用 · ' : '') +
-      (d.count || 0) + ' 个仓库 · 本地已有 ' + (d.local_total || 0) + ' 个';
+      (d.count || 0) + ' 个仓库 · 本地已有 ' + (d.local_total || 0) + ' 个' +
+      (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
+      (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
     const meta = $('ghMeta');
     if (meta) meta.textContent =
       (d.cached ? '缓存 ' + (d.age_s || 0) + 's 前' : '实时') +

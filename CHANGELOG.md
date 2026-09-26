@@ -1,5 +1,35 @@
 # CHANGELOG
 
+## v0.13.32 — 项目页交互批：去面板标题 + 行内收藏/隐藏
+
+> 施工会话：本会话。基线：v0.13.31。改动文件：`templates/index.html`（两项目页
+> 去 <h3> 大标题 + lpHidden/ghHidden「显示隐藏」开关 + i-star sprite）、
+> `static/hub/09-local-projects.js` + `static/hub/10-github-projects.js`
+> （行内收藏/隐藏图标、收藏置顶、隐藏过滤、localStorage 持久）、
+> `static/hub/01-core-boot.js`（LP/GH/四集合初始化前置——TDZ 真事故修复）、
+> `src/main.py`（VERSION 0.13.32）、`tests/test_localprojects.py` +
+> `tests/test_github_projects.py`（收藏/隐藏四件套钉子）+
+> `tests/test_tdz_order.py`（新钉子：项目状态初始化须早于 bootstrap go()）、
+> `static/hub.js`（build 3558 行）。
+> 验证：L0 hermetic **623/623** 零跳过；L1 host 41/41；L2 真鼠标快探 8/8
+> （标题已删/收藏置顶+刷新持久/隐藏消失+勾选回列/零 JS 错）。
+
+### v0.13.32 交付（用户需求「删两项目页顶部标题和分割线；每个项目后加收藏和隐藏图标，收藏排最前，隐藏后不显示除非勾选顶部显示框」）
+
+- **去标题**：两项目页删 <h3>（面包屑已示页名，标题是重复装饰）。
+- **收藏（★）**：行尾星图标（新 i-star sprite + 既有 .act-btn 样式）；点后
+  置顶（多条保持原相对序，concat 稳定排序）+ 行首 ★ 高亮；localStorage
+  持久（键 hub.lp.stars / hub.gh.stars，走 lsGet/lsSet 守卫），再点取消。
+- **隐藏（eye）**：行尾眼图标；点后从列表消失（隐藏选中项顺带解除选中）；
+  勾选顶部「显示隐藏」开关才回列（回列行半透明 45% 以示状态）；
+  localStorage 持久（hub.lp.hidden / hub.gh.hidden）。
+- **修真 TDZ 事故（探针抓红）**：刷新回项目页（hub.page 恢复路径）时，
+  06 顶层 go() 同步调 loadLocalProjects()，而 LP 的 var 初始化在 09 分片
+  顶层（拼接序在 06 之后）⇒ LP.length 抛 TypeError ⇒ 列表卡死在「加载中…」。
+  该 bug v0.13.30 起就存在，只是此前的探针没测过「刷新恢复」路径。修法：
+  LP/GH/lpStars/lpHiddenSet/ghStars/ghHiddenSet 初始化前置到 01 分片
+  （lpLoaded 同型双 var 纪律），test_tdz_order 加专项钉子。
+
 ## v0.13.31 — GitHub 项目菜单 + 本机项目精度收紧（79→42）
 
 > 施工会话：本会话。基线：v0.13.30。改动文件：新增 `src/githubprojects.py`

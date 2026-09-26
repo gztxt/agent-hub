@@ -473,7 +473,7 @@ class TestFrontendQuartet(unittest.TestCase):
             self.assertIn(f"function {fn}(", self.js, f"{fn} 缺失 ⇒ 面板点了没反应")
 
     def test_dom_ids_used_by_js_exist_in_html(self):
-        for dom_id in ("ghQ", "ghForks", "ghHint", "ghList", "ghSelName",
+        for dom_id in ("ghQ", "ghForks", "ghHidden", "ghHint", "ghList", "ghSelName",
                        "ghAgent", "ghStartBtn", "ghMeta"):
             self.assertIn(f'id="{dom_id}"', self.html,
                           f"#{dom_id} 在 JS 里被引用但 HTML 缺失 ⇒ null 崩溃")
@@ -494,6 +494,43 @@ class TestFrontendQuartet(unittest.TestCase):
             fn = m.group(1)
             self.assertIn(f"function {fn}(", self.js,
                           f"HTML 引用 {fn}() 但 hub.js 未定义（点击即报错）")
+
+
+class TestStarHideQuartet(unittest.TestCase):
+    """v0.13.32 收藏/隐藏（GitHub 页，键 = full_name）+ 去面板大标题。"""
+
+    def setUp(self):
+        self.html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
+        self.js = (_REPO / "static" / "hub.js").read_text(encoding="utf-8")
+
+    def _panel(self):
+        i = self.html.find('id="page-github"')
+        j = self.html.find('id="page-memory"')
+        return self.html[i:j if j > i else len(self.html)]
+
+    def test_row_action_functions_defined(self):
+        for fn in ("ghToggleStar", "ghToggleHide"):
+            self.assertIn(f"function {fn}(", self.js, f"{fn} 缺失 ⇒ 图标点了没反应")
+
+    def test_state_persisted_via_guarded_ls(self):
+        self.assertIn("'hub.gh.stars'", self.js)
+        self.assertIn("'hub.gh.hidden'", self.js)
+        self.assertNotIn("localStorage.setItem", self.js.replace(
+            "window.localStorage.setItem", ""))       # 守卫内部那处除外
+
+    def test_star_first_and_hidden_in_filter(self):
+        i = self.js.find("function ghFilter(")
+        body = self.js[i:i + 900]
+        self.assertIn("ghHiddenSet.has", body, "ghFilter 必须过滤隐藏行")
+        self.assertIn("ghHidden", body, "过滤必须受「显示隐藏」开关控制")
+        r = self.js.find("function ghRenderList(")
+        rbody = self.js[r:r + 1300]
+        self.assertIn("ghStars.has", rbody, "渲染必须按收藏分流置顶")
+        self.assertIn("concat", rbody)
+
+    def test_panel_title_removed(self):
+        gh_panel = self._panel()
+        self.assertNotIn("<h3>", gh_panel, "GitHub 面板不应再有 <h3> 大标题")
 
 
 if __name__ == "__main__":
