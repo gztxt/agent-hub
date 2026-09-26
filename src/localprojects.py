@@ -250,7 +250,11 @@ def _merge_cloudcli(git_projects: List[Dict[str, Any]],
             _drop(key, "非 git 目录")
             continue
         if d.joinpath(".git").is_file() and \
-                _is_derived_worktree(_parse_gitdir_file(d), [r for r in root_set]):
+                _is_derived_worktree(_parse_gitdir_file(d), list(by_path)):
+            # v0.13.36 修正：对照集合必须是**已收录 git 仓**（by_path），不能用
+            # ROOTS——CloudCLI 在 worktree 里开过会话后，该路径会以 cc-only 形态
+            # 走到这里，而它的 gitdir 指向 /home/gztxt/agent-hub/.git/…，只对
+            # ROOTS 比对永远不命中 ⇒ 派生 worktree 漏回主列表（09-26 L1 红定案）。
             _drop(key, "派生 worktree")
             continue
         by_path[key] = {

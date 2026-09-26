@@ -35,6 +35,13 @@ _L0_TMP = pathlib.Path(os.getenv("HUB_L0_TMP",
                                  pathlib.Path.home() / "hub-l0test-fixtures"))
 
 
+def _force_test_token() -> None:
+    """同进程全量跑时其它用例可能改写 TERM_TOKEN——write belt 必须自钉凭据，
+    否则 provided 与 secrets 错位 ⇒ 401 假红（09-26 全量跑实测）。"""
+    os.environ["TERM_TOKEN"] = "unit-test-token-not-production"
+    os.environ.pop("HUB_PASSCODE", None)
+
+
 def _mktmp(prefix: str) -> pathlib.Path:
     _L0_TMP.mkdir(parents=True, exist_ok=True)
     for _ in range(8):
@@ -128,6 +135,7 @@ class TestWriteGateBelt(unittest.TestCase):
     handler 内这道 decide 是唯一在测试里可断言的闸。"""
 
     def setUp(self):
+        _force_test_token()
         self.tmp = _mktmp("prefs3-")
         db.init_db(self.tmp / "prefs.db")
 
