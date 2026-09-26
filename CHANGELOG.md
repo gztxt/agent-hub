@@ -18,9 +18,19 @@
 >   `shutil.which` 对带目录分隔符的路径原样返回，term.py 的 `which(cmd[0])` 才走得通。
 > - **原生界面不受影响**：形态优先级 `embed > term > chat`，两卡 entries 顺序仍
 >   `embed, open, term, detail` ⇒ 点卡片默认仍进 :30141 / :35431 原生界面。
-> - **验证**：L0 hermetic 652/652 零跳过 + L1 host 41/41 + prepush 六闸；实弹
+> - **⚠ 上线后追修（同一版内）**：给 pi 加终端入口后，**pi 卡片整个消失**——
+>   服务进程的 `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+>   **不含 nvm**，而 `pi` 只装在 `~/.nvm/versions/node/v24.18.0/bin` ⇒ 生产
+>   `which('pi')` 落空 ⇒ vitals 判 not_installed ⇒ 卡片被拦（交互 shell 里能
+>   which 到，纯属 PATH 假象，`09-27` 上线后实测抓到）。修法：
+>   `profiles.which()` 兜底目录增补 `~/.nvm/versions/node/*/bin`（新版优先），
+>   只扩搜索目录、不改进程 PATH、不动 systemd 配置。闸门
+>   `tests/test_which_nvm.py`（把 PATH 换成服务的真实值再断言 `which('pi')`
+>   命中，彻底堵死"shell 里能跑就行"的假绿）。
+> - **验证**：L0 hermetic 655/655 零跳过 + L1 host 41/41 + prepush 六闸；实弹
 >   pi/codebuddy 会话 alive=true（cwd 生效）并在测后删除；qwenpaw 仍按预期
->   400「无终端入口」。
+>   400「无终端入口」；**以服务 PATH 起实例复验**：pi 卡片 running/usable 并在
+>   候选框内（修前该卡整体消失）。
 
 ## v0.13.37 — Agents 菜单补 CodeBuddy Code 卡（`codebuddy --serve` 原生遥控界面 :35431）
 

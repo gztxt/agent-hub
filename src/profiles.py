@@ -365,13 +365,29 @@ def get_profile(pid: str) -> Optional[dict]:
     return None
 
 
+def _nvm_bins() -> List[Path]:
+    """`~/.nvm/versions/node/*/bin`（多版本按目录名倒序，新版优先）。
+
+    为什么必须补这一路（2026-09-27 实测，不是假想）：hub 跑在 systemd 用户单元里，
+    其 `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` —— 没有
+    nvm。而 `pi`（v0.85.1）这个 npm 全局 CLI 只存在于 `~/.nvm/versions/node/v24.18.0/bin`，
+    于是生产进程里 `which('pi')` 落空 ⇒ vitals 判 not_installed ⇒ **整张卡被拦**，
+    本机项目页候选框里当然也没有它（交互 shell 里能 which 到，纯属 PATH 假象）。
+    只补搜索目录、不改进程 PATH，不影响其它工具链。"""
+    root = Path.home() / ".nvm" / "versions" / "node"
+    if not root.is_dir():
+        return []
+    return sorted((d / "bin" for d in root.iterdir() if (d / "bin").is_dir()),
+                  key=lambda p: p.parent.name, reverse=True)
+
+
 def which(name: str) -> Optional[str]:
-    """which + 常见用户 bin 目录兜底（服务进程 PATH 可能不含 ~/.local/bin、~/.npm-global/bin）"""
+    """which + 常见用户 bin 目录兜底（服务进程 PATH 可能不含 ~/.local/bin、~/.npm-global/bin、nvm）"""
     p = shutil.which(name)
     if p:
         return p
     for d in (Path.home() / ".local/bin", Path.home() / ".npm-global/bin",
-              Path("/usr/local/bin"), Path.home() / "bin"):
+              Path("/usr/local/bin"), Path.home() / "bin") + tuple(_nvm_bins()):
         f = d / name
         if f.is_file() and os.access(f, os.X_OK):
             return str(f)
