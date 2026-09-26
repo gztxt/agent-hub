@@ -29,6 +29,12 @@
   被 v0.13.31 P1 的 `/tmp` 前缀剔除闸整段排除 ⇒ hermetic-clean 12 例时绿时红
   （随 TMPDIR 漂移）。假 HOME 改落 `~/hub-l0test-fixtures/` 下，与其它 L0
   夹具同域，hermetic-clean 恢复 644/644 稳定绿。
+- **顺带修 L1 实况精度红**：`_merge_cloudcli` cc-only 分支的派生 worktree
+  判定对照集合错用扫描根 ROOTS，应为**已收录 git 仓**（by_path）——
+  CloudCLI 在 worktree 里开过会话后该路径以 cc-only 形态漏回主列表
+  （/home/gztxt/agent-hub-wt-01a0dc26 实测泄漏）。修复后 42 项零泄漏。
+- **顺带修 test_prefs 环境耦合**：write belt 用例改在 setUp 强钉
+  TERM_TOKEN/清 HUB_PASSCODE——同进程全量跑时其它用例改写环境变量会造 401 假红。
 
 ## v0.13.35 — 勾选框宽度真因：.toolbar input 拉伸规则误命中 checkbox
 
