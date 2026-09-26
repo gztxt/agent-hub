@@ -4,6 +4,12 @@
  *
  * 数据源：GET /api/github/repos（远端清单 + strict remote 本地匹配，
  * 只读不鉴权；token/token 失效由后端信封 errors 点名——「查不了」≠「没有」）。
+ * v0.13.33 缓存裁定（用户：「拉取一次后就在本地缓存，每次拉取就是浪费资源；
+ * 只有选中后进入编辑状态之前再次拉取同步；总目录是手动刷新」）：
+ *   · 列表：服务端内存缓存**拉一次永久有效**（重启自然清空）；进页/过滤/翻看
+ *     永不重拉；「刷新」按钮（force=1）是唯一整表重拉入口；
+ *   · 选中（ghSelect）→ ghSyncCheck 打一次 /api/github/sync 单仓核对
+ *     （1 次 git ls-remote 比对 HEAD），结果只作 #ghMeta 提示，不打断。
  * fork 默认隐藏（34 个 fork 多为别人的仓库），#ghForks 勾选即显。
  * 新建会话（ghStart）两段式：
  *   ① local.found → 与本机项目页同路：POST /api/term/sessions {agent_id, cwd}；
@@ -105,6 +111,26 @@ function ghSelect(i) {
     btn.lastChild.textContent = (r.local && r.local.found) ? '新建会话' : '克隆并开会话';
   }
   ghRenderList();   // 重画选中态（.on）
+  ghSyncCheck(r);   // v0.13.33：选中即核对（用户裁定「进入编辑状态之前才同步」）
+}
+
+/* v0.13.33 单仓核对：选中仓库时打一次 /api/github/sync（1 次 git ls-remote，
+   绝不整表重拉）。结果只影响 #ghMeta 的一行提示（behind 时提示 git pull），
+   不打断、不弹窗——列表本身永远吃缓存。 */
+var ghSyncBusy = false;
+async function ghSyncCheck(r) {
+  if (ghSyncBusy || !r || !r.full_name) return;
+  ghSyncBusy = true;
+  const meta = $('ghMeta');
+  const orig = meta ? meta.textContent : '';
+  try {
+    const d = await api('/api/github/sync?repo=' + encodeURIComponent(r.full_name));
+    if (meta && d && d.note) {
+      const mark = d.state === 'synced' ? '✓ ' : (d.state === 'behind' ? '⚠ ' : '');
+      meta.textContent = mark + d.note + (orig ? ' ｜ ' + orig : '');
+    }
+  } catch (e) { /* 核对失败静默：提示不是关键路径 */ }
+  ghSyncBusy = false;
 }
 
 function ghFilter() {
@@ -164,8 +190,11 @@ async function loadGithubRepos(force) {
       (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
       (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
     const meta = $('ghMeta');
+    /* v0.13.33 用户裁定「拉取一次后本地缓存，每次拉取就是浪费资源」：
+       服务端内存缓存永久有效（重启才清），只有「刷新」按钮（force=1）强拉。
+       此处如实显示缓存年龄，不催促重新拉取。 */
     if (meta) meta.textContent =
-      (d.cached ? '缓存 ' + (d.age_s || 0) + 's 前' : '实时') +
+      (d.cached ? '缓存（' + (ageText(d.age_s)) + '前拉取，点「刷新」强制更新）' : '首次拉取') +
       ((d.errors || []).length ? ' ｜ ' + d.errors.join('；') : '') +
       (d.took_ms != null ? ' ｜ ' + d.took_ms + 'ms' : '');
   } catch (e) {
@@ -173,6 +202,13 @@ async function loadGithubRepos(force) {
     box.innerHTML = '<div class="hint" style="padding:10px">加载失败：' + escapeHtml(e.message || '') +
       ' <button class="btn sm" onclick="loadGithubRepos(true)">重试</button></div>';
   }
+}
+
+function ageText(sec) {
+  const s = Number(sec) || 0;
+  if (s < 90) return s + 's ';
+  if (s < 5400) return Math.round(s / 60) + ' 分钟 ';
+  return Math.round(s / 3600) + ' 小时 ';
 }
 
 /* 核心：选中仓库 + agent → 拉起 pty 会话 → 跳该 agent 终端工作台。

@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## v0.13.33 — GitHub 清单缓存裁定：拉一次永久缓存 + 选中单仓核对
+
+> 施工会话：本会话。基线：v0.13.32。改动文件：`src/githubprojects.py`
+> （LIST_TTL 300→0 永久缓存 + 新 GET /api/github/sync 单仓核对 +
+> _gh_head/_local_head）、`static/hub/10-github-projects.js`（ghSelect 触发
+> ghSyncCheck + 缓存龄期文案）、`src/main.py`（VERSION 0.13.33）、
+> `tests/test_github_projects.py`（缓存永久钉子改写 + TestSyncEndpoint 6 例）、
+> `static/hub.js`（build 3594 行）。
+> 验证：L0 hermetic **629/629** 零跳过；L1 host 41/41；生产实测缓存命中
+> 1505ms→98ms、切页/刷新零重拉、选中触发单仓核对。
+
+### v0.13.33 交付（用户需求「github 仓库拉取一次后本地缓存，不要每次拉取浪费资源；只有选中后进入编辑状态之前才再次拉取同步；总目录手动刷新」）
+
+- **列表缓存改为永久**：原 5 分钟 TTL 作废（LIST_TTL_S=0）——服务端拉一次
+  后内存缓存永久有效（重启自然清空）；进页/过滤/收藏/隐藏/切页/刷新页面
+  都不重拉（命中缓存 ~98ms vs 真拉 ~1.5s）；**「刷新」按钮（force=1）是
+  唯一整表重拉入口**（用户裁定「总目录是手动刷新」）。
+- **新增 GET /api/github/sync 单仓核对**（「选中后进入编辑状态之前同步」的
+  后端半程）：前端 ghSelect 时打一次——比对本地 HEAD（纯文件读 .git/HEAD
+  → refs，不起 git）与远端 HEAD（1 次 git ls-remote）；SHA 一致 = synced
+  （✓ 提示）、不同 = diverged（⚠ 中性提示「可 pull/push 对齐」——单值比对
+  无法判谁新，本地常是未 push 的新提交如 agent-hub，绝不误指 git pull）、
+  本地无 = absent、取不到远端 = unknown（不是失败）。结果只作 #ghMeta 一行
+  提示，不打断不开弹窗；核对有 ghSyncBusy 防抖。
+- **明确不做**：进页自动重拉、定时后台同步任务、整表 HEAD 逐仓比对
+  （72 仓 × ls-remote = 浪费，正是用户点名要砍的）。
+
 ## v0.13.32 — 项目页交互批：去面板标题 + 行内收藏/隐藏
 
 > 施工会话：本会话。基线：v0.13.31。改动文件：`templates/index.html`（两项目页

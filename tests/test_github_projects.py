@@ -244,7 +244,10 @@ class TestListEnvelope(unittest.TestCase):
         self.assertNotIn(tok, joined, "上游错误正文必须把 token 洗掉")
         self.assertIn("<redacted>", joined)
 
-    def test_cache_ttl(self):
+    def test_cache_forever_until_force(self):
+        """v0.13.33 用户裁定「拉取一次后本地缓存」：内存缓存**永不过期**——
+        重复调用吃缓存（fetch 计数不涨）；只有 force=1（页面「刷新」按钮）
+        才重拉。以前是 5 分钟 TTL，用户点名「每次拉取就是浪费资源」。"""
         calls = {"n": 0}
 
         def fake_fetch(tok):
@@ -255,12 +258,17 @@ class TestListEnvelope(unittest.TestCase):
                 mock.patch.object(gp, "_fetch_all", fake_fetch):
             gp._cache["repos"] = None
             gp._list_repos(force=True)
-            d2 = gp._list_repos()                    # TTL 内：吃缓存
-            self.assertTrue(d2["cached"])
-            self.assertEqual(calls["n"], 1)
-            gp._cache["at"] = 0.0                    # 龄期清零 ⇒ 过期
+            d2 = gp._list_repos()                    # 永久缓存：吃缓存
+            d3 = gp._list_repos()                    # 再来一次：还是缓存
+            self.assertTrue(d2["cached"] and d3["cached"])
+            self.assertEqual(calls["n"], 1, "非 force 调用绝不重拉")
+            # 龄期再大也不过期（旧 TTL 语义的对照：这里曾经会重拉）
+            gp._cache["at"] = 0.0
             gp._list_repos()
-            self.assertEqual(calls["n"], 2)
+            self.assertEqual(calls["n"], 1, "龄期不影响缓存（永久有效）")
+            # force=1 = 唯一重拉入口
+            gp._list_repos(force=True)
+            self.assertEqual(calls["n"], 2, "force=1 必须重拉")
 
 
 class TestCloneGuard(unittest.TestCase):
@@ -436,7 +444,77 @@ class TestCloneDiscipline(unittest.TestCase):
     def test_constants_pin_user_decisions(self):
         self.assertEqual(gp.CLONE_BASE, os.path.abspath(
             os.getenv("GITHUB_CLONE_BASE", "/fs/1000/ftp/技术文档")))
-        self.assertEqual(gp.LIST_TTL_S, 300)
+        # v0.13.33 裁定：列表缓存永久（0 = 不过期；刷新按钮 force=1 才重拉）
+        self.assertEqual(gp.LIST_TTL_S, 0)
+
+
+class TestSyncEndpoint(unittest.TestCase):
+    """GET /api/github/sync：单仓核对（「选中进入编辑前才同步」的后端半程）。
+    只比对 HEAD，绝不整表重拉——1 次 git ls-remote 是唯一外部成本。"""
+
+    def setUp(self):
+        self.tmp = _mktmp("ghsync-")
+        self.repo = _mkrepo(self.tmp, "myrepo",
+                            "https://github.com/gztxt/myrepo.git")
+        # 写一个本地 HEAD（main ref）
+        gitdir = self.repo / ".git"
+        (gitdir / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+        (gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (gitdir / "refs" / "heads" / "main").write_text(
+            "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111\n", encoding="utf-8")
+        self._saved = lp.ROOTS
+        lp.ROOTS = [str(self.tmp)]
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        lp.ROOTS = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    async def _call(self, repo):
+        return await gp.github_sync(repo, _Req(path="/api/github/sync"))
+
+    def test_absent_state(self):
+        with mock.patch.object(gp, "_remote_slugs", lambda: {}):
+            d = asyncio.run(self._call("gztxt/myrepo"))
+        self.assertEqual(d["state"], "absent")
+        self.assertIsNone(d["local_head"])
+
+    def test_synced_state(self):
+        with mock.patch.object(gp, "_remote_slugs",
+                               lambda: {"gztxt/myrepo": [str(self.repo)]}), \
+                mock.patch.object(gp, "_gh_head",
+                                  lambda url, tok: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"):
+            d = asyncio.run(self._call("gztxt/myrepo"))
+        self.assertEqual(d["state"], "synced")
+        self.assertEqual(d["local_head"], "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
+
+    def test_diverged_state(self):
+        """SHA 不同 ⇒ diverged（单值比对无法判谁新——本地可能是未 push 的
+        新提交；绝不误指 git pull）。"""
+        with mock.patch.object(gp, "_remote_slugs",
+                               lambda: {"gztxt/myrepo": [str(self.repo)]}), \
+                mock.patch.object(gp, "_gh_head",
+                                  lambda url, tok: "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"):
+            d = asyncio.run(self._call("gztxt/myrepo"))
+        self.assertEqual(d["state"], "diverged")
+        self.assertIn("对齐", d["note"])
+
+    def test_remote_unreachable_is_unknown_not_error(self):
+        with mock.patch.object(gp, "_remote_slugs",
+                               lambda: {"gztxt/myrepo": [str(self.repo)]}), \
+                mock.patch.object(gp, "_gh_head", lambda url, tok: None):
+            d = asyncio.run(self._call("gztxt/myrepo"))
+        self.assertEqual(d["state"], "unknown", "取不到远端 = 不可比对，不是失败")
+
+    def test_bad_repo_shape_400(self):
+        with self.assertRaises(Exception) as cm:
+            asyncio.run(self._call("bad shape"))
+        self.assertEqual(cm.exception.status_code, 400)
+
+    def test_local_head_reads_ref_without_git(self):
+        """_local_head 纯文件读（.git/HEAD → refs/heads/main），不起 git。"""
+        self.assertEqual(gp._local_head(str(self.repo)),
+                         "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
 
 
 class TestFrontendQuartet(unittest.TestCase):

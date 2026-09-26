@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -71,8 +72,11 @@ TOKEN_FILE = Path(os.getenv("GITHUB_TOKEN_FILE",
 CLONE_BASE = os.path.abspath(os.getenv("GITHUB_CLONE_BASE",
                                        "/fs/1000/ftp/技术文档"))
 
-#: 列表缓存 TTL（秒）：防烧限额；最坏 ~12 次/小时（限额 5000/h）
-LIST_TTL_S = 300
+#: 列表缓存：v0.13.33 起**拉一次永久缓存**（用户裁定「每次拉取就是浪费资源」；
+#: 服务重启自然清空，页面「刷新」按钮 = ?force=1 强制重拉）。不再用 TTL。
+#: 真正需要新数据的时刻——选中仓库要开会话——走 /sync 单仓核对（HEAD SHA
+#: 比对，1 次 API 调用），不整表重拉。
+LIST_TTL_S = 0          # 0 = 永不过期（保留常量名：测试与信封口径钉着）
 
 #: 克隆超时（秒）：--depth 1 浅克隆足够；超时 kill + 守卫清理
 CLONE_TIMEOUT_S = 180
@@ -225,8 +229,7 @@ def _list_repos(force: bool = False) -> Dict[str, Any]:
     tok = _read_token()
     repos: List[Dict[str, Any]] = []
     cached = False
-    if _cache.get("repos") is not None and not force and \
-            (time.time() - _cache["at"]) < LIST_TTL_S:
+    if _cache.get("repos") is not None and not force:
         repos = _cache["repos"]
         cached = True
     elif not tok:
@@ -281,8 +284,74 @@ def _list_repos(force: bool = False) -> Dict[str, Any]:
 
 @router.get("/api/github/repos")
 async def github_repos(force: int = 0):
-    """GitHub 远端仓库清单（含本地匹配；只读不鉴权不埋点）。"""
+    """GitHub 远端仓库清单（含本地匹配；只读不鉴权不埋点）。
+    v0.13.33：内存缓存永久有效（拉一次）；force=1 = 页面「刷新」按钮强拉。"""
     return _list_repos(force=bool(force))
+
+
+def _gh_head(url: str, tok: str) -> Optional[str]:
+    """git ls-remote 取远端 HEAD SHA（1 次 git 调用，免 API）。失败 None。"""
+    try:
+        out = subprocess.run(
+            ["git", "ls-remote", url, "HEAD"],
+            capture_output=True, text=True, timeout=20,
+            env={**vitals.launch_env(), "GIT_TERMINAL_PROMPT": "0"}).stdout
+        return (out.split()[0] if out.split() else None)
+    except Exception:  # noqa: BLE001 —— 超时/无 git 均降级为「不可比对」
+        return None
+
+
+def _local_head(path: str) -> Optional[str]:
+    """本地仓 HEAD SHA（直接读 .git/HEAD 解 ref，不起 git）。失败 None。"""
+    g = Path(path) / ".git"
+    cfg = _repo_config(path)
+    gitdir = g if g.is_dir() else (Path(_parse_gitdir(g)) if _parse_gitdir(g) else None)
+    if gitdir is None:
+        return None
+    try:
+        head = (gitdir / "HEAD").read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return None
+    if head.startswith("ref:"):
+        ref = head[4:].strip()
+        try:
+            sha = (gitdir / ref).read_text(encoding="utf-8", errors="ignore").strip()
+            return sha or None
+        except OSError:
+            return None
+    return head or None
+
+
+@router.get("/api/github/sync")
+async def github_sync(repo: str, request: Request):
+    """单仓核对（v0.13.33「选中进入编辑前才同步」的后端半程）：
+    比对本地 HEAD 与远端 HEAD——SHA 一致 = 已同步；远端新 = behind；
+    本地无 = 需克隆。只读，不鉴权（与清单同口径），单仓 1 次 git ls-remote，
+    绝不整表重拉。"""
+    slug = (repo or "").strip()
+    if not REPO_RE.fullmatch(slug):
+        raise HTTPException(400, f"repo 形状非法: {slug!r}")
+    slugs = _remote_slugs()
+    paths = slugs.get(slug.lower()) or []
+    tok = _read_token()
+    remote_head = _gh_head(f"https://github.com/{slug.lower()}.git", tok)
+    if not paths:
+        return {"ok": True, "repo": slug, "state": "absent",
+                "local_head": None, "remote_head": remote_head,
+                "note": "本地无此仓库（点新建会话即克隆）"}
+    local_head = _local_head(paths[0])
+    if remote_head is None:
+        return {"ok": True, "repo": slug, "state": "unknown", "local_head": local_head,
+                "remote_head": None, "path": paths[0],
+                "note": "远端 HEAD 取不到（网络），无法比对"}
+    if local_head == remote_head:
+        return {"ok": True, "repo": slug, "state": "synced", "local_head": local_head,
+                "remote_head": remote_head, "path": paths[0], "note": "本地与远端一致"}
+    # SHA 不同但**无法从单值比对判断谁新**（本地可能是未 push 的新提交，如 agent-hub
+    # 今天的 28dd764 > 远端 b11c67c）——报 diverged + 中性提示，绝不误指 git pull。
+    return {"ok": True, "repo": slug, "state": "diverged", "local_head": local_head,
+            "remote_head": remote_head, "path": paths[0],
+            "note": "本地与远端 HEAD 不同（进入会话后可 pull / push 对齐）"}
 
 
 class CloneIn(BaseModel):
