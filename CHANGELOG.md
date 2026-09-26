@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## v0.13.26 — 批5：三路 agent 接线完成（仓外共享配置，逐路授权执行）
+
+> 施工会话：`01a0db08`。本批改动全部在 agent-hub 仓外（共享配置军规四件套，
+> 用户已逐路授权），仓内零代码改动；接线对象为生产旧码（v0.13.25，禁重启），
+> 故 MCP 工具面为旧版 9 工具——批6 合并+重启后自动升级为联邦版。
+> ① claude `~/.claude.json`：mcpServers +hub（http 型 + x-hub-token header）；
+> ② codex `~/.codex/config.toml`：[mcp_servers.hub]（streamable_http + ?token=
+> 兜底路，600 权限）；③ pi `~/.pi/agent/extensions/hub-facade.ts`（新文件：REST
+> 直连 GET 路零凭据、150ms 预算 input 自动注入、/hub-recall /hub-skills
+> /hub-health 三命令、404 友好降级「后端未更新」不误报「挂了」）；
+> ④ 生产 `.env`：JOB_SHELL_ALLOW 纳入 rebuild_turbovec.sh（cronjobs 模块级
+> 常量，重启后生效；job 注册亦须重启后执行——PT-20260926-01）。
+> 端到端证据：claude -p 真调 hub_memory_search（TDAI 3 条 5.0ms）；
+> codex exec 真调 hub_kb_search（tdai_l1+turbovec RRF 8 条）；pi -p 加载
+> 自证行 + /hub-recall 打到生产日志（GET /api/memory/search、/api/kb/search
+> 两路 200）。
+
 ## v0.13.26 — 批4：前端技能中心 + 知识库中心（两页上线，六大中心齐）
 
 > 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批3提交。
