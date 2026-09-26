@@ -281,6 +281,50 @@ async def _fed_async(sid: str, q: str, limit: int) -> Dict[str, Any]:
     return r
 
 
+KB_BROWSE_MAX = int(os.getenv("KB_BROWSE_MAX", "200"))   # 顶层条目硬顶，防巨型目录把面板打爆
+
+
+@router.get("/browse")
+async def kb_browse(sub: str = Query(default="", max_length=120)):
+    """文档树浏览（批4 前端「知识库中心」右下栏）：workspace 四根的顶层条目。
+
+    只读门面；根定义与 memfed._RG_TARGETS["workspace_files"] 同源（不另抄一份目录
+    清单，防止两处漂移）。`sub` 只允许**单层相对名**（白名单根内防穿越），
+    不支持 `/`/`..`/绝对路径——这不是防攻击，是防手滑跳出工作区读到无关目录。
+    """
+    roots = memfed._RG_TARGETS["workspace_files"][0]   # tuple(list_of_roots, glob)
+    out: List[Dict[str, Any]] = []
+    errs: List[str] = []
+    if sub:
+        if not re.fullmatch(r"[A-Za-z0-9_\-\u4e00-\u9fff]+", sub) or not sub.strip("."):
+            raise HTTPException(400, "sub 只能是单层目录名（不带 / .. 绝对路径）")
+        # sub 必须匹配某个根的名字（不是拼路径——那是穿越的口子），列的是根内部
+        hit = [r for r in roots if os.path.isdir(r) and os.path.basename(r.rstrip("/")) == sub]
+        if not hit:
+            raise HTTPException(404, f"{sub!r} 不是知识库根（可用：{[os.path.basename(r.rstrip('/')) for r in roots if os.path.isdir(r)]}）")
+        root = hit[0]
+        try:
+            for e in sorted(os.scandir(root), key=lambda x: (not x.is_dir(), x.name.lower()))[:KB_BROWSE_MAX]:
+                out.append({"name": e.name, "dir": e.is_dir(),
+                            "size": (e.stat().st_size if not e.is_dir() else None)})
+        except OSError as e:
+            errs.append(f"{sub}: {e}")
+    else:
+        for r in roots:
+            if not os.path.exists(r):
+                errs.append(f"根缺失: {r}")
+                continue
+            if os.path.isfile(r):
+                out.append({"name": os.path.basename(r), "dir": False,
+                            "size": os.path.getsize(r)})
+                continue
+            n_files = 0
+            for _, _, fs in os.walk(r):
+                n_files += len(fs)
+            out.append({"name": os.path.basename(r) or r, "dir": True, "files": n_files})
+    return {"entries": out, "count": len(out), "errors": errs or None}
+
+
 @router.get("/status")
 async def kb_status():
     """资产面板用：各路是否可用、索引多新、库有多大。全实测，不猜。"""

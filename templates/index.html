@@ -994,6 +994,71 @@
         <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
              不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
              列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
+        <!-- v0.13.26 批4：技能中心 + 知识库中心（与记忆中心同级的三大中心） -->
+        <section class="page" id="page-skills">
+            <div class="panel">
+                <h3>技能中心（7 路发现点 · 只读门面 + 软链安装）</h3>
+                <div class="toolbar">
+                    <input id="skillQ" placeholder="按名称/描述过滤…" oninput="renderSkillList()" style="max-width:220px">
+                    <select id="skillRoute" onchange="renderSkillList()"><option value="">全部发现点</option></select>
+                    <button class="btn sm" onclick="loadSkills()">刷新</button>
+                    <span class="hint" id="skillHint"></span>
+                </div>
+                <div id="skillList" class="mem-list">未加载</div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>安装到其它发现点（软链，不动本体）</h3>
+                    <div class="hint">把一个技能软链到其它 CLI 的发现点（claude/codex/workbuddy 等），
+                    同源唯一副本、不复制文件。同源重复安装是幂等 no-op。</div>
+                    <div class="row toolbar" style="margin-top:8px">
+                        <select id="instName" style="min-width:180px"></select>
+                        <select id="instFrom" title="源发现点"></select>
+                        <span>→</span>
+                        <select id="instTo" multiple size="4" title="目标发现点（可多选）" style="min-width:150px"></select>
+                        <button class="btn sm" onclick="skillInstall()">安装</button>
+                    </div>
+                    <div class="hint tscroll" id="skillBudgetHint"></div>
+                </div>
+                <div class="panel">
+                    <h3>token 预算化清单（注入通道用）</h3>
+                    <div class="toolbar"><input id="skillTok" type="number" value="800" min="50" max="8000" style="max-width:90px" onchange="loadSkillBudget()">
+                    <span class="hint">max_tokens</span></div>
+                    <div id="skillBudget" class="hint tscroll">未加载</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page" id="page-kb">
+            <div class="panel">
+                <h3>知识库中心（5 路联邦检索：tdai/turbovec/workspace/archived/local）</h3>
+                <div class="toolbar">
+                    <input id="kbQ" placeholder="检索知识库（如：CCR / 备份 / 端口）…" style="max-width:280px" onkeydown="if(event.key==='Enter')kbSearch()">
+                    <button class="btn sm" onclick="kbSearch()">检索</button>
+                    <select id="kbRoutes" multiple size="5" title="检索路（多选）" style="min-width:130px">
+                        <option value="tdai" selected>TDAI L1</option>
+                        <option value="turbovec" selected>语义索引</option>
+                        <option value="workspace" selected>工作区全文</option>
+                        <option value="archived" selected>归档会话</option>
+                        <option value="local">本地便签</option>
+                    </select>
+                    <span class="hint" id="kbHint"></span>
+                </div>
+                <div id="kbResults" class="mem-list">输入关键词开始检索</div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>各路健康</h3>
+                    <div id="kbStatus" class="hint tscroll">未加载</div>
+                    <button class="btn ghost sm" style="margin-top:8px" onclick="loadKbStatus()">刷新</button>
+                </div>
+                <div class="panel">
+                    <h3>文档树（工作区文件）</h3>
+                    <div id="kbBrowse" class="hint tscroll">未加载</div>
+                </div>
+            </div>
+        </section>
+
         <section class="page" id="page-assets">
             <div class="panel">
                 <h3>资产门面（记忆 / 知识 / 技能 —— hub 只做门面，不建第二权威副本）</h3>
@@ -1180,6 +1245,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=ad0315a9"></script>
+    <script src="/static/hub.js?v=2b01f38b"></script>
 </body>
 </html>

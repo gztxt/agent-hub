@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## v0.13.26 — 批4：前端技能中心 + 知识库中心（两页上线，六大中心齐）
+
+> 施工会话：`01a0db08`（worktree `agent-hub-wt-01a0db08`）。基线：批3提交。
+> 改动文件：`templates/index.html`（+2 section：page-skills/page-kb）、
+> `static/hub/01-core-boot.js`（skillsLoaded/kbLoaded + go() 懒加载钩子）、
+> `static/hub/04-terminal-ws.js`（技能/知识库两中心渲染函数块）、
+> `static/hub/05-chat-and-history.js`（SYS_PAGES 8→10、PAGE_LABELS）、
+> `static/hub.js`（build 产物重建，md5 提手自动同步）、`src/kb.py`
+> （+GET /api/kb/browse）、`tests/test_kb_frontend_pages.py`（新增 L0 12 例）。
+> 验证：L0 hermetic **460/460**（448 旧 + 12 新，含 hubjs_split 逐字节漂移
+> 闸门）；verify_kb_federation 41/41 复验绿；node --check JS 语法绿。
+> 真渲染（临时实例 + elementFromPoint 断言）按验收分工留批6集成批次。
+
+### 批4交付（技能/知识库系统「前端展示与操作」层）
+
+- **技能中心页（page-skills）**：技能清单（名/描述/发现点过滤）、软链安装
+  （name × from_route × targets[] → POST /api/skill/install，幂等/409 语义后端
+  已由批2钉死）、token 预算化清单（/api/skill/budget?max_tokens=N，默认 800，
+  全条目/仅名/截断三段如实展示）。
+- **知识库中心页（page-kb）**：五路联邦检索（tdai/turbovec/workspace/archived
+  /local 多选，走批3 /api/kb/search）、逐路健康面板（/api/kb/status 五段、降级
+  路点名不糊成绿）、文档树浏览（/api/kb/browse：workspace 四根顶层 + sub 单层
+  下钻，根名白名单匹配防穿越）。
+- **/api/kb/browse**：只读文档树端点。根定义与 memfed._RG_TARGETS
+  ["workspace_files"] 同源（不另抄目录清单防两处漂移）；`sub` 走根名精确匹配
+  而非路径拼接（`../etc`/`..`/`/etc`/`a/b`/`.` 全部 400 拒绝，未知根 404 带
+  可用根清单）；根消失进 errors 不静默；KB_BROWSE_MAX=200 条目硬顶。
+- **懒加载成对**：go() 里 skills/kb 各挂钩子，与 memory/ports 同构；加载失败
+  toast 点名（降级路不让「查不了」糊成「没有」——资产面板 09-22 口径沿用）。
+- **L0 12 例**：browse 五例（顶层/下钻/穿越拒绝/404/根缺失不静默）+ 前端七例
+  （section 存在/SYS_PAGES/PAGE_LABELS/懒加载钩子/loader 函数/DOM id 成对/
+  inline onclick 函数真存在防手滑拼错函数名）。
+
+
 > 生成口径：`git log` 机械提取（版本号只在提交主题开头出现才起一节），另由人补「未上线批次」一节。
 > 本文件只记「哪一版上线了什么」；施工过程与证据留在 `PENDING-TASKS.md`（PT 编号台账）。
 > 生成时间 2026-09-24 19:3x（生成器＝一次性脚本，未入库；重跑请复制本文件头部的口径）。

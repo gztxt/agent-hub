@@ -319,6 +319,116 @@ async function previewCtx() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+
+/* ── 技能中心（v0.13.26 批4）────────────────────────── */
+
+let SKILLS = [], SKILL_ROUTES = [];
+
+async function loadSkills() {
+  try {
+    const d = await api('/api/skill/list');
+    SKILLS = d.items || d || [];
+    // 发现点下拉（过滤器 + 安装选择器共用）
+    SKILL_ROUTES = (d.backends ? d.backends.filter(b => b.name !== 'tdai').map(b => b.name) : []) || [];
+    const opt = SKILL_ROUTES.map(r => '<option value="' + r + '">' + r + '</option>').join('');
+    $('skillRoute').innerHTML = '<option value="">全部发现点</option>' + opt;
+    $('instFrom').innerHTML = opt;
+    $('instTo').innerHTML = opt;
+    $('instName').innerHTML = SKILLS.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
+    $('skillHint').textContent = SKILLS.length + ' 个技能 · ' + SKILL_ROUTES.length + ' 路发现点';
+    renderSkillList();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function renderSkillList() {
+  const q = ($('skillQ').value || '').toLowerCase();
+  const route = $('skillRoute').value;
+  const rows = SKILLS.filter(s =>
+    (!q || String(s.name || '').toLowerCase().includes(q) || String(s.description || '').toLowerCase().includes(q)) &&
+    (!route || (s.routes || []).includes(route) || s.route === route));
+  $('skillList').innerHTML = rows.map(s =>
+    '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
+    '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
+    '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) + '</span></p></div>').join('') ||
+    '<div class="hint">没有匹配的技能（' + SKILLS.length + ' 总数）</div>';
+}
+
+async function skillInstall() {
+  const name = $('instName').value;
+  const from = $('instFrom').value;
+  const to = Array.from($('instTo').selectedOptions).map(o => o.value).filter(t => t !== from);
+  if (!name || !from || !to.length) { toast('选择技能、源与至少一个目标', 'err'); return; }
+  try {
+    const d = await api('/api/skill/install', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, from_route: from, targets: to }) });
+    toast('已软链：' + (d.created || []).join(', ') + (d.existed && d.existed.length ? '（幂等跳过 ' + d.existed.join(', ') + '）' : ''), 'ok');
+    loadSkills();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadSkillBudget() {
+  const tok = parseInt($('skillTok').value, 10) || 800;
+  try {
+    const d = await api('/api/skill/budget?max_tokens=' + tok);
+    const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + escapeHtml(f.description.slice(0, 80)) : ''));
+    const names = (d.name_only || []).map(n => escapeHtml(n));
+    $('skillBudget').innerHTML =
+      '预算 ' + d.budget + ' tok · 实际约 ' + d.used_est + ' · 全条目 ' + full.length + ' / 仅名 ' + names.length +
+      (d.truncated ? ' / <b>被裁 ' + d.truncated + '</b>' : '') + '（共 ' + d.total + '）<br>' +
+      full.concat(names).map(s => '· ' + s).join('<br>');
+  } catch (e) { $('skillBudget').textContent = '加载失败：' + e.message; }
+}
+
+/* ── 知识库中心（v0.13.26 批4）──────────────────── */
+
+async function kbSearch() {
+  const q = $('kbQ').value.trim();
+  if (!q) { toast('输入检索词', 'err'); return; }
+  const routes = Array.from($('kbRoutes').selectedOptions).map(o => o.value).join(',');
+  $('kbHint').textContent = '检索中…';
+  try {
+    const d = await api('/api/kb/search?q=' + encodeURIComponent(q) + '&routes=' + encodeURIComponent(routes) + '&k=12');
+    $('kbHint').textContent = d.count + ' 条 · ' + d.took_ms + 'ms · ' + (d.engine || '');
+    $('kbResults').innerHTML = (d.results || []).map(r =>
+      '<div class="mem-item"><span class="tag ' + (r.source || '').replace(/[^a-z0-9_]/g, '') + '" style="align-self:flex-start">' + escapeHtml(r.source || r.from || '') + '</span>' +
+      '<p>' + escapeHtml(String(r.title || r.path || r.id || '').slice(0, 100)) +
+      '<br><span class="hint">' + escapeHtml(String(r.content || r.preview || '').slice(0, 200)) + '</span></p></div>').join('') ||
+      '<div class="hint">零命中。' + (d.note || '') + '</div>';
+    // 逐路表态：哪路挂了要说出来（不许全绿假装没挂）
+    const bad = (d.backends || []).filter(b => !b.ok);
+    if (bad.length) toast('降级路：' + bad.map(b => b.name).join(', '), 'err');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function loadKbStatus() {
+  try {
+    const d = await api('/api/kb/status');
+    const seg = (name, v) => '<div><b>' + name + '</b>：' +
+      (v.available ? '✅ 可用' : '❌ 不可用') +
+      (v.count != null ? ' · ' + v.count : '') +
+      (v.chunks ? ' chunks' : '') +
+      (v.index_mtime_age_days != null ? ' · 索引 ' + v.index_mtime_age_days + ' 天前' : '') +
+      (v.ms != null ? ' · ' + v.ms + 'ms' : '') +
+      (v.error ? ' · <span style="color:var(--red)">' + escapeHtml(String(v.error).slice(0, 120)) + '</span>' : '') + '</div>';
+    $('kbStatus').innerHTML =
+      seg('TDAI L1', d.tdai || {}) +
+      seg('turbovec 语义', d.turbovec || {}) +
+      seg('workspace 全文', d.workspace || {}) +
+      seg('archived 会话备份', d.archived || {}) +
+      seg('local 便签', d.local_memory || {});
+  } catch (e) { $('kbStatus').textContent = '加载失败：' + e.message; }
+}
+
+async function kbBrowse() {
+  try {
+    const d = await api('/api/kb/browse');
+    $('kbBrowse').innerHTML = (d.entries || []).map(e =>
+      '· ' + (e.dir ? '📁' : '📄') + ' ' + escapeHtml(e.name) +
+      ' <span class="hint">' + (e.files != null ? e.files + ' 文件' : Math.round((e.size || 0) / 1024) + 'KB') + '</span>').join('<br>') ||
+      '空目录';
+  } catch (e) { $('kbBrowse').textContent = '加载失败：' + e.message; }
+}
+
 /* ── 端口 ─────────────────────────────────────────── */
 
 async function loadPorts() {
