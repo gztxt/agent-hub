@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## v0.13.30 — 本机项目菜单（项目检索 → 选 agent → 新建会话直达终端）
+
+> 施工会话：本会话。基线：v0.13.29。改动文件：新增 `src/localprojects.py`
+> （/api/localprojects 多根 git 扫描 + cloudcli 合并）、`static/hub/09-local-projects.js`
+> （本机项目页，新第 9 分片）、`tests/test_localprojects.py`（L0 24 例）、
+> `tests/verify_localprojects.py`（L2 真鼠标 10 判据）；改 `src/term.py`
+> （CreateIn.cwd + _cwd_or_none 校验）、`src/main.py`（挂路由 + VERSION 0.13.30）、
+> `templates/index.html`（侧栏按钮 + #page-localprojects）、`static/hub/01-core-boot.js`
+> （lpLoaded + go() 懒加载钩子）、`static/hub/05-chat-and-history.js`（PAGE_LABELS）、
+> `tests/test_term_launch_guard.py`（cwd 白名单 + TestCwdGate 钉子）、
+> `tests/test_ls_guard.py`（分片清单 8→9）、`tests/test_term_focus_policy.py`
+> （user:true 入口 3→4，lpStart 是新入口）、`static/hub.js`（build 3275 行）。
+> 验证：L0 hermetic **572/572** 零跳过；L1 host 40/40；L2 真浏览器探针 10/10
+> （点 agent-hub → 选 codex → 新建会话 → 终端页 on + pty cwd 对账 + 零 JS 错）。
+
+### v0.13.30 交付（用户需求「agents 菜单上面新建本机项目菜单：自动检索本机所有项目不限目录，点项目名称选 agent 新建会话，自动跳转对应 agent 拉起会话」）
+
+- **GET /api/localprojects**：os.walk 多根扫描（默认 `/home/gztxt, /fs/1000/ftp/技术文档,
+  /vol1/@apphome`，env `LOCALPROJECT_ROOTS` 可覆盖；深度 ≤3、点目录/node_modules/venv 剪枝，
+  git worktree 的 .git 文件也认）+ 合并 v0.13.29 的 cloudcli 项目（custom_project_name
+  精确名胜出、sessions/last_activity 透传，normpath 去重）。实测 79 项 / 115ms；
+  缺根与 cloudcli 降级均点名进 `errors`（「查不了」≠「没有」）。
+- **term cwd 扩展（安全闸门不松反紧）**：`POST /api/term/sessions` 新增可选 `cwd`——
+  校验链：pydantic max_length=500 → `_cwd_or_none()`（绝对路径 + 实盘存在 + 可疑字符
+  栅栏）→ 只进 `os.chdir`。**命令拼装一字未动**（cmd 仍只出自画像白名单/后端模板，
+  test_term_launch_guard 三条既有钉子原样通过）；权限论证：已持 TERM_TOKEN 者本可
+  经 shell 画像（cmd=bash）cd 任意目录 ⇒ 传 cwd 无升级。新增 TestCwdGate AST 钉子：
+  create_session 里 `body.cwd` 的每次读取必须包在 `_cwd_or_none(...)` 内。
+- **前端**：侧栏常驻项「本机项目」（总览之下、AGENTS 手风琴之上——用户点名位置）；
+  新 09 分片三态列表（busy/数据/失败含重试）+ 过滤 + 选中动作条（项目名 + agent 下拉 +
+  新建会话）；`lpStart` 逐字仿 startAgent 仅多传 cwd——`gotoChat(agent,'term')` →
+  `termConnect(..., {user:true})` 自动跳终端工作台并聚焦。var 状态变量防 TDZ（08 分片
+  同教训）。
+- **明确不做**：MCP 工具（未要求）、项目类型探测、claude 走 CloudCLI iframe（用户裁定
+  统一终端链路）。
+
 ## v0.13.29 — CloudCLI 项目直达（列表 + 点击快速开始）
 
 > 施工会话：本会话。基线：v0.13.28。改动文件：新增 `src/cloudcli.py`（projects/start

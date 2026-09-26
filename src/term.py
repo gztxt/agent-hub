@@ -24,7 +24,7 @@ import fcntl
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import profiles
 import sessions_store
@@ -196,6 +196,27 @@ _sessions: Dict[str, Session] = {}
 class CreateIn(BaseModel):
     agent_id: str
     session_id: Optional[str] = None    # v0.13.0：续聊某条历史；仅接受形状合法且实盘存在的 id
+    cwd: Optional[str] = Field(default=None, max_length=500)   # v0.13.30：本机项目页——pty 起在指定项目目录；只进 os.chdir，绝不进命令拼装
+
+
+def _cwd_or_none(raw: Optional[str]) -> Optional[str]:
+    """body.cwd 的唯一入口校验（v0.13.30）。
+    空/None → None（回落画像 cwd）；非空必须：绝对路径、实盘目录存在、
+    不含 \\x00\\n;|&\\$\\`（与 resume_argv 的兜底栅栏同口径）。
+    只返回已校验的字符串——create_session 里不许出现第二条读 body.cwd 的路径。"""
+    if raw is None or not raw.strip():
+        return None
+    c = raw.strip()
+    if not os.path.isabs(c):
+        raise ValueError(f"cwd 必须是绝对路径: {c!r}")
+    if any(ch in c for ch in "\x00\n;|&$`"):
+        raise ValueError("cwd 含可疑字符")
+    if not os.path.isdir(c):
+        raise ValueError(f"cwd 目录不存在: {c}")
+    return c
+
+
+
 
 
 @router.post("/api/term/sessions")
@@ -207,7 +228,13 @@ async def create_session(body: CreateIn, request: Request):
         raise HTTPException(400, f"{body.agent_id} 无终端入口（仅画像白名单可拉起）")
     if len([s for s in _sessions.values() if s.alive]) >= MAX_SESSIONS:
         raise HTTPException(429, f"终端会话数达上限 {MAX_SESSIONS}")
-    cwd = prof["terminal"].get("cwd") or os.path.expanduser("~")
+    # v0.13.30：body.cwd 是新会话的起点目录（本机项目页）；校验失败 400。
+    # cwd 只进 os.chdir（Session 子进程），绝不进命令拼装——命令仍只出自画像白名单。
+    try:
+        req_cwd = _cwd_or_none(body.cwd)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    cwd = req_cwd or prof["terminal"].get("cwd") or os.path.expanduser("~")
     if body.session_id:
         # 客户端只能给 id：命令仍由后端模板拼装，id 必须过形状正则 + 实盘存在双校验
         try:

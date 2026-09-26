@@ -88,6 +88,10 @@ function cssNum(name, fallback) {
 }
 
 let AGENTS = [], PORTS = [], portsLoaded = false, memLoaded = false, skillsLoaded = false, kbLoaded = false;
+/* v0.13.30 本机项目页懒加载标志：声明在 01（拼接序最先）而赋值/读取在 09 分片。
+   lpLoaded 的 var 声明在 09 里会提升到 go() 可见——两处同名 var 是刻意冗余，
+   保证 06 分片顶层 go() 调用（在 09 声明之前执行）读到的是 undefined 而非 TDZ。 */
+var lpLoaded = false;
 
 /* ── 基础 ─────────────────────────────────────────── */
 
@@ -221,6 +225,7 @@ function go(page) {
   if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
   if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
+  if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）

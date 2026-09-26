@@ -1,8 +1,15 @@
 """L0 hermetic：终端拉起面的安全闸（src/term.py + sessions_store.resume_argv）。
 
 这组断言钉的是本项目最要命的一条不变量：
-    **客户端永远只能给 agent_id / session_id，命令只出自画像白名单 + 后端模板。**
+    **客户端永远只能给 agent_id / session_id / cwd，命令只出自画像白名单 + 后端模板。**
 docstring 第 4-5 行写着这条，但注释不算判据 —— 今天它可测了。
+
+v0.13.30 增补：cwd 进白名单。安全论证（写死在此，改前先读）：
+    body.cwd 只进 Session 子进程的 os.chdir，**绝不进命令拼装**（cmd 仍只出自
+    resume_argv / shlex.split(画像)——TestCommandProvenance 两条钉子原样钉着）；
+    已持 TERM_TOKEN 的用户本可用 shell 画像（terminal.cmd=bash）cd 到任意目录，
+    ⇒ 传 cwd 不构成权限升级。所有读 body.cwd 的代码必须包在 _cwd_or_none(...)
+    调用内（绝对路径 + 实盘存在 + 可疑字符三重校验）——TestCwdGate 钉着。
 
 不 fork pty、不起服务、不连网：只用 AST 看源码形状 + 调纯函数。
 """
@@ -90,16 +97,17 @@ class TestCommandProvenance(unittest.TestCase):
                         self.fail(f"第 {a.lineno} 行把 body.{sub.attr} 当命令串去 split 了")
 
     def test_only_id_bearing_body_fields_are_read(self):
-        """整个 create_session 能读到的请求字段，只许 agent_id / session_id。
-           这才是「客户端只能给 id」的可执行版本 —— 多读一个字段就红。"""
+        """整个 create_session 能读到的请求字段，只许 agent_id / session_id / cwd。
+           cwd（v0.13.30 本机项目页）只进 os.chdir 不进命令拼装，且必须过
+           _cwd_or_none 校验（见 TestCwdGate）；多读任何其他字段就红。"""
         read = set()
         for sub in ast.walk(self.fn):
             if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
                     and sub.value.id == "body":
                 read.add(sub.attr)
         self.assertTrue(read, "create_session 不再读 body 任何字段？判据需复核")
-        self.assertLessEqual(read, {"agent_id", "session_id"},
-                             f"读到了多余字段 {read - {'agent_id', 'session_id'}}")
+        self.assertLessEqual(read, {"agent_id", "session_id", "cwd"},
+                             f"读到了多余字段 {read - {'agent_id', 'session_id', 'cwd'}}")
 
     def test_no_subprocess_in_module_outside_session_class(self):
         """term.py 只应有一处进程拉起（Session.__init__ 的 fork+execvpe）。
@@ -114,6 +122,46 @@ class TestCommandProvenance(unittest.TestCase):
                           "check_output", "eval", "exec", "spawnl", "spawnv"}:
                     hits.append(f"{nm}@{n.lineno}")
         self.assertEqual(hits, [], f"term.py 出现第二条拉起路径：{hits}")
+
+
+class TestCwdGate(unittest.TestCase):
+    """v0.13.30 body.cwd 的两道闸：
+    ① create_session 里读 body.cwd 必须包在 _cwd_or_none(...) 里（防绕过校验直用）；
+    ② _cwd_or_none 纯函数：空→None、相对/不存在/可疑字符→ValueError。"""
+
+    def test_body_cwd_reads_wrapped_in_guard_call(self):
+        """AST：create_session 内每一个 body.cwd 属性访问，其父链必须落在
+           _cwd_or_none(…) 的调用实参里。出现裸 `body.cwd` 即红。"""
+        fn = _func(ast.parse(TERMSRC.read_text(encoding="utf-8")), "create_session")
+        guarded_positions = set()
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_cwd_or_none":
+                for sub in ast.walk(n):
+                    if isinstance(sub, ast.Attribute) and sub.attr == "cwd" \
+                            and isinstance(sub.value, ast.Name) and sub.value.id == "body":
+                        guarded_positions.add((sub.lineno, sub.col_offset))
+        bare = []
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Attribute) and n.attr == "cwd" \
+                    and isinstance(n.value, ast.Name) and n.value.id == "body":
+                if (n.lineno, n.col_offset) not in guarded_positions:
+                    bare.append(f"@{n.lineno}:{n.col_offset}")
+        self.assertEqual(bare, [], f"body.cwd 存在校验函数外的裸读取 {bare}：等于把 chdir 面敞开")
+
+    def test_guard_fn_exists_and_pure_shape(self):
+        self.assertTrue(hasattr(term, "_cwd_or_none"), "_cwd_or_none 被改名/删除？判据需同步")
+        for blank in (None, "", "   "):
+            self.assertIsNone(term._cwd_or_none(blank))
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(term._cwd_or_none(td), td)
+            with self.assertRaises(ValueError):
+                term._cwd_or_none(str(pathlib.Path(td) / "nope"))
+        with self.assertRaises(ValueError):
+            term._cwd_or_none("relative/path")
+        for bad in ("/a;b", "/a|b", "/a&b", "/a$b", "/a`b", "/a\nb", "/a\x00b"):
+            with self.assertRaises(ValueError):
+                term._cwd_or_none(bad)
 
 
 class TestTokenGate(unittest.TestCase):

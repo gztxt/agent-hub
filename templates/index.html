@@ -717,6 +717,11 @@
              遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
         <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
                 aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
+        <!-- v0.13.30 本机项目：用户要求置于 AGENTS 菜单之上。同「总览」的常驻项形态
+             （data-sys 点击即 go()，选中态由 go() 的 side-item[data-sys] 同步行接管），
+             页面四件套：本按钮 + #page-localprojects + PAGE_LABELS + go() 懒加载钩子。 -->
+        <button class="side-item side-top" id="btnNavProjects" data-sys="localprojects" role="tab" aria-selected="false"
+                aria-label="本机项目" title="本机项目 · 自动检索本机全部项目，点项目选 Agent 直接开会话"><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg><span class="lbl">本机项目</span></button>
         <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
         <div id="navTree"></div>
         <button class="side-item" id="btnSettings" aria-label="打开设置" data-settings="1" title="设置：终端 token 查看与应用"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">设置</span></button>
@@ -841,6 +846,32 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- 本机项目（v0.13.30）：多根 git 扫描 + cloudcli 合并；点项目 → 选 agent → 新建会话直达终端 -->
+        <section class="page" id="page-localprojects">
+            <div class="panel">
+                <h3>本机项目</h3>
+                <div class="toolbar">
+                    <input id="lpQ" type="search" placeholder="按名称 / 路径过滤…" aria-label="过滤项目" autocomplete="off">
+                    <button class="btn sm ghost" onclick="loadLocalProjects(true)" title="重新扫描本机项目"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重扫</button>
+                    <span class="hint" id="lpHint"></span>
+                </div>
+                <!-- 选中动作条：先点列表里的一项，再选 agent，点新建会话即跳终端 -->
+                <div class="toolbar" id="lpActionBar">
+                    <span class="hint"><svg class="i xs" aria-hidden="true"><use href="#i-folder"/></svg> 项目</span>
+                    <b id="lpSelName" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px">（点下方列表选择项目）</b>
+                    <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                        <svg class="i xs" aria-hidden="true"><use href="#i-cpu"/></svg>
+                        <select id="lpAgent" title="选择要开会的 Agent"><option value="">（先选项目）</option></select>
+                    </span>
+                    <button class="btn sm" id="lpStartBtn" disabled onclick="lpStart()" title="在该项目目录拉起所选 Agent 的新终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新建会话</button>
+                </div>
+                <div class="tscroll" id="lpList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+                    <div class="hint" style="padding:10px">加载中…</div>
+                </div>
+                <div class="hint" id="lpMeta" style="margin-top:6px"></div>
             </div>
         </section>
 
@@ -1322,6 +1353,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=d7445494"></script>
+    <script src="/static/hub.js?v=f181b144"></script>
 </body>
 </html>
