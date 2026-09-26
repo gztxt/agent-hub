@@ -89,6 +89,22 @@ def _check_term_token(provided: str, source: str) -> None:
         raise HTTPException(status_code=401, detail="term token required or invalid")
 
 
+def child_env() -> Dict[str, str]:
+    """终端子进程的环境（纯函数，供单测直接断言）。
+
+    PATH 必须前置 `profiles.extra_path_dirs()`：hub 服务进程 PATH 不含 nvm，而
+    `pi` 这类 `#!/usr/bin/env node` 的 npm 全局 CLI 会让内核拿系统 node v20 去跑
+    需要 Node 22+ 的 bundle ⇒ 启动即 SyntaxError（详见 profiles.extra_path_dirs）。
+    只补子进程、不动服务进程自身 PATH、不动 systemd 单元配置。"""
+    env = dict(os.environ)
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    extra = profiles.extra_path_dirs()
+    if extra:
+        env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    return env
+
+
 class Session:
     def __init__(self, sid: str, agent_id: str, cmd: List[str], cwd: str):
         self.id = sid
@@ -98,9 +114,7 @@ class Session:
         self.pid, self.fd = pty.fork()
         if self.pid == 0:  # 子进程：替换为终端程序
             try:
-                env = dict(os.environ)
-                env["TERM"] = "xterm-256color"
-                env["COLORTERM"] = "truecolor"
+                env = child_env()
                 os.chdir(cwd)
                 os.execvpe(cmd[0], cmd, env)
             except Exception:  # noqa: BLE001
