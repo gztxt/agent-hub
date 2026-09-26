@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## v0.13.36 — 两项目页收藏/隐藏落服务端（跨浏览器/端侧一致）
+
+> 施工会话：01a0dc26（接续 09-26 晚 429 中断的前会话，会话检索续做）。
+> 基线：v0.13.35。改动文件：`src/db.py`（app_prefs KV 表）、`src/prefs.py`
+> （新模块：GET/PUT /api/prefs/{key}，键白名单 projects.lp/gh，值形状硬顶，
+> PUT 走全局 write_gate + 显式 writeauth.decide 双保险，审计 setting/update）、
+> `src/main.py`（挂路由 + VERSION）、`static/hub/09-local-projects.js` 与
+> `10-github-projects.js`（lpSyncPrefs/lpPushPref 与 gh 对称四件：载入拉后端
+> 偏好为准、切换回写、localStorage 降级为离线兜底）、`static/hub.js`（build
+> 3681 行 md5 cb30ec50）、`templates/index.html`（?v= 提手同步）、
+> `tests/test_prefs.py`（新 14 例）。
+
+### v0.13.36 交付（上会话中断点：收藏/隐藏只存浏览器 localStorage，多端各自一套存档）
+
+- **问题**：localStorage 按 origin 隔离——局域网 IP / Tailscale / 手机 WebView
+  各一套存档，桌面标了收藏手机看不到，多端使用时状态必然分叉。
+- **方案**：服务端 `app_prefs(key,value,updated_at)` 表，键白名单仅
+  `projects.lp`/`projects.gh` 两枚（不是自由 KV）；值 `{"stars":[], "hidden":[]}`
+  normalize 去空/去重/截断（串 512/条 2000）；坏行按无偏好处理不 500。
+- **前端**：载入列表后拉一次后端偏好（命中即为准并回写 localStorage），行内
+  收藏/隐藏切换后 fire-and-forget PUT；后端未升级（404）或离线时静默沿用
+  本机存档——v0.13.32 单机语义完整保留，失败 toast 只提示一次。
+- **验证**：L0 hermetic 全绿零跳过（含新 test_prefs 14 例：键白名单 404、
+  normalize 截断/封顶、读写往返、坏行降级、匿名 PUT 401、审计 actor、
+  前端四件与调用点钉死）。
+
 ## v0.13.35 — 勾选框宽度真因：.toolbar input 拉伸规则误命中 checkbox
 
 > 施工会话：本会话。基线：v0.13.34。改动文件：`templates/index.html`

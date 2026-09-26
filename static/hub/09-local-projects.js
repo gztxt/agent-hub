@@ -34,6 +34,46 @@ function _lpSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
+/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：载入后拉一次后端偏好，
+   命中即以后端为准并回写 localStorage（离线兜底）；行内切换后 fire-and-forget
+   PUT（api() 对写方法自动带 x-hub-token）。后端未升级（404）或没配 token 时
+   静默沿用本机存档——降级不报错，本机语义与 v0.13.32 完全一致。 */
+var lpPrefSynced = false;
+var lpPrefErrShown = false;
+
+function lpCountsText() {
+  return (lpStars.size ? ' · 收藏 ' + lpStars.size : '') +
+    (lpHiddenSet.size ? ' · 已隐藏 ' + lpHiddenSet.size : '');
+}
+
+async function lpSyncPrefs() {
+  if (lpPrefSynced) return;
+  lpPrefSynced = true;
+  try {
+    const d = await api('/api/prefs/projects.lp');
+    if (d && d.value) {
+      lpStars = new Set(d.value.stars || []);
+      lpHiddenSet = new Set(d.value.hidden || []);
+      _lpSave('hub.lp.stars', lpStars);
+      _lpSave('hub.lp.hidden', lpHiddenSet);
+      lpRenderList();
+      const hint = $('lpHint');
+      if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
+    }
+  } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
+}
+
+async function lpPushPref() {
+  try {
+    await api('/api/prefs/projects.lp', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stars: [...lpStars], hidden: [...lpHiddenSet] }) });
+    lpPrefErrShown = false;
+  } catch (e) {
+    if (!lpPrefErrShown) { lpPrefErrShown = true; toast('收藏/隐藏已存本机，云端同步失败', 'err'); }
+  }
+}
+
 function lpTime(la) {
   if (!la) return '';
   return String(la).slice(5, 16).replace('T', ' ');
@@ -72,6 +112,7 @@ function lpToggleStar(i) {
   else lpStars.add(p.path);
   _lpSave('hub.lp.stars', lpStars);
   lpRenderList();
+  lpPushPref();
 }
 
 function lpToggleHide(i) {
@@ -84,6 +125,7 @@ function lpToggleHide(i) {
   }
   _lpSave('hub.lp.hidden', lpHiddenSet);
   lpRenderList();
+  lpPushPref();
   const hint = $('lpHint');
   if (hint && lpHiddenSet.size) hint.textContent += '（已隐藏 ' + lpHiddenSet.size + ' 项）';
 }
@@ -139,9 +181,8 @@ async function loadLocalProjects(force) {
     LP = d.projects || [];
     lpRenderList();
     lpRenderAgents();
-    if (hint) hint.textContent = (d.count || 0) + ' 个项目' +
-      (lpStars.size ? ' · 收藏 ' + lpStars.size : '') +
-      (lpHiddenSet.size ? ' · 已隐藏 ' + lpHiddenSet.size : '');
+    if (hint) hint.textContent = (d.count || 0) + ' 个项目' + lpCountsText();
+    lpSyncPrefs();
     const meta = $('lpMeta');
     if (meta) meta.textContent = (d.roots || []).join(' · ') +
       ((d.errors || []).length ? ' ｜ 降级源：' + d.errors.join('；') : '') +
