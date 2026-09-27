@@ -32,6 +32,11 @@ EXEMPT_PREFIXES: Dict[str, str] = {
     "/api/settings/model/apply":
         "它自己校验 HUB_PASSCODE（错→401、未配→503），与同页的 term-token 同口径；"
         "再叠一层 token 门 = 用户在设置页永远改不动模型（自锁死）。",
+    "/api/settings/github/":
+        "设置→GitHub 四个写端点（test/apply/clear/refresh）各自校验 HUB_PASSCODE"
+        "（错→401、未配→503）：地址与 key 只能从设置页改，再叠 token 门同样自锁死。"
+        "它们写的是 hub 自己的 github_settings 表（+ 可选回写文件，落笔前备份），"
+        "不碰 agent 配置。",
 }
 
 

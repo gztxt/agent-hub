@@ -494,15 +494,17 @@ let SET_AGENT = '';           // 当前选中的 agent（不落盘）
 let SET_MODELS = null;        // /api/models 缓存（60s）
 let SET_DIFF = null;          // 最近一次预览结果（保存时复用同一个 model 值）
 
+const SET_PANELS = { model: 'Model', github: 'Github', token: 'Token' };
 function settingsTab(name) {
-  ['model', 'token'].forEach(n => {
+  Object.keys(SET_PANELS).forEach(n => {
     const tab = document.querySelector('.set-tab[data-settings-tab="' + n + '"]');
-    const panel = $('setPanel' + (n === 'model' ? 'Model' : 'Token'));
+    const panel = $('setPanel' + SET_PANELS[n]);
     const on = (n === name);
     if (tab) { tab.classList.toggle('on', on); tab.setAttribute('aria-selected', on ? 'true' : 'false'); }
     if (panel) panel.style.display = on ? '' : 'none';
   });
   if (name === 'model') settingsModelsLoad();
+  if (name === 'github') settingsGithubLoad();
 }
 
 async function settingsModelsLoad(force) {
@@ -644,7 +646,164 @@ async function settingsApplyModel() {
   }
 }
 
-/* 设置抽屉内的**唯一**委托出口：子页切换 / 选 agent / 预览 / 保存 */
+/* ── 设置 → GitHub 子菜单（v0.13.42）──────────────────────────────────────
+   把原来写死在 githubprojects.py 里的三样东西（API 基址 / token 文件 / 克隆落点）
+   变成运行时可配。三条纪律与模型页同源：
+     ① 不新增浮层（只是 settingsDrawer 内第三个 section）；
+     ② 按钮一律 data-settings-act 走同一委托，无 inline onclick；
+     ③ key 是**只写**字段：页面只显示掩码与来源，输入框留空 = 不改动（清除走按钮）。
+   读取顺序 Hub 设置 → 环境变量 → 内置默认，改完即时生效（服务端每次现读）。 */
+let GH_VIEW = null;                 // GET /api/settings/github 的现值
+
+async function settingsGithubLoad(force) {
+  try {
+    GH_VIEW = await api('/api/settings/github');
+  } catch (e) {
+    const st = $('ghStatus');
+    if (st) { st.style.display = ''; st.textContent = 'GitHub 设置加载失败：' + e.message; }
+    return;
+  }
+  const v = GH_VIEW || {};
+  const put = (id, val) => { const el = $(id); if (el && (force || !el.value)) el.value = val || ''; };
+  put('ghApiBase', v.api_base);
+  put('ghGitHost', v.git_host);
+  put('ghOwner', v.owner);
+  put('ghCloneBase', v.clone_base);
+  const src = v.sources || {};
+  const srcLabel = { db: '本页设置', env: '环境变量', default: '内置默认' };
+  const stamp = (id, key) => { const el = $(id); if (el) el.textContent = '（' + (srcLabel[src[key]] || '内置默认') + '）'; };
+  stamp('ghApiBaseSrc', 'api_base');
+  stamp('ghGitHostSrc', 'git_host');
+  stamp('ghCloneBaseSrc', 'clone_base');
+  const t = v.token || {};
+  const ts = $('ghTokenState');
+  if (ts) ts.textContent = t.set ? ('已设置 ' + (t.mask || '') + ' · ' + (t.type || '') + ' · 来源 ' +
+    (srcLabel[t.source] || t.source || '?')) : '未设置';
+  settingsGithubStatus();
+}
+
+function settingsGithubStatus(note) {
+  const box = $('ghStatus');
+  if (!box || !GH_VIEW) return;
+  const v = GH_VIEW;
+  const L = v.list || {};
+  const rows = [
+    ['远程地址', v.api_base],
+    ['Git 主机', v.git_host || '（按地址派生）'],
+    ['归属', v.owner || '（当前账号全部）'],
+    ['克隆落点', v.clone_base + (v.clone_base_exists ? '' : '（尚不存在，首次克隆时创建）')],
+    ['key', (v.token && v.token.set) ? ((v.token.mask || '') + ' · ' + (v.token.type || '') +
+      ' · 来源 ' + (v.token.source || '?')) : '未设置'],
+    ['远端清单', L.count + ' 个仓库' + (L.cached ? '（缓存 ' + L.age_s + 's，点刷新重拉）' : '（未拉取）')],
+    ['口令门', v.writable ? '已启用（HUB_PASSCODE 已配）' : '未启用：服务端没配 HUB_PASSCODE，保存会被拒']
+  ];
+  box.innerHTML = rows.map(r => '<div><span class="k">' + escapeHtml(r[0]) + '：</span>' +
+    '<span class="v">' + escapeHtml(r[1]) + '</span></div>').join('') +
+    (note ? '<div style="margin-top:6px">' + escapeHtml(note) + '</div>' : '');
+  box.style.display = '';
+}
+
+function ghPayload(extra) {
+  const v = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+  const p = { api_base: v('ghApiBase'), git_host: v('ghGitHost'), owner: v('ghOwner'),
+    clone_base: v('ghCloneBase') };
+  const tok = v('ghToken');
+  if (tok) p.token = tok;                     // 留空 = 不改动
+  if ($('ghWriteFiles') && $('ghWriteFiles').checked) p.write_files = true;
+  return Object.assign(p, extra || {});
+}
+
+async function ghAskPasscode(what) {
+  let pc = settingsPasscode();
+  if (!pc) {
+    pc = prompt('「' + what + '」需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
+    if (!pc) return '';
+  }
+  return pc;
+}
+
+function ghPost(path, body) {
+  return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+}
+
+async function settingsGithubTest() {
+  let pc = await ghAskPasscode('测试连接');
+  if (!pc) return;
+  const p = ghPayload({ passcode: pc, api_base: $('ghApiBase').value.trim() || undefined });
+  try {
+    const d = await ghPost('/api/settings/github/test', p);
+    lsSet('hub.passcode', pc);
+    if (!d.ok) return settingsGithubStatus('试连失败：' + (d.error || '未知'));
+    const rate = d.rate || {};
+    settingsGithubStatus('试连成功：' + (d.login || '?') + ' · key ' + (d.token_type || '') +
+      ' ' + (d.token_mask || '') + ' · 配额 ' + (rate.remaining === undefined ? '?' :
+        rate.remaining + '/' + rate.limit) + ' · 列仓库 ' + (d.repo_probe && d.repo_probe.ok ? '可用' : '不可用') +
+      ' · ' + (d.took_ms || 0) + 'ms');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('试连失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubApply() {
+  let pc = await ghAskPasscode('保存 GitHub 设置');
+  if (!pc) return;
+  const p = ghPayload({ passcode: pc });
+  try {
+    const d = await ghPost('/api/settings/github/apply', p);
+    lsSet('hub.passcode', pc);
+    const box = $('ghDiff');
+    if (box) {
+      const ch = d.changes || [], fw = d.files_written || [];
+      box.innerHTML = '<div class="set-diff"><div class="set-diff-hd">已保存 ' + ch.length +
+        ' 项' + (fw.length ? '（回写 ' + fw.length + ' 个文件）' : '（仅 Hub 侧，未落文件）') + '</div>' +
+        ch.map(c => '<div class="set-diff-row"><div class="k">' + escapeHtml(c.key) + '</div>' +
+          '<div class="v">' + escapeHtml(c.from) + ' → ' + escapeHtml(c.to) + '</div></div>').join('') +
+        (d.backups || []).map(b => '<div class="set-diff-row"><div class="v">备份 ' +
+          escapeHtml(b) + '</div></div>').join('') + '</div>';
+      box.style.display = '';
+    }
+    $('ghToken').value = '';
+    await settingsGithubLoad(true);
+    toast('GitHub 设置已保存（' + (d.applied || []).join('、') + '）', 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubClear() {
+  if (!confirm('清除 Hub 侧的 GitHub 设置（地址/key/归属/落点），回落到环境变量与内置默认？')) return;
+  let pc = await ghAskPasscode('清除 GitHub 设置');
+  if (!pc) return;
+  try {
+    const d = await ghPost('/api/settings/github/clear', { passcode: pc });
+    lsSet('hub.passcode', pc);
+    await settingsGithubLoad(true);
+    toast('已清除：' + ((d.cleared || []).join('、') || '（本来就是空的）'), 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('清除失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubRefresh() {
+  let pc = await ghAskPasscode('刷新远端清单');
+  if (!pc) return;
+  try {
+    const d = await ghPost('/api/settings/github/refresh', { passcode: pc });
+    lsSet('hub.passcode', pc);
+    await settingsGithubLoad(true);
+    if (d.errors && d.errors.length) toast('重拉完成但有告警：' + d.errors[0], 'err');
+    else toast('已重拉远端清单：' + d.count + ' 个仓库', 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('刷新失败：' + e.message, 'err');
+  }
+}
+
+/* 设置抽屉内的**唯一**委托出口：子页切换 / 选 agent / 预览 / 保存 / GitHub */
 function settingsDelegates() {
   const drawer = $('settingsDrawer');
   if (!drawer) return;
@@ -661,6 +820,13 @@ function settingsDelegates() {
     const act = e.target.closest('[data-settings-act]');
     if (act && act.dataset.settingsAct === 'preview') return settingsPreviewModel();
     if (act && act.dataset.settingsAct === 'apply') return settingsApplyModel();
+    if (act) {
+      const a = act.dataset.settingsAct;
+      if (a === 'gh-test') return settingsGithubTest();
+      if (a === 'gh-apply') return settingsGithubApply();
+      if (a === 'gh-clear') return settingsGithubClear();
+      if (a === 'gh-refresh') return settingsGithubRefresh();
+    }
   });
 }
 /* 注意：settingsDelegates() 的**调用**放在启动尾（06 分片），不在这里立即执行 ——

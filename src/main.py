@@ -69,11 +69,12 @@ import localprojects as localprojects_mod  # 本机项目清单（多根 git 扫
 import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆（本机项目页的远端半程）
 import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项目页收藏/隐藏落服务端
 import modelcfg as modelcfg_mod     # 各 Agent 默认模型统一设置（v0.13.41：设置→模型子菜单）
+import ghsettings as ghsettings_mod  # GitHub 地址/key/落点（v0.13.42：设置→GitHub 子菜单）
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.41"   # 设置→模型子菜单：选 agent → 选 CCR 模型 → 预览 diff → 口令落笔
+VERSION = "0.13.42"   # 设置→GitHub 子菜单：远程地址/key/归属/克隆落点不再硬编码（DB→env→默认）
                       #   （双写：Hub 侧 per-agent 模型用于拉起终端注入 --model + 写该 agent
                       #    自己的配置文件；CCR Router 五场景只读；写前预览+备份+口令三件套）
                       #   ↑ v0.13.39：修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」：终端子进程 PATH 前置 nvm node bin
@@ -266,6 +267,7 @@ app.include_router(localprojects_mod.router)
 app.include_router(github_mod.router)
 app.include_router(prefs_mod.router)
 app.include_router(modelcfg_mod.router)
+app.include_router(ghsettings_mod.router)
 
 # D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
 # 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。

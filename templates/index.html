@@ -474,6 +474,15 @@
         .set-router { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: var(--fs-sm); }
         .set-router .k { color: var(--muted); }
         .set-router .v { font-family: var(--font-mono); word-break: break-all; color: var(--text-2); }
+        /* ── 设置→GitHub 面板（v0.13.42）：表单用 grid + 全宽输入，窄屏自塌 ── */
+        .set-field { display: block; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }
+        .set-field input { width: 100%; margin-top: 3px; }
+        .set-src { font-size: var(--fs-xs); color: var(--muted); margin-left: 6px; }
+        .set-status { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: var(--fs-sm); }
+        .set-status .k { color: var(--muted); }
+        .set-status .v { font-family: var(--font-mono); word-break: break-all; color: var(--text-2); }
+        .set-check { display: flex; align-items: flex-start; gap: 6px; font-size: var(--fs-sm); color: var(--text-2); margin: 6px 0; }
+        .set-check input { margin-top: 2px; }
 
         /* ── 命令面板（⌘K）── */
         .cmd-item { padding: 10px 12px; border-radius: 8px; font-size: var(--fs-base); cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -1297,6 +1306,7 @@
         </div>
         <div class="set-tabs" id="settingsTabs" role="tablist" aria-label="设置子菜单">
             <button class="set-tab on" type="button" role="tab" aria-selected="true" data-settings-tab="model">模型</button>
+            <button class="set-tab" type="button" role="tab" aria-selected="false" data-settings-tab="github">GitHub</button>
             <button class="set-tab" type="button" role="tab" aria-selected="false" data-settings-tab="token">终端口令</button>
         </div>
 
@@ -1321,7 +1331,52 @@
             <div id="setCcrRouter" class="hint"></div>
         </section>
 
-        <!-- ② 终端口令 -->
+        <!-- ② GitHub：远程地址 + key + 归属 + 克隆落点（v0.13.42，不再硬编码）
+             所有按钮走 data-settings-act 委托（与模型页同一出口），无 inline onclick。 -->
+        <section id="setPanelGithub" role="tabpanel" aria-label="GitHub 设置" style="display:none">
+            <div class="hint" style="margin:8px 0 10px">GitHub 项目页的<b>远程地址、key、归属、克隆落点</b>
+                都在这里改，<b>改完立即生效（不用重启）</b>；读取顺序：本页设置 → 环境变量 → 内置默认。
+                key 只写不读（页面只显示掩码），保存需设置口令。</div>
+            <div class="set-sub">远程</div>
+            <label class="set-field">远程地址（API 基址）<span class="set-src" id="ghApiBaseSrc"></span>
+                <input id="ghApiBase" type="url" autocomplete="off" spellcheck="false"
+                       placeholder="https://api.github.com" aria-label="GitHub API 基址">
+            </label>
+            <label class="set-field">Git 主机（克隆与本地匹配按它生成，留空按远程地址派生）<span class="set-src" id="ghGitHostSrc"></span>
+                <input id="ghGitHost" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="github.com" aria-label="Git 主机">
+            </label>
+            <label class="set-field">归属 owner（可选；留空 = 当前账号可见的全部仓库）
+                <input id="ghOwner" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="gztxt" aria-label="归属 owner">
+            </label>
+            <div class="set-sub">凭据</div>
+            <label class="set-field">Key（<span id="ghTokenState" class="set-src">未设置</span>，留空表示不改动）
+                <input id="ghToken" type="password" autocomplete="off" spellcheck="false"
+                       placeholder="ghp_… / github_pat_…" aria-label="GitHub key">
+            </label>
+            <div class="set-sub">本地</div>
+            <label class="set-field">克隆落点<span class="set-src" id="ghCloneBaseSrc"></span>
+                <input id="ghCloneBase" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="/fs/1000/ftp/技术文档" aria-label="克隆落点">
+            </label>
+            <label class="set-check">
+                <input id="ghWriteFiles" type="checkbox">
+                <span>同时回写到 <code>github.txt</code> 与 <code>.env</code>（默认关；落笔前自动时间戳备份，重启后仍生效）</span>
+            </label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                <button class="btn sm" type="button" data-settings-act="gh-test">测试连接</button>
+                <button class="btn sm" type="button" data-settings-act="gh-apply">保存（需口令）</button>
+                <button class="btn ghost sm" type="button" data-settings-act="gh-clear">清除设置</button>
+                <button class="btn ghost sm" type="button" data-settings-act="gh-refresh">刷新清单</button>
+            </div>
+            <div id="ghStatus" class="set-status" style="display:none"></div>
+            <div id="ghDiff" style="display:none"></div>
+            <div class="hint" style="margin-top:8px">只做<b>只读 + 克隆</b>（列仓库、单仓核对、克隆到本地）；
+                地址必须 https，内网/回环地址一律拒绝（防止把 key 明文发到内网）。</div>
+        </section>
+
+        <!-- ③ 终端口令 -->
         <section id="setPanelToken" role="tabpanel" aria-label="终端口令" style="display:none">
             <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
             <div style="display:flex;gap:8px;margin-bottom:8px">
@@ -1455,6 +1510,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=756274f9"></script>
+    <script src="/static/hub.js?v=e27f00c7"></script>
 </body>
 </html>

@@ -17,6 +17,11 @@ fork 可开关）；克隆到 /fs/1000/ftp/技术文档（env GITHUB_CLONE_BASE 
   180s 上限同步等待，前端按钮禁用 + 「克隆中…」toast；
 - stdlib only（urllib，hub venv 无 httpx——hubmcp 同规）。
 
+v0.13.42 去硬编码：API 基址 / git 主机 / 归属 / 克隆落点 / token 全部改读
+「设置 → GitHub」（src/ghsettings.py），顺序 **DB → env → 模块常量（默认）**；
+模块常量保留为兜底与既有 L0 的 patch 接缝，四个 `api_base()/git_host()/
+clone_base()/owner()` 每次现读 ⇒ 改设置即时生效，不用重启。
+
 安全模型：
 - token：env GITHUB_TOKEN 优先 → /fs/1000/ftp/技术文档/github.txt 首行
   （config.py env→文件读取链同型），每次现读不缓存值；永不打印、永不进返回值
@@ -53,6 +58,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import db
+import ghsettings
 import localprojects
 import tdai_client
 import vitals
@@ -97,10 +103,61 @@ _SSH_RE = re.compile(
 _cache: Dict[str, Any] = {"at": 0.0, "repos": None}
 
 
+# ── v0.13.42：地址/key/落点不再硬编码，改读「设置 → GitHub」────────────────
+# 读取顺序 **DB（设置页）→ env → 模块常量（默认值）**。模块常量刻意保留为
+# 兜底值：它是既有 L0 用例 patch 的接缝（gp.CLONE_BASE 一类），也是 env 没配时
+# 的行为基线。四个函数每次现读（不缓存），改设置即时生效、无需重启。
+def _db(key: str) -> str:
+    """设置页存的现值；没存/存储异常 ⇒ ''（绝不因为读不到而让页面降级失败）。"""
+    try:
+        return ghsettings.db_get(key)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def api_base() -> str:
+    """API 基址（含自建 GHES 的 https://host/api/v3）。"""
+    return (_db("api_base") or os.getenv("GITHUB_API_BASE", "").strip().rstrip("/")
+            or API_BASE)
+
+
+def git_host() -> str:
+    """git 直连主机名（远端匹配与克隆 URL 都按它生成，不再写死 github.com）。"""
+    return (_db("git_host") or os.getenv("GITHUB_HOST", "").strip()
+            or ghsettings.derive_git_host(api_base()))
+
+
+def clone_base() -> str:
+    """克隆落点（绝对路径，containment 判据）。env 每次现读（模块常量是
+    导入时的快照，只作兜底——patch 它仍是既有 L0 的接缝）。"""
+    return os.path.abspath(_db("clone_base")
+                           or os.getenv("GITHUB_CLONE_BASE", "").strip() or CLONE_BASE)
+
+
+def owner() -> str:
+    """归属过滤（留空 = 当前账号可见的全部仓库）。"""
+    return _db("owner") or os.getenv("GITHUB_OWNER", "").strip()
+
+
+_HOST_RE_CACHE: Dict[str, Any] = {}
+
+
+def _host_regex(host: str):
+    """按配置主机生成 remote 正则（host 可配 ⇒ 正则不能写死）。"""
+    pat = _HOST_RE_CACHE.get(host)
+    if pat is None:
+        h = re.escape(str(host or "").lower())
+        pat = re.compile(
+            r"^(?:https?://(?:www\.)?" + h + r"[:/]|git@" + h + r"[:/]|ssh://git@"
+            + h + r"[:/])([^/\s]+/[^/\s]+?)(?:\.git)?/?$", re.I)
+        _HOST_RE_CACHE[host] = pat
+    return pat
+
+
 def _read_token() -> str:
-    """env 优先 → 文件首行；读不到返回空串（调用方据此走降级信封）。
+    """DB（设置页）→ env → 文件首行；读不到返回空串（调用方据此走降级信封）。
     永不打印、永不入返回值。"""
-    tok = os.getenv("GITHUB_TOKEN", "")
+    tok = _db("token") or os.getenv("GITHUB_TOKEN", "")
     if tok:
         return tok.strip()
     try:
@@ -113,9 +170,10 @@ def _read_token() -> str:
 
 def _remote_slug(url: str) -> Optional[str]:
     """解析 git remote URL → "owner/name"（小写 host 由正则 re.I 保证）。
-    非 github.com host 一律 None——https://evil.com/github.com/x 不可能误配。"""
+    只认**当前配置的 git 主机**（v0.13.42 起可配，默认 github.com）：
+    https://evil.com/github.com/x 一类 URL 在任何配置下都解析失败。"""
     u = (url or "").strip()
-    m = _REMOTE_RE.match(u) or _SSH_RE.match(u)
+    m = _host_regex(git_host()).match(u)
     if not m:
         return None
     return m.group(1).lower()
@@ -188,11 +246,16 @@ def _remote_slugs() -> Dict[str, List[str]]:
 
 def _fetch_all(tok: str) -> Dict[str, Any]:
     """拉全部仓库（分页到空页）。失败返回 {ok:False, error}——降级不抛。"""
+    base = api_base()
+    own = owner()
     repos: List[Dict[str, Any]] = []
     page = 1
     while page <= 10:
-        url = (f"{API_BASE}/user/repos?per_page=100&sort=pushed"
-               f"&affiliation=owner,collaborator,organization_member&page={page}")
+        # 归属（owner）可配：留空 = 当前账号可见的全部；填了 = 只看该归属的公开/可见仓
+        url = ((f"{base}/users/{own}/repos?per_page=100&sort=pushed&page={page}")
+               if own else
+               (f"{base}/user/repos?per_page=100&sort=pushed"
+                f"&affiliation=owner,collaborator,organization_member&page={page}"))
         req = urllib.request.Request(url, headers={
             "Authorization": f"token {tok}",
             "User-Agent": "agent-hub",
@@ -334,7 +397,7 @@ async def github_sync(repo: str, request: Request):
     slugs = _remote_slugs()
     paths = slugs.get(slug.lower()) or []
     tok = _read_token()
-    remote_head = _gh_head(f"https://github.com/{slug.lower()}.git", tok)
+    remote_head = _gh_head(f"https://{git_host()}/{slug.lower()}.git", tok)
     if not paths:
         return {"ok": True, "repo": slug, "state": "absent",
                 "local_head": None, "remote_head": remote_head,
@@ -360,22 +423,24 @@ class CloneIn(BaseModel):
 
 
 def _clone_argv(slug: str, dest: str) -> List[str]:
-    """argv 列表（无 shell）：浅克隆 + 关凭据助手。URL 从校验过的 slug 现场重构。"""
+    """argv 列表（无 shell）：浅克隆 + 关凭据助手。URL 从校验过的 slug 与
+    **当前配置的 git 主机**现场重构（客户端永不接触 clone URL）。"""
     return ["git", "-c", "credential.helper=", "clone", "--depth", "1",
             "--single-branch", "--no-tags",
-            f"https://github.com/{slug}.git", dest]
+            f"https://{git_host()}/{slug}.git", dest]
 
 
 def _resolve_dest(slug: str) -> Tuple[str, str]:
     """slug → (name, dest)。dest 必须**严格落在 CLONE_BASE 之下**且父链是目录；
     违规一律 ValueError（400）。"""
+    base = clone_base()          # v0.13.42：落点可配（DB → env → 模块常量）
     name = slug.split("/")[-1]
     if not name or name in (".", ".."):
         raise ValueError("非法仓库名")
-    dest = os.path.normpath(os.path.join(CLONE_BASE, name))
-    if dest == CLONE_BASE or not dest.startswith(CLONE_BASE + os.sep):
+    dest = os.path.normpath(os.path.join(base, name))
+    if dest == base or not dest.startswith(base + os.sep):
         raise ValueError("克隆目标越出工作目录")
-    if os.path.exists(CLONE_BASE) and not os.path.isdir(CLONE_BASE):
+    if os.path.exists(base) and not os.path.isdir(base):
         raise ValueError("工作目录不是目录")
     return name, dest
 
@@ -469,7 +534,7 @@ async def github_clone(request: Request, body: CloneIn):
 
     # ⑥ 克隆
     t0 = time.monotonic()
-    Path(CLONE_BASE).mkdir(parents=True, exist_ok=True)
+    Path(clone_base()).mkdir(parents=True, exist_ok=True)
     argv = _clone_argv(slug.lower(), dest)
     rc, out, err = await _spawn_clone(argv)
     if rc != 0:
