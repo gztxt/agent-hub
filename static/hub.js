@@ -1664,7 +1664,7 @@ async function rebuildL2() {
 async function previewCtx() {
   try {
     const d = await api('/api/memory/context?q=' + encodeURIComponent($('memQ').value.trim()));
-    $('ctxPanel').style.display = 'block';
+    $('ctxPanel').style.display = '';   // v0.13.40：卡是 flex 列，显隐只切 inline 值，别写死 block
     $('ctxBody').textContent = d.context || '（空）';
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1686,6 +1686,7 @@ async function loadSkills() {
     $('skillRoute').innerHTML = '<option value="">全部发现点</option>' + opt;
     $('instFrom').innerHTML = opt;
     $('instTo').innerHTML = opt;
+    mountPicks('instTo');   // v0.13.40：option 每次重写 ⇒ 芯片壳跟着重挂（函数幂等）
     $('instName').innerHTML = SKILLS.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
     $('skillHint').textContent = SKILLS.length + ' 个技能 · ' + SKILL_ROUTES.length + ' 路发现点';
     if ((d.degraded || []).length) $('skillHint').textContent += ' · 降级路：' + d.degraded.join(',');
@@ -1984,7 +1985,7 @@ async function openRun(runId) {
   currentRun = runId;
   try {
     const d = await api('/api/tasks/' + runId);
-    $('runPanel').style.display = 'block';
+    $('runPanel').style.display = '';   // v0.13.40：卡是 flex 列，显隐只切 inline 值
     $('runTitle').textContent = 'Run ' + runId + ' · ' + (d.goal || '').slice(0, 60);
     renderTaskTable(d.tasks);
     renderDag(d.tasks);
@@ -2209,7 +2210,10 @@ async function loadMcp() {
     const s = await api('/mcp/servers');
     $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
       (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
-        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        /* v0.13.40：补 white-space:nowrap —— 只写 overflow/text-overflow 而没 nowrap
+           时省略号不生效，长 command 会把行撑成三行（1440 截图实测）。父级 .tscroll
+           已给横向滚动，兜住超长值。 */
+        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
         '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">' + ico('x') + '</button></td></tr>').join('') +
       '</tbody></table>';
     $('mcTools').innerHTML = '聚合工具中（stdio 会临时拉起进程）…';
@@ -2546,27 +2550,61 @@ function openEntity(id) {
   if (o) return window.open(lanUrl(o.url), '_blank');
   showDetail(id);
 }
-/* 右侧操作区：系统页面包屑（实体页由 renderModeBar 写） */
+/* 右侧操作区：实体工作台的面包屑与形态 tab 由 renderModeBar 写；系统页一律不写。
+   v0.13.34 用户裁定（2026-09-26）：两个项目页顶部不要标题和分割线。
+   v0.13.40 用户裁定（2026-09-27）：「系统菜单里的子菜单点进去，右边内容框顶部的
+   标题和分割线都要删除」⇒ 把那条口径从两个项目页**推广到全部系统页**（含总览）。
+   理由同源：侧栏项本身就是入口语义，页内再顶一条「遥测」+ opBar 底边线是重复装饰，
+   还白占 37px。清空 crumb/opTabs ⇒ syncOpBar 判 void ⇒ 整条 opBar 收起。
+   PAGE_LABELS 保留：它仍是页名→中文名的唯一映射（工具提示/后续复用），且
+   tests/test_asset_panel.py 钉着 `assets: '资产'` 这一条。 */
 function renderPageCrumb(page) {
+  if (page === 'chat') return;   // 实体工作台由 renderModeBar 接管，别互相覆盖
   const crumb = $('crumb'), tabs = $('opTabs');
   if (!crumb) return;
-  if (page === 'chat') return;   // 实体工作台由 renderModeBar 接管，别互相覆盖
-  /* v0.13.34 用户裁定（2026-09-26）：两个项目页（本机/GitHub）顶部不要标题
-     和分割线——侧栏常驻项已经是入口语义，页内再顶一条「本机项目」+ opBar
-     底边线是重复装饰。清空 crumb ⇒ syncOpBar 判 void ⇒ 整条 opBar 收起
-     （高度也省 37px）。其余页面照旧。 */
-  if (page === 'localprojects' || page === 'github') {
-    crumb.innerHTML = '';
-    if (tabs) tabs.innerHTML = '';
-    syncOpBar();
-    return;
-  }
+  crumb.innerHTML = '';
   if (tabs) tabs.innerHTML = '';
-  const label = escapeHtml(PAGE_LABELS[page] || page);
-  const top = '';
-  crumb.innerHTML = top + '<b>' + label + '</b>';
   syncOpBar();
 }
+/* ── 多选源 → 芯片行（v0.13.40 视觉重排）───────────────────────────
+   问题：memFedSrcs（11 项，size=8）/ kbRoutes（5 项）/ instTo（4 项）都是原生
+   <select multiple>，摆在 .toolbar 里做多选。原生 listbox 的行高由 size 撑开，
+   于是同一行的检索按钮被挤到中间、卡片下边框被顶穿（1440×1000 截图里
+   memFedSrcs 的下沿越出卡片），而 11 项里同时只能看到 8 项。
+   口径：**原生 select 仍是唯一数据源**——它的 option 清单、selectedOptions
+   都不动（测试钉的源清单、JS 的读法全部零改动），只是被 CSS 隐藏，前面插一行
+   可换行的芯片复刻勾选语义：点芯片 = 翻转该 option.selected = 派发 change。
+   芯片行高度由内容与换行决定，不再需要 size 撑开，也不再顶穿卡片。
+   幂等：重复调用会先摘掉旧芯片行（loadSkills 每次重写 instTo 的 option 后要重挂）。 */
+function mountPicks(selId) {
+  const sel = $(selId);
+  if (!sel) return;
+  const old = $(selId + 'Picks');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'picks';
+  wrap.id = selId + 'Picks';
+  wrap.setAttribute('role', 'group');
+  wrap.setAttribute('aria-label', selId + ' 多选');
+  Array.from(sel.options).forEach((o, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pick' + (o.selected ? ' on' : '');
+    b.dataset.i = String(i);
+    b.textContent = o.textContent;
+    b.setAttribute('aria-pressed', o.selected ? 'true' : 'false');
+    b.addEventListener('click', () => {
+      o.selected = !o.selected;            // 芯片只是壳：真值只写回原生 option
+      b.classList.toggle('on', o.selected);
+      b.setAttribute('aria-pressed', o.selected ? 'true' : 'false');
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    wrap.appendChild(b);
+  });
+  sel.classList.add('picks-src');
+  sel.parentNode.insertBefore(wrap, sel);
+}
+
 /* v0.10.1：#opBar 无标题也无 tab 时整条收起，窄屏省 37px，宽屏也不留空带 */
 function syncOpBar() {
   const ob = $('opBar'), c = $('crumb'), t = $('opTabs');
@@ -2817,6 +2855,10 @@ setInterval(() => {
       && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
+/* v0.13.40：两个多选源的 option 是模板里写死的（memFedSrcs / kbRoutes），boot 期
+   一次性挂芯片行即可；instTo 的 option 由 loadSkills 每次重写 ⇒ 在那边重挂。
+   hub.js 在 </body> 前加载，此刻 DOM 已就绪。 */
+['memFedSrcs', 'kbRoutes'].forEach(mountPicks);
 go(lsGet('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）
 /* ══════════════════ P4 资产面板（只读门面聚合）══════════════════
    契约源：src/memory.py（/api/memory/*）、src/kb.py（/api/kb/*）、src/skill.py（/api/skill/*）。
@@ -2985,7 +3027,9 @@ async function loadAssetStatus() {
       .join('；').slice(0, 90);
     return assetBadge({ label: p.label }, st, off.length ? ((broken.length ? '不可用：' : '原因：') + why) : '');
   });
-  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px">' + chips.join('') + '</div>';
+  /* v0.13.40：align-items:flex-start —— 三个徽标的 note 长短差很多（kb 那条 90+ 字），
+     不拉伸才能让每块只占自己内容的高度，否则短的那块（技能）下面拖一大片空白。 */
+  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start">' + chips.join('') + '</div>';
 }
 
 async function runAssetSearch() {

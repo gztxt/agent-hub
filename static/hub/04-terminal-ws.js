@@ -474,7 +474,7 @@ async function rebuildL2() {
 async function previewCtx() {
   try {
     const d = await api('/api/memory/context?q=' + encodeURIComponent($('memQ').value.trim()));
-    $('ctxPanel').style.display = 'block';
+    $('ctxPanel').style.display = '';   // v0.13.40：卡是 flex 列，显隐只切 inline 值，别写死 block
     $('ctxBody').textContent = d.context || '（空）';
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -496,6 +496,7 @@ async function loadSkills() {
     $('skillRoute').innerHTML = '<option value="">全部发现点</option>' + opt;
     $('instFrom').innerHTML = opt;
     $('instTo').innerHTML = opt;
+    mountPicks('instTo');   // v0.13.40：option 每次重写 ⇒ 芯片壳跟着重挂（函数幂等）
     $('instName').innerHTML = SKILLS.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
     $('skillHint').textContent = SKILLS.length + ' 个技能 · ' + SKILL_ROUTES.length + ' 路发现点';
     if ((d.degraded || []).length) $('skillHint').textContent += ' · 降级路：' + d.degraded.join(',');
@@ -794,7 +795,7 @@ async function openRun(runId) {
   currentRun = runId;
   try {
     const d = await api('/api/tasks/' + runId);
-    $('runPanel').style.display = 'block';
+    $('runPanel').style.display = '';   // v0.13.40：卡是 flex 列，显隐只切 inline 值
     $('runTitle').textContent = 'Run ' + runId + ' · ' + (d.goal || '').slice(0, 60);
     renderTaskTable(d.tasks);
     renderDag(d.tasks);

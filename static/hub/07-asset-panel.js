@@ -165,7 +165,9 @@ async function loadAssetStatus() {
       .join('；').slice(0, 90);
     return assetBadge({ label: p.label }, st, off.length ? ((broken.length ? '不可用：' : '原因：') + why) : '');
   });
-  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px">' + chips.join('') + '</div>';
+  /* v0.13.40：align-items:flex-start —— 三个徽标的 note 长短差很多（kb 那条 90+ 字），
+     不拉伸才能让每块只占自己内容的高度，否则短的那块（技能）下面拖一大片空白。 */
+  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start">' + chips.join('') + '</div>';
 }
 
 async function runAssetSearch() {

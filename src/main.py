@@ -72,7 +72,11 @@ import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.39"   # 修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」：终端子进程 PATH 前置 nvm node bin
+VERSION = "0.13.40"   # 系统子菜单页：删页顶标题/分割线（renderPageCrumb 只清空）+ 十页统一骨架重排
+                      #   （标题+分割线来自 #opBar：renderPageCrumb 是全站唯一写 #crumb 的地方，
+                      #     它不写字 ⇒ syncOpBar 判 void ⇒ 整条 opBar 收起；chat 早退交给 renderModeBar。
+                      #     排版统一到 .sp/.sp-card 骨架：单表页走盒级滚动给 sticky 表头当容器）
+                      #   ↑ v0.13.39：修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」：终端子进程 PATH 前置 nvm node bin
                       #   （pi 的 shebang 是 #!/usr/bin/env node，服务 PATH 无 nvm ⇒ 内核把系统
                       #     node v20.20.2 交给它，而 pi v0.85.1 的 bundle 用 node:fs 的 globSync
                       #    （Node 22+）⇒ SyntaxError 启动即崩。which() 的 nvm 兜底只管 hub 找

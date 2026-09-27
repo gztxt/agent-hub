@@ -1,5 +1,67 @@
 # CHANGELOG
 
+## v0.13.40 — 系统子菜单页：删页顶标题/分割线 + 十页统一骨架重排
+
+> 施工会话：add6797a。基线：v0.13.39。改动文件：`templates/index.html`（系统页骨架
+> CSS 段 + 10 个 `<section class="page sys">` 重写）、`static/hub/06-manager-tasks.js`
+> （`renderPageCrumb` 只清空、新增 `mountPicks` 并在 boot 挂载）、
+> `static/hub/04-terminal-ws.js`（`instTo` 重写后重挂芯片、`ctxPanel`/`runPanel`
+> 显隐不再写死 block）、`static/hub/05-chat-and-history.js`（mcp server 目标列
+> nowrap+title）、`static/hub/07-asset-panel.js`（健康徽标容器不拉伸）、
+> `static/hub.js`（构建产物，md5 4674032c）、`tests/test_sys_pages_layout.py`
+> （新增 14 例，L0 hermetic）、`src/main.py`（VERSION）。
+
+- **用户报障（两条，同一处落点）**：①「系统菜单里的子菜单点进去，右边内容框顶部的
+  标题和分割线都要删除」；②「右边页面的排版都要优化，实在是乱七八糟的 —— 每个
+  子菜单的右边内容框页面都要优化和重新设计」。
+- **①的真因不是"某个页面多写了标题"**：页顶那行是 `#opBar`（crumb + opTabs + 一条
+  `border-bottom`），而全站唯一往 `#crumb` 写字的地方是 `renderPageCrumb()`；只要它
+  不写字，`syncOpBar()` 判 void ⇒ 整条 opBar `display:none`，标题与分割线一起消失。
+  所以改的是**唯一的写入点**，不是 10 个页面各自的 DOM —— 改一处即全站（含总览页）
+  生效，也不留"以后新加页又冒出标题"的口子。`chat`（实体工作台）必须早退：它的顶栏
+  由 `renderModeBar()` 接管，两边互写会打架（既有约定，本次保留）。
+- **②的真因是"每页自搭一套"**：10 个系统页各写各的 `.panel` / 裸 `div`，于是卡头
+  高度、内边距、滚动归属、长列表裁切全都不一样 —— 这正是"乱七八糟"的成因，也是
+  那种"单看一页没毛病、连着点就跳"的观感来源。修法不是逐页调像素，而是**先立骨架再
+  迁移**：`.sp`（页级纵向流）→ `.sp-card` → `.sp-hd`（卡头，右侧 `.sp-r` 放 hint/按钮）
+  → `.sp-tools`（过滤条）→ `.sp-bd`（正文，`flush` 去内边距、`box` 限高滚动）→
+  `.sp-note`（只读脚注），多块异质内容用 `.sp-grid`（`auto-fit/minmax`）拆 `.sp-cell`。
+  10 页全部迁完，系统页内不再出现 `.panel`。
+- **滚动归属只能二选一（实测踩过）**：单表/单列表页走**盒级**（表格进
+  `.sp-bd.box.flush.tscroll`），盒是滚动容器 ⇒ `thead th{position:sticky}` 才生效；
+  多块异质页走**页级**（`section.page.sys{overflow-y:auto}`）。第一版做反了
+  （页级滚动 + 卡片 `overflow:hidden`），CDP 探针实测 `thTopAfter=-235` —— 表头根本
+  没钉住，滚两屏就不知道列是什么。改盒级后复验 `thTopBefore===thTopAfter===165`、
+  `scrollHeight 4550 / clientHeight 560`。
+- **不新增断点的代价由 CSS 自己扛**：`.sp-grid` 初版给了 `.two/.three` 固定列数变体，
+  窄屏覆盖写在 `@media(max-width:1100px)` 里 —— 而变体定义在该规则**之前** ⇒ 被"后
+  定义的固定列数"覆盖，窄屏静默不塌列（闸门全绿但页面是错的，典型的静默失效）。修法：
+  删变体，统一 `repeat(auto-fit, minmax(280px,1fr))`，1100px 断点恢复成只管 `.mem-grid`。
+  `@media` 档位仍是白名单那 5 档（`test_no_new_breakpoint_added` 钉着）。
+- **多选源改芯片，但数据源没换**：`memFedSrcs`(11) / `kbRoutes`(5) / `instTo`(7) 三处
+  `<select multiple>` 是用户报的"选择框越出卡片下边框压住下面那行"。新增
+  `mountPicks()` 只挂一层**可视芯片壳**：点击写回原生 `option.selected` 并派发 change，
+  原生 select 加 `.picks-src` 隐藏。真源仍是 option 清单与 `selectedOptions`
+  （`test_center_ui_l0` 还按 `<option value=…>` 逐个校验）⇒ 不许谁把它换成自造状态。
+  `mountPicks` 幂等（`instTo` 的 option 每次 `loadSkills()` 都被重写，必须重挂）。
+- **两处显隐写死 `display:block` 的连带伤**：`ctxPanel` / `runPanel` 现在是 flex 列，
+  写死 block 会把它们打回块级 ⇒ 卡片内排版错位。改为 `style.display = ''`（让 CSS 的
+  列布局说话）。探针复验 `ctxDisplay:"flex"`、DAG 4 节点、任务表 3 行。
+- **迁移期零增删**：10 页 DOM 的 `id="…"` 集合前后 `comm` 比对一致（`homeChips` /
+  `hTime` 是既有 JS 引用残留，非本次引入）⇒ 所有既有 JS 取元素与静态闸门的取位不变。
+- **验证**：L0 hermetic **671/671 零跳过**（含新增 14 例）；`bash scripts/build_hubjs.sh`
+  重跑两次产物一致。CDP 探针（生产 :3102）：10 页宽屏 `overflowX` 全 0；390×844 窄屏
+  页面级 `overflowX` 全 0，横向滚动只发生在 `tscroll` 盒内（ports 475 / mcp 152 /
+  tasks 287 / jobs 322 / runlog 182）；芯片壳 `chips 11 / options 11 / on 9 /
+  selected 9 / select display "none"`，点第 4 个芯片后 `pi_sessions` 入选、
+  `selectedNow` 变 10；联邦检索 10 条、kb 检索 12 条、skills 61 行、instTo 7 芯片；
+  `window.__errs` 为空。
+- **⚠ 本次没做的**：`tests/verify_asset_panel_live.py` 在 :3102 上三分钟无输出（与其
+  launch_chrome 默认 390×844 及端口约定有关，未深追），改以自写等价窄屏探针复验同款
+  判据（`{"w":326,"h":760,"inside":true,"overflowX":0,"cols":1}`）；**视觉校验无法做** ——
+  本会话模型不支持读图，截图拿不到 ⇒ 上述结论全部建立在几何量/DOM 量探针 + 静态闸门上，
+  不是"看着顺眼"。
+
 ## v0.13.39 — 修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」（子进程 PATH 前置 nvm node bin）
 
 > 施工会话：688b689d。基线：v0.13.38。改动文件：`src/term.py`（新增纯函数

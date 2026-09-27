@@ -441,6 +441,97 @@
         .toolbar input:not([type=checkbox]) { flex: 1; min-width: 180px; }
         pre.code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: var(--fs-sm); overflow-x: auto; color: var(--text-1); line-height: var(--lh-base); }
 
+        /* ── 系统页统一骨架（v0.13.40）─────────────────────────────────────
+           起因（2026-09-27 用户裁定「右边页面的排版实在是乱七八糟」）：10 个系统
+           子菜单页此前各写各的 —— 有的把 .panel 当容器再往里塞 .toolbar，表格直接
+           拍在裸页面上；列表统一 max-height:420px 硬裁 ⇒ 宽屏下页尾空一大片灰、
+           列表里却还要再滚一层；多选 <select multiple size="8"> 摆在 .toolbar 里
+           把同行按钮挤到中间、并把卡片下边框顶穿；.hint 容器装宽表格，表格直接从
+           卡片右侧溢出去压住隔壁列（工具页实测）。
+           这里立一套骨架，10 个页面同构复用。四条硬约束：
+             ① 不新增 @media：窄屏档只挂在下面既有的 1100px 断点上（test_asset_panel 钉着）；
+             ② 不新增色 token：只引用 :root 里既有的（不存在的 var() 会静默退化）；
+             ③ 每页只留一条纵向滚动路径，且**只有一处**定义（页级 or 盒级，二选一）；
+             ④ 高度一律由内容或视口决定，不写 calc(100vh - 常数) 这类拍脑袋常数。
+
+           滚动归谁（两种形态，按页面内容量选，页面自己决定一次）：
+             · 单表 / 单列表页（端口、运行日志、协同、定时、技能、工具）→ **盒级**：
+               表格进 .sp-bd.box.flush.tscroll，内容短时按内容收缩、长了盒内滚，
+               卡片与 sticky 表头都留在视口里（与本机项目 / GitHub 项目两页同观感）。
+             · 多块异质页（遥测、记忆、知识库、资产）→ **页级**：section.page.sys
+               自己 overflow-y:auto，块的高度由内容决定。
+           为什么页级那一半不也用定高盒：本族内容量差得远（技能 61 条 / 端口 15+ 行 /
+           遥测三段表），定高必然要么裁内容、要么在某个视口高度上把主卡挤成 0 ——
+           09-27 实测窄屏 390 下记忆页下半段被整块裁掉，就是定高方案的真实代价。
+
+           .sp       页级卡片列：12px 间距，高度由内容决定（页面负责滚）
+           .sp-card  内容卡（白底 + 1px 描边 + 12px 圆角，与 .panel 同观感）
+           .sp-hd    卡头：短标题 + 右侧元信息/动作（44px 等高，替代页顶大标题）
+           .sp-tools 工具条区（其内 .toolbar 自带 14px 下边距）
+           .sp-bd    卡体；.flush 去内边距（表格/列表自带）；.box 限高内滚
+           .sp-note  卡脚注（"只读/契约"这类次要但必须说的话，压到分隔线下）
+           .sp-sub   卡内小节标题
+           .sp-grid  卡内多列（默认 auto-fit；.two/.three 给固定列数）
+           .sp-list  列表容器（.mem-item 自带分隔线，末行去线）
+           .picks    多选芯片行 —— 原生 <select multiple> 作唯一数据源被隐藏，
+                     芯片只是它的可视壳（读法仍是 selectedOptions，JS 零改动） */
+        section.page.sys { overflow-y: auto; }
+        .sp { display: flex; flex-direction: column; gap: 12px; }
+        .sp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+                   display: flex; flex-direction: column; overflow: clip; }
+        /* 卡头：标题不换行（窄屏 390 实测标题会被右侧长 hint 挤成两行），
+           从而由 hint 承担换行；baseline 对齐让 18px 标题与 13px hint 坐在一条基线上。 */
+        .sp-hd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+                 min-height: 44px; padding: 6px 14px; border-bottom: 1px solid var(--divider); }
+        .sp-hd h3 { flex: none; font-size: var(--fs-md); font-weight: 600; line-height: 1.4;
+                    color: var(--text-1); margin: 0; white-space: nowrap; }
+        .sp-hd .sp-r { margin-left: auto; display: flex; align-items: baseline; gap: 4px 8px;
+                       flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+        .sp-tools { padding: 12px 14px 0; }
+        .sp-tools .toolbar { margin-bottom: 14px; }
+        .sp-tools .toolbar:last-child { margin-bottom: 0; }
+        .sp-tools + .sp-bd { padding-top: 12px; }
+        .sp-bd { padding: 12px 14px; }
+        .sp-bd.flush { padding: 0; }
+        /* 限高滚动盒（.box）：单表/单列表页用它 —— 盒本身就是 sticky 表头的滚动容器，
+           卡片始终留在视口里，与本机项目/GitHub 项目两页的内滚列表同一观感。
+           内容短于限高时盒子按内容收缩，滚动条不出现（定时任务那 3 行就是这种）。
+           ① 限高走 vh：短视口自动收窄，不写 calc(100vh - 常数) 这种拍脑袋值；
+           ② 必须配 .tscroll（宽表横向溢出）——注意 overflow-x:auto 按 CSS 规范会把
+              overflow-y 也算成 auto，这一条恰好让盒子成为纵向滚动容器，sticky 才生效；
+              不带 .tscroll 的纯纵向盒子请用 .sp-bd.box 单独用（此时无 sticky 需求）。 */
+        .sp-bd.box { max-height: min(60vh, 560px); overflow: auto; }
+        .sp-note { padding: 8px 14px; border-top: 1px solid var(--divider); background: var(--surface-2);
+                   font-size: var(--fs-sm); color: var(--muted); line-height: var(--lh-base); }
+        .sp-sub { font-size: var(--fs-sm); font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+        .sp-list { display: flex; flex-direction: column; }
+        .sp-list > .mem-item:last-child { border-bottom: 0; }
+        /* 表头钉在页滚动容器顶部 */
+        .sp-card thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+        /* auto-fit + minmax：列数由可用宽度自己决定，**不新增断点**，也就不会有
+           「媒体查询写在定义之前被覆盖」那类静默失效（本次第一版就踩了：.three 定死在
+           1100 断点之前定义，窄屏没塌成单列）。空轨道会被 auto-fit 收掉 ⇒ 2 个子项
+           在宽屏也是均分整行，不会被留出一个空洞。 */
+        .sp-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+        .sp-col { display: flex; flex-direction: column; min-width: 0; }
+        /* 卡内小节：用内描边（--divider）分组，比再套一层 .panel 的白卡+灰边框更轻，
+           也不会在卡里出现"卡片里还有卡片"的双层圆角。 */
+        .sp-cell { display: flex; flex-direction: column; min-width: 0;
+                   border: 1px solid var(--divider); border-radius: 10px; padding: 12px; }
+        .picks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .picks .pick { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2);
+                       border-radius: 99px; padding: 3px 10px; font-size: var(--fs-sm); line-height: 1.5; }
+        .picks .pick:hover { border-color: var(--accent-2); color: var(--text-1); }
+        .picks .pick.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
+        select.picks-src { display: none; }
+        /* 未挂芯片壳时（无 JS / 挂载前）原生多选也必须被限高，不许把卡片顶穿 */
+        .sp-row select[multiple] { max-height: 132px; overflow: auto; padding: 4px; }
+        /* 列表行：主文本可换行、右侧动作列不参与拉伸（.mem-item 原 align-items 是
+           两端对齐，长描述下按钮会被顶到卡片边缘之外） */
+        .sp-list > .mem-item { align-items: flex-start; gap: 10px; }
+        .sp-list > .mem-item > p { min-width: 0; }
+        .sp-list > .mem-item > .btn { flex: none; }
+
         .modal-mask { position: fixed; inset: 0; background: var(--mask); display: none; align-items: center; justify-content: center; z-index: 50; }
         .modal-mask.on { display: flex; }
         .modal { width: min(560px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; max-height: 86vh; overflow-y: auto; }
@@ -465,8 +556,16 @@
         .footer { text-align: center; padding: 12px; color: var(--muted); font-size: var(--fs-sm); background: var(--bg); border-top: 1px solid var(--border); }
 
         /* .chip 只保留自身样式：dot / b / .kindtag / .btn 四条子规则零引用（首页 4 个 chip 内部
-           只有 svg + 纯文本），状态指示早已迁到 .s-badge，属残留死代码 */
-        .chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+           只有 svg + 纯文本），状态指示早已迁到 .s-badge，属残留死代码。
+           v0.13.40：唯一活着的消费方是资产页门面健康徽标（07-asset-panel 的 assetBadge）。
+           原来 align-items:center + nowrap 下，长 note（kb 的「按设计未接入 原因：…」
+           一条 90+ 字）会把 chip 拉满一整行，粗体结论和说明挤在同一行里读不动。
+           现在：整体可换行、note 独占第二行，且 chip 均分一行（flex basis 260px）。 */
+        .chip { display: flex; align-items: baseline; gap: 3px 8px; flex-wrap: wrap;
+                flex: 1 1 260px; border: 1px solid var(--border); background: var(--surface-2);
+                border-radius: 10px; padding: 8px 10px; min-width: 0; }
+        .chip > b { flex: none; }
+        .chip > .hint { flex: 1 1 100%; }
 
         /* ── 会话嵌入 / 终端 ── */
         .pane { flex: 1; display: none; flex-direction: column; min-height: 0; }
@@ -922,194 +1021,345 @@
             </div>
         </section>
 
-        <!-- 记忆中心 -->
-        <section class="page" id="page-memory">
-            <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
-                 记忆中心页只有 L1 LIKE。按需触发（进页不自动跑：防埋点污染+防无谓联邦开销）。
-                 v0.13.28：源 6→10（补 claude_projects/grok/hermes/workbuddy 四家）。 -->
-            <div class="panel">
-                <h3>联邦检索（本地 L1 + TDAI 权威库 + 8 路外部源，RRF 融合）</h3>
-                <div class="toolbar">
-                    <input id="memFedQ" placeholder="跨全部记忆源检索（如：端口 / 备份 / CCR）…" style="max-width:280px" onkeydown="if(event.key==='Enter')memFedSearch()">
-                    <button class="btn sm" onclick="memFedSearch()">检索</button>
-                    <select id="memFedSrcs" multiple size="8" title="检索源（多选）" style="min-width:150px">
-                        <option value="local" selected>本地 L1</option>
-                        <option value="tdai" selected>TDAI L1</option>
-                        <option value="claude_mem" selected>claude-mem</option>
-                        <option value="claude_projects" selected>claude 原生记忆</option>
-                        <option value="pi_sessions">pi 会话</option>
-                        <option value="codex_sessions">codex 会话</option>
-                        <option value="grok_memory" selected>grok 记忆</option>
-                        <option value="hermes_memory" selected>hermes 记忆</option>
-                        <option value="workbuddy_memory" selected>workbuddy 记忆</option>
-                        <option value="workspace_files" selected>工作区文件</option>
-                        <option value="archived_sessions" selected>归档会话</option>
-                    </select>
-                    <span class="hint" id="memFedHint"></span>
-                </div>
-                <div id="memFedBadges" class="hint" style="margin:4px 0"></div>
-                <!-- v0.13.28 批3：检索态 header 条——「当前检索 q · N 条 · 清空」，搜完可回退主界面 -->
-                <div id="memFedQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
-                <div id="memFedResults" class="mem-list">输入关键词开始联邦检索</div>
-            </div>
-            <div class="mem-grid">
-                <div class="panel">
-                    <h3>L1 · 本地便签（hub 自有 SQLite——非主记忆源）</h3>
-                    <div class="hint" style="margin:4px 0">⚠ 本表只是 hub 的演示/手写便签（当前 4 行陈旧样例）。
-                    <b>主记忆检索走顶部「联邦检索」</b>（TDAI 权威库 315 条 + 6 路外部源，数据新至昨日）。</div>
-                    <div class="toolbar">
-                        <input id="memQ" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadMemories()">
-                        <select id="memCat" onchange="loadMemories()">
-                            <option value="">全部分类</option><option>fact</option><option>decision</option><option>constraint</option><option>preference</option>
-                        </select>
+        <!-- 记忆中心（v0.13.40 统一骨架）：本页是"多块异质内容"的典型，也是本次报障
+             里最乱的一页 —— 检索源 11 项 <select multiple size=8> 摆在工具栏里，一行
+             里把「检索」按钮挤到中间、自己越出卡片下边框；三个 L1/L2/L3 面板各自
+             h3 折两行、列表 max-height:420px 硬裁。现在：① 检索源交给 .picks 芯片
+             （mountPicks 挂壳，原生 select 隐藏但仍是被读的数据源）；② 三列下沉到
+             「分层记忆」卡里，用 .sp-cell 内描边分组；③ 列表改为限高内滚的
+             .sp-bd.box，不再有 420px 魔法数散在 CSS 里。 -->
+        <section class="page sys" id="page-memory">
+            <div class="sp">
+                <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
+                     记忆中心页只有 L1 LIKE。按需触发（进页不自动跑：防埋点污染+防无谓联邦开销）。
+                     v0.13.28：源 6→10（补 claude_projects/grok/hermes/workbuddy 四家）。 -->
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>联邦检索</h3>
+                        <div class="sp-r">
+                            <span class="hint">本地 L1 + TDAI 权威库 + 8 路外部源 · RRF 融合</span>
+                            <span class="hint" id="memFedHint"></span>
+                        </div>
                     </div>
-                    <div class="mem-list" id="memList"></div>
-                    <div class="row toolbar" style="margin-top:10px">
-                        <input id="memNew" placeholder="新增一条记忆…">
-                        <button class="btn sm" onclick="addMemory()">添加</button>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="memFedQ" placeholder="跨全部记忆源检索（如：端口 / 备份 / CCR）…" onkeydown="if(event.key==='Enter')memFedSearch()">
+                            <button class="btn sm" onclick="memFedSearch()">检索</button>
+                        </div>
+                        <div class="toolbar">
+                            <span class="sp-sub" style="margin:0">检索源</span>
+                            <select id="memFedSrcs" multiple size="8" title="检索源（多选）" style="min-width:150px">
+                                <option value="local" selected>本地 L1</option>
+                                <option value="tdai" selected>TDAI L1</option>
+                                <option value="claude_mem" selected>claude-mem</option>
+                                <option value="claude_projects" selected>claude 原生记忆</option>
+                                <option value="pi_sessions">pi 会话</option>
+                                <option value="codex_sessions">codex 会话</option>
+                                <option value="grok_memory" selected>grok 记忆</option>
+                                <option value="hermes_memory" selected>hermes 记忆</option>
+                                <option value="workbuddy_memory" selected>workbuddy 记忆</option>
+                                <option value="workspace_files" selected>工作区文件</option>
+                                <option value="archived_sessions" selected>归档会话</option>
+                            </select>
+                        </div>
                     </div>
-                    <div class="hint">L2 由 L1 经 LLM 压缩生成；manual 手写区自动流程永不触碰（与上游语义一致）</div>
+                    <div class="sp-bd" style="padding-top:0;padding-bottom:6px">
+                        <div id="memFedBadges" class="hint"></div>
+                        <!-- v0.13.28 批3：检索态 header 条——「当前检索 q · N 条 · 清空」，搜完可回退主界面 -->
+                        <div id="memFedQueryBar" class="toolbar" style="display:none;margin:2px 0 0"></div>
+                    </div>
+                    <div class="sp-bd box"><div id="memFedResults" class="sp-list">输入关键词开始联邦检索</div></div>
                 </div>
-                <div class="panel">
-                    <h3>L2 · 近 30 天工作记忆</h3>
-                    <textarea class="doc" id="l2content" readonly placeholder="（尚无生成内容）"></textarea>
-                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
-                    <textarea class="doc" id="l2manual" style="min-height:80px"></textarea>
-                    <div class="toolbar" style="margin-top:8px">
-                        <button class="btn sm" onclick="saveDoc('l2')">保存</button>
-                        <button class="btn ghost sm" onclick="rebuildL2()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>用 LLM 重建</button>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>分层记忆</h3>
+                        <div class="sp-r"><span class="hint">L1 便签（可写）· L2 近 30 天压缩 · L3 长期画像（草稿→确认制）</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="sp-grid">
+                            <div class="sp-cell">
+                                <div class="sp-sub">L1 · 本地便签</div>
+                                <div class="hint" style="margin-bottom:8px">hub 自有 SQLite 的演示/手写便签（当前为陈旧样例），
+                                <b>主记忆检索走上方「联邦检索」</b>。</div>
+                                <div class="toolbar">
+                                    <input id="memQ" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadMemories()">
+                                    <select id="memCat" onchange="loadMemories()" style="max-width:130px">
+                                        <option value="">全部分类</option><option>fact</option><option>decision</option><option>constraint</option><option>preference</option>
+                                    </select>
+                                </div>
+                                <div class="sp-bd box flush tscroll" style="border-top:1px solid var(--divider)"><div class="sp-list" id="memList"></div></div>
+                                <div class="toolbar" style="margin-top:10px">
+                                    <input id="memNew" placeholder="新增一条记忆…">
+                                    <button class="btn sm" onclick="addMemory()">添加</button>
+                                </div>
+                                <div class="hint">L2 由 L1 经 LLM 压缩生成；manual 手写区自动流程永不触碰（与上游语义一致）。</div>
+                            </div>
+                            <div class="sp-cell">
+                                <div class="sp-sub">L2 · 近 30 天工作记忆</div>
+                                <textarea class="doc" id="l2content" readonly placeholder="（尚无生成内容）"></textarea>
+                                <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                                <textarea class="doc" id="l2manual" style="min-height:80px"></textarea>
+                                <div class="toolbar" style="margin-top:8px;margin-bottom:0">
+                                    <button class="btn sm" onclick="saveDoc('l2')">保存</button>
+                                    <button class="btn ghost sm" onclick="rebuildL2()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>用 LLM 重建</button>
+                                </div>
+                            </div>
+                            <div class="sp-cell">
+                                <div class="sp-sub">L3 · 长期 Profile</div>
+                                <textarea class="doc" id="l3content" placeholder="人工确认后写入的稳定长期偏好（草稿→确认制）"></textarea>
+                                <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                                <textarea class="doc" id="l3manual" style="min-height:80px"></textarea>
+                                <div class="toolbar" style="margin-top:8px;margin-bottom:0">
+                                    <button class="btn sm" onclick="saveDoc('l3')">保存</button>
+                                    <button class="btn ghost sm" onclick="previewCtx()">注入预览</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="panel">
-                    <h3>L3 · 长期 Profile</h3>
-                    <textarea class="doc" id="l3content" placeholder="人工确认后写入的稳定长期偏好（草稿→确认制）"></textarea>
-                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
-                    <textarea class="doc" id="l3manual" style="min-height:80px"></textarea>
-                    <div class="toolbar" style="margin-top:8px">
-                        <button class="btn sm" onclick="saveDoc('l3')">保存</button>
-                        <button class="btn ghost sm" onclick="previewCtx()">注入预览</button>
+                <div class="sp-card" id="ctxPanel" style="display:none">
+                    <div class="sp-hd"><h3>注入上下文包</h3><div class="sp-r"><span class="hint">/api/memory/context</span></div></div>
+                    <div class="sp-bd"><pre class="code" id="ctxBody"></pre></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 协同 DAG（v0.13.40 统一骨架）：① 目标输入 + 动作合成一张「新建协同」卡；
+             ② 列表卡补「操作」表头（原来是空 <th>，表头行左边 5 列有标题、最后
+             一列空白，视觉上像缺了一格）；③ 运行详情从 .panel 改 .sp-card，
+             runTitle 从 h3 移到卡头。 -->
+        <section class="page sys" id="page-tasks">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>新建协同</h3>
+                        <div class="sp-r"><span class="hint">Leader 拆解 · DAG 执行（SQLite 状态机，重启可恢复）</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <textarea id="taskGoal" class="doc" style="min-height:64px" placeholder="复杂任务目标，例如：分别介绍 A 与 B（并行），再汇总对比"></textarea>
+                        </div>
+                        <div class="toolbar">
+                            <select id="taskAgent" style="max-width:240px"><option value="">自动选择执行 Agent</option></select>
+                            <button class="btn" id="btnDecompose" onclick="decomposeRun()">拆解并启动</button>
+                            <button class="btn ghost" onclick="loadRuns()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新列表</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>协同任务</h3>
+                        <div class="sp-r"><span class="hint">点「查看」展开该 run 的 DAG 与逐任务输出</span></div>
+                    </div>
+                    <div class="sp-bd box flush tscroll">
+                        <table><thead><tr><th>Run</th><th>目标</th><th>状态</th><th>进度</th><th>创建</th><th>操作</th></tr></thead>
+                        <tbody id="runsBody"></tbody></table>
+                    </div>
+                </div>
+                <div class="sp-card" id="runPanel" style="display:none">
+                    <div class="sp-hd"><h3 id="runTitle"></h3></div>
+                    <div class="sp-bd">
+                        <div id="dagSvg" class="tscroll"></div>
+                    </div>
+                    <div class="sp-bd box flush tscroll">
+                        <table><thead><tr><th>任务</th><th>Agent</th><th>依赖</th><th>状态</th><th>耗时</th><th>输出/错误（点击行展开）</th></tr></thead>
+                        <tbody id="taskBody"></tbody></table>
+                    </div>
+                    <div class="sp-tools" style="padding-top:12px">
+                        <div class="toolbar" style="margin-bottom:0">
+                            <button class="btn ghost sm" onclick="startRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-play"/></svg>启动/续跑</button>
+                            <button class="btn ghost sm" onclick="retryRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重试失败项</button>
+                            <button class="btn danger sm" onclick="delRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-trash"/></svg>删除</button>
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="panel" id="ctxPanel" style="display:none"><h3>注入上下文包（/api/memory/context）</h3><pre class="code" id="ctxBody"></pre></div>
         </section>
 
-        <!-- 协同 DAG -->
-        <section class="page" id="page-tasks">
-            <div class="panel">
-                <h3>Leader 拆解 · DAG 协同执行（SQLite 状态机，重启可恢复）</h3>
-                <div class="row toolbar"><textarea id="taskGoal" class="doc" style="min-height:60px" placeholder="复杂任务目标，例如：分别介绍 A 与 B（并行），再汇总对比"></textarea></div>
-                <div class="toolbar">
-                    <select id="taskAgent"><option value="">自动选择执行 Agent</option></select>
-                    <button class="btn" id="btnDecompose" onclick="decomposeRun()">拆解并启动</button>
-                    <button class="btn ghost" onclick="loadRuns()">刷新列表</button>
+        <!-- 定时任务（v0.13.40 统一骨架）：① 三行工具栏各自为政（第二行只有 payload、
+             第三行「白名单…+创建」贴着左缘），现在按 目标 / cron 与类型 / 载荷 分两行；
+             ② 列表卡补「操作」表头（原为空 <th>）。 -->
+        <section class="page sys" id="page-jobs">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>新建定时任务</h3>
+                        <div class="sp-r"><span class="hint">本地时区 5 段 cron · shell 类走白名单</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="jobName" placeholder="任务名" style="max-width:180px">
+                            <input id="jobCron" placeholder="*/5 9-18 * * 1-5" style="max-width:180px">
+                            <select id="jobKind" onchange="jobKindChange()" style="max-width:150px"><option value="shell">shell</option><option value="agent_prompt">agent_prompt</option><option value="http">http</option></select>
+                            <select id="jobAgent" style="max-width:170px"></select>
+                        </div>
+                        <div class="toolbar">
+                            <input id="jobPayload" placeholder="命令 / Prompt 文本 / URL" style="flex:1">
+                            <span class="hint" id="jobAllow"></span>
+                            <button class="btn" onclick="createJob()">创建</button>
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <div class="panel" style="padding:0;overflow-x:auto">
-                <table><thead><tr><th>Run</th><th>目标</th><th>状态</th><th>进度</th><th>创建</th><th></th></tr></thead>
-                <tbody id="runsBody"></tbody></table>
-            </div>
-            <div class="panel tscroll" id="runPanel" style="display:none">
-                <h3 id="runTitle"></h3>
-                <div id="dagSvg" style="overflow-x:auto"></div>
-                <table><thead><tr><th>任务</th><th>Agent</th><th>依赖</th><th>状态</th><th>耗时</th><th>输出/错误（点击行展开）</th></tr></thead>
-                <tbody id="taskBody"></tbody></table>
-                <div class="toolbar" style="margin-top:10px">
-                    <button class="btn ghost sm" onclick="startRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-play"/></svg>启动/续跑</button>
-                    <button class="btn ghost sm" onclick="retryRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重试失败项</button>
-                    <button class="btn danger sm" onclick="delRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-trash"/></svg>删除</button>
-                </div>
-            </div>
-        </section>
-
-        <!-- 定时任务 -->
-        <section class="page" id="page-jobs">
-            <div class="panel">
-                <h3>新建定时任务（本地时区 5 段 cron；shell 类走白名单）</h3>
-                <div class="toolbar">
-                    <input id="jobName" placeholder="任务名" style="max-width:160px">
-                    <input id="jobCron" placeholder="*/5 9-18 * * 1-5" style="max-width:160px">
-                    <select id="jobKind" onchange="jobKindChange()"><option value="shell">shell</option><option value="agent_prompt">agent_prompt</option><option value="http">http</option></select>
-                    <select id="jobAgent" style="max-width:140px"></select>
-                </div>
-                <div class="toolbar"><input id="jobPayload" placeholder="命令 / Prompt 文本 / URL" style="flex:1"></div>
-                <div class="toolbar"><span class="hint" id="jobAllow"></span><button class="btn" onclick="createJob()">创建</button></div>
-            </div>
-            <div class="panel" style="padding:0;overflow-x:auto">
-                <table><thead><tr><th>名称</th><th>cron</th><th>类型</th><th>启用</th><th>最近执行</th><th>状态</th><th>结果</th><th></th></tr></thead>
-                <tbody id="jobsBody"></tbody></table>
-            </div>
-        </section>
-
-        <!-- MCP 工具网关 -->
-        <section class="page" id="page-mcp">
-            <div class="panel">
-                <h3>注册 MCP Server（stdio 命令 / http URL；聚合后供全部 Agent 与指挥官调用）</h3>
-                <div class="toolbar">
-                    <input id="mcName" placeholder="名称" style="max-width:140px">
-                    <select id="mcTransport"><option value="stdio">stdio</option><option value="http">http</option></select>
-                    <input id="mcCmd" placeholder="command，如 /home/gztxt/agent-hub/venv/bin/python3">
-                    <input id="mcArgs" placeholder="args（空格分隔）或 http URL" style="flex:1">
-                </div>
-                <div class="toolbar">
-                    <button class="btn ghost sm" onclick="probeServer()">探测工具（不落库）</button>
-                    <button class="btn sm" onclick="addServer()">注册</button>
-                    <button class="btn ghost sm" onclick="loadMcp()">刷新聚合</button>
-                </div>
-                <pre class="code" id="mcProbe" style="display:none"></pre>
-            </div>
-            <div class="panel">
-                <h3>工具调用 ACL（deny 优先、与插入顺序无关；<code>*</code> 通配行对所有 agent 生效；零规则行才默认放行）</h3>
-                <div class="toolbar">
-                    <input id="aclAgent" placeholder="agent_id（manager / jcode / *）" style="max-width:190px">
-                    <input id="aclPattern" placeholder="工具模式，如 read_* 或 *" style="max-width:170px">
-                    <input id="aclServer" placeholder="server 名/id（可空=任意）" style="max-width:190px">
-                    <select id="aclAllow"><option value="1">allow</option><option value="0">deny</option></select>
-                    <button class="btn sm" onclick="addAcl()">新增规则</button>
-                    <button class="btn ghost sm" onclick="loadAcl()">刷新</button>
-                </div>
-                <div id="aclList" class="hint tscroll">加载中…</div>
-            </div>
-            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)">
-                <div class="panel"><h3>Servers</h3><div id="mcServers" class="hint tscroll">加载中…</div></div>
-                <div class="panel"><h3>聚合工具（60s 缓存）</h3><div id="mcTools" class="hint">加载中…</div>
-                    <div class="toolbar" style="margin-top:10px"><input id="mcCallArgs" placeholder='{"text":"hi"}' style="flex:1"><button class="btn sm" onclick="callToolSel()">测试调用选中工具</button></div>
-                    <pre class="code" id="mcCallOut" style="display:none"></pre>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>任务清单</h3>
+                        <div class="sp-r"><span class="hint">启用 / 停用 · 立即执行 · 删除</span></div>
+                    </div>
+                    <div class="sp-bd box flush tscroll">
+                        <table><thead><tr><th>名称</th><th>cron</th><th>类型</th><th>启用</th><th>最近执行</th><th>状态</th><th>结果</th><th>操作</th></tr></thead>
+                        <tbody id="jobsBody"></tbody></table>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <!-- 端口 -->
-        <section class="page" id="page-ports">
-            <div class="toolbar">
-                <input id="portFilter" placeholder="过滤端口/进程/地址…" oninput="renderPorts()">
-                <span class="hint">只读——本机进程由 systemd/守护方管理，不提供 kill（与上游桌面版的有意差异）</span>
-            </div>
-            <div class="panel" style="padding:0;overflow-x:auto">
-                <table><thead><tr><th>协议</th><th>端口</th><th>地址</th><th>PID</th><th>进程</th><th>Agent</th></tr></thead>
-                <tbody id="portsBody"></tbody></table>
+        <!-- MCP 工具网关（v0.13.40 统一骨架）：
+             ① 顺序改为「注册 → Servers/聚合工具 → ACL」：主体是 server 与工具的现状，
+                策略（ACL）是配置面，放最后；
+             ② Servers/聚合工具原挂 .mem-grid（三列模板）里塞两个块，聚合工具那条长
+                描述没有横向溢出容器，1440 宽实测直接从卡片右侧溢出去压住邻居；
+                现在换 .sp-grid.two + 各自的 .sp-bd.box（限高内滚、横向 tscroll）；
+             ③ h3 里的 ACL 长句留「deny 优先」这一条硬口径（tests/test_asset_panel.py
+                钉着），其余说明下沉到 .sp-r。 -->
+        <section class="page sys" id="page-mcp">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>注册 MCP Server</h3>
+                        <div class="sp-r"><span class="hint">stdio 命令 / http URL；聚合后供全部 Agent 与指挥官调用</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="mcName" placeholder="名称" style="max-width:140px">
+                            <select id="mcTransport" style="max-width:110px"><option value="stdio">stdio</option><option value="http">http</option></select>
+                            <input id="mcCmd" placeholder="command，如 /home/gztxt/agent-hub/venv/bin/python3">
+                            <input id="mcArgs" placeholder="args（空格分隔）或 http URL" style="flex:1">
+                        </div>
+                        <div class="toolbar">
+                            <button class="btn ghost sm" onclick="probeServer()">探测工具（不落库）</button>
+                            <button class="btn sm" onclick="addServer()">注册</button>
+                            <button class="btn ghost sm" onclick="loadMcp()">刷新聚合</button>
+                        </div>
+                    </div>
+                    <div class="sp-bd"><pre class="code" id="mcProbe" style="display:none;margin:0"></pre></div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>Servers 与聚合工具</h3>
+                        <div class="sp-r"><span class="hint">聚合工具缓存 60s · 点工具名选中后可在右侧试调用</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="sp-grid">
+                            <div class="sp-col">
+                                <div class="sp-sub">已注册 Servers</div>
+                                <div class="sp-bd box flush tscroll" style="border-top:1px solid var(--divider)"><div id="mcServers" class="hint">加载中…</div></div>
+                            </div>
+                            <div class="sp-col">
+                                <div class="sp-sub">聚合工具</div>
+                                <div class="sp-bd box flush tscroll" style="border-top:1px solid var(--divider)"><div id="mcTools" class="sp-list">加载中…</div></div>
+                                <div class="toolbar" style="margin-top:10px;margin-bottom:0">
+                                    <input id="mcCallArgs" placeholder='{"text":"hi"}' style="flex:1">
+                                    <button class="btn sm" onclick="callToolSel()">测试调用选中工具</button>
+                                </div>
+                                <pre class="code" id="mcCallOut" style="display:none"></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>工具调用 ACL</h3>
+                        <div class="sp-r"><span class="hint">deny 优先、与插入顺序无关；<code>*</code> 通配行对所有 agent 生效；零规则行才默认放行</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="aclAgent" placeholder="agent_id（manager / jcode / *）" style="max-width:190px">
+                            <input id="aclPattern" placeholder="工具模式，如 read_* 或 *" style="max-width:170px">
+                            <input id="aclServer" placeholder="server 名/id（可空=任意）" style="max-width:190px">
+                            <select id="aclAllow" style="max-width:110px"><option value="1">allow</option><option value="0">deny</option></select>
+                            <button class="btn sm" onclick="addAcl()">新增规则</button>
+                            <button class="btn ghost sm" onclick="loadAcl()">刷新</button>
+                        </div>
+                    </div>
+                    <div class="sp-bd box"><div id="aclList" class="sp-list">加载中…</div></div>
+                </div>
             </div>
         </section>
 
-        <!-- 遥测 -->
-        <section class="page" id="page-telemetry">
-            <div class="panel">
-                <h3>接入方式（覆盖式账本：同 source+session 重报取末值，不叠加）</h3>
-                <pre class="code" id="curlExample"></pre>
-                <div class="hint">未设置 HOOK_AUTH_TOKEN 时仅接受回环来源写入；对外接入请在 .env 配置 token</div>
+        <!-- 端口（v0.13.40 统一骨架）：单卡 = 卡头 + 过滤条 + 表体 + 只读脚注。
+             v0.13.40 之前表体是 .panel(padding:0;overflow-x:auto)，表格与卡片圆角
+             各画一条边；现在 flush 卡体让表线只由表格自己画，表头 sticky 顶住。 -->
+        <section class="page sys" id="page-ports">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>监听端口</h3>
+                        <div class="sp-r"><span class="hint">TCP/UDP 监听器 · 与本机 Agent 关联</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="portFilter" placeholder="过滤端口 / 进程 / 地址…" oninput="renderPorts()">
+                        </div>
+                    </div>
+                    <div class="sp-bd box flush tscroll">
+                        <table><thead><tr><th>协议</th><th>端口</th><th>地址</th><th>PID</th><th>进程</th><th>Agent</th></tr></thead>
+                        <tbody id="portsBody"></tbody></table>
+                    </div>
+                    <div class="sp-note">只读——本机进程由 systemd / 守护方管理，hub 不提供 kill（与上游桌面版的有意差异）。</div>
+                </div>
             </div>
-            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
-                <div class="panel"><h3>Token 用量聚合</h3><div id="usageTable" class="hint tscroll">加载中…</div></div>
-                <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint tscroll">加载中…</div></div>
+        </section>
+
+        <!-- 遥测（v0.13.40 统一骨架）：原来的 h3 把契约长句整段塞进标题
+             （「接入方式（覆盖式账本：同 source+session 重报取末值，不叠加）」），
+             宽屏下标题自己就折两行；现在标题只留名词，长句下沉到 .sp-r / .sp-note。 -->
+        <section class="page sys" id="page-telemetry">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>上报接入</h3>
+                        <div class="sp-r"><span class="hint">覆盖式账本：同 source+session 重报取末值，不叠加</span></div>
+                    </div>
+                    <div class="sp-bd"><pre class="code" id="curlExample"></pre></div>
+                    <div class="sp-note">未设置 HOOK_AUTH_TOKEN 时仅接受回环来源写入；对外接入请在 .env 配置 token。</div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>用量与事件</h3>
+                        <div class="sp-r"><span class="hint">Token 聚合 · 最近 20 条</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="sp-grid">
+                            <div class="sp-col"><div class="sp-sub">Token 用量聚合</div><div id="usageTable" class="hint tscroll">加载中…</div></div>
+                            <div class="sp-col"><div class="sp-sub">最近事件</div><div id="eventTable" class="hint tscroll">加载中…</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>Agent 画像</h3>
+                        <div class="sp-r"><span class="hint">成功率 / 平均耗时 / 峰值 — S2 profile_events</span></div>
+                    </div>
+                    <div class="sp-bd flush"><div id="profTable" class="hint tscroll">加载中…</div></div>
+                </div>
             </div>
-            <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
         </section>
 
         <!-- v0.13.27：运行日志页——三中心检索留痕的查询面（读 /api/runlog，按写鉴权）。
              「为后续迭代提供参考」的落点：谁在调三中心、多快、哪路常降级，一页可翻。 -->
-        <section class="page" id="page-runlog">
-            <div class="panel">
-                <h3>运行日志（三中心调用留痕：来源 / 耗时 / 通道 / 降级路 / 查询词）</h3>
+        <section class="page sys" id="page-runlog">
+            <div class="sp">
+            <div class="sp-card">
+                <div class="sp-hd">
+                    <h3>运行日志</h3>
+                    <div class="sp-r">
+                        <span class="hint">三中心调用留痕：来源 / 耗时 / 通道 / 降级路 / 查询词</span>
+                        <span class="hint" id="rlHint"></span>
+                        <span class="hint" id="rlMore"></span>
+                        <button class="btn ghost sm" id="rlMoreBtn" onclick="loadRunlogMore()" style="display:none">下一页</button>
+                    </div>
+                </div>
+                <div class="sp-tools">
                 <div class="toolbar">
                     <select id="rlSource" style="max-width:130px"><option value="">全部 source</option></select>
                     <select id="rlSubject" style="max-width:130px"><option value="">全部 subject</option></select>
@@ -1121,112 +1371,194 @@
                         <option value="720">近 30 天</option>
                     </select>
                     <button class="btn sm" onclick="loadRunlog(true)">筛选</button>
-                    <span class="hint" id="rlHint"></span>
                 </div>
-                <div class="hint" style="margin:6px 0">读取本页需终端口令（与审计导出同口径：运行日志含查询词，按写端点鉴权）。</div>
+                </div>
+                <div class="sp-bd box flush tscroll">
+                    <table><thead><tr><th>时间</th><th>source</th><th>subject</th><th>状态</th><th>耗时</th><th>通道</th><th>降级路</th><th>查询词</th></tr></thead>
+                    <tbody id="runlogBody"></tbody></table>
+                </div>
+                <!-- 条数/页码与「下一页」都收进卡头：原来它们在页尾单独一行，
+                     data 未加载（鉴权态）时留一条空白带。 -->
+                <div class="sp-note">读取本页需终端口令（与审计导出同口径：运行日志含查询词，按写端点鉴权）。</div>
             </div>
-            <div class="panel" style="padding:0;overflow-x:auto">
-                <table><thead><tr><th>时间</th><th>source</th><th>subject</th><th>状态</th><th>耗时</th><th>通道</th><th>降级路</th><th>查询词</th></tr></thead>
-                <tbody id="runlogBody"></tbody></table>
             </div>
-            <div class="toolbar"><span class="hint" id="rlMore"></span>
-                <button class="btn ghost sm" id="rlMoreBtn" onclick="loadRunlogMore()" style="display:none">下一页</button></div>
         </section>
 
         <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
              不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
              列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
         <!-- v0.13.26 批4：技能中心 + 知识库中心（与记忆中心同级的三大中心） -->
-        <section class="page" id="page-skills">
-            <div class="panel">
-                <h3>技能中心（7 路发现点 · 只读门面 + 软链安装）</h3>
-                <div class="toolbar">
-                    <input id="skillQ" placeholder="按名称/描述过滤…" oninput="renderSkillList()" style="max-width:220px">
-                    <select id="skillRoute" onchange="renderSkillList()"><option value="">全部发现点</option></select>
-                    <button class="btn sm" onclick="loadSkills()">刷新</button>
-                    <span class="hint" id="skillHint"></span>
-                </div>
-                <div id="skillList" class="mem-list">加载中…</div>
-            </div>
-            <div class="mem-grid">
-                <div class="panel">
-                    <h3>安装到其它发现点（软链，不动本体）</h3>
-                    <div class="hint">把一个技能软链到其它 CLI 的发现点（claude/codex/workbuddy 等），
-                    同源唯一副本、不复制文件。同源重复安装是幂等 no-op。</div>
-                    <div class="row toolbar" style="margin-top:8px">
-                        <select id="instName" style="min-width:180px"></select>
-                        <select id="instFrom" title="源发现点"></select>
-                        <span>→</span>
-                        <select id="instTo" multiple size="4" title="目标发现点（可多选）" style="min-width:150px"></select>
-                        <button class="btn sm" onclick="skillInstall()">安装</button>
+        <!-- 技能中心（v0.13.40 统一骨架）：原「查看」按钮被 .mem-item 的两端对齐
+             拉到卡片右缘、长描述在它左侧被挤成窄条（1440 截图里按钮是一整块黑柱）；
+             现在列表行改 .sp-list 网格（描述可换行、按钮不拉伸），安装目标发现点
+             的 4 项 <select multiple size=4> 换成 .picks 芯片。 -->
+        <section class="page sys" id="page-skills">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>技能发现</h3>
+                        <div class="sp-r">
+                            <span class="hint" id="skillHint"></span>
+                            <button class="btn ghost sm" onclick="loadSkills()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                        </div>
                     </div>
-                    <div class="hint tscroll" id="skillBudgetHint"></div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="skillQ" placeholder="按名称 / 描述过滤…" oninput="renderSkillList()" style="max-width:260px">
+                            <select id="skillRoute" onchange="renderSkillList()" style="max-width:190px"><option value="">全部发现点</option></select>
+                            <span class="hint">7 路发现点 · 只读门面：点「查看」读正文（脱敏）</span>
+                        </div>
+                    </div>
+                    <div class="sp-bd box"><div id="skillList" class="sp-list">加载中…</div></div>
                 </div>
-                <div class="panel">
-                    <h3>token 预算化清单（注入通道用）</h3>
-                    <div class="toolbar"><input id="skillTok" type="number" value="800" min="50" max="8000" style="max-width:90px" onchange="loadSkillBudget()">
-                    <span class="hint">max_tokens</span></div>
-                    <div id="skillBudget" class="hint tscroll">加载中…</div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>安装与注入预算</h3>
+                        <div class="sp-r"><span class="hint">软链安装不动本体 · 预算清单供注入通道取用</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="sp-grid">
+                            <div class="sp-cell">
+                                <div class="sp-sub">安装到其它发现点</div>
+                                <div class="hint" style="margin-bottom:10px">把一个技能软链到其它 CLI 的发现点（claude / codex / workbuddy 等）：
+                                同源唯一副本、不复制文件，重复安装是幂等 no-op。</div>
+                                <div class="toolbar">
+                                    <select id="instName" style="min-width:180px" title="要安装的技能"></select>
+                                    <select id="instFrom" title="源发现点"></select>
+                                    <span class="hint">→</span>
+                                    <button class="btn sm" onclick="skillInstall()">安装</button>
+                                </div>
+                                <div class="toolbar">
+                                    <span class="sp-sub" style="margin:0">目标发现点</span>
+                                    <select id="instTo" multiple size="4" title="目标发现点（可多选）" style="min-width:150px"></select>
+                                </div>
+                                <div class="hint tscroll" id="skillBudgetHint"></div>
+                            </div>
+                            <div class="sp-cell">
+                                <div class="sp-sub">token 预算化清单</div>
+                                <div class="toolbar">
+                                    <input id="skillTok" type="number" value="800" min="50" max="8000" style="max-width:100px" onchange="loadSkillBudget()" title="max_tokens">
+                                    <span class="hint">max_tokens（注入通道上限）</span>
+                                </div>
+                                <div class="sp-bd box flush tscroll" style="border-top:1px solid var(--divider)"><div id="skillBudget" class="hint">加载中…</div></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <section class="page" id="page-kb">
-            <div class="panel">
-                <h3>知识库中心（5 路联邦检索：tdai/turbovec/workspace/archived/local）</h3>
-                <div class="toolbar">
-                    <input id="kbQ" placeholder="检索知识库（如：CCR / 备份 / 端口）…" style="max-width:280px" onkeydown="if(event.key==='Enter')kbSearch()">
-                    <button class="btn sm" onclick="kbSearch()">检索</button>
-                    <select id="kbRoutes" multiple size="5" title="检索路（多选）" style="min-width:130px">
-                        <option value="tdai" selected>TDAI L1</option>
-                        <option value="turbovec" selected>语义索引</option>
-                        <option value="workspace" selected>工作区全文</option>
-                        <option value="archived" selected>归档会话</option>
-                        <option value="local" selected>本地便签</option>
-                    </select>
-                    <span class="hint" id="kbHint"></span>
+        <!-- 知识库中心（v0.13.40 统一骨架）：与记忆页同构（检索条 + 结果；健康/文档树
+             下沉到次级卡）。检索路 5 项 <select multiple size=5> 是同一处 top 报障
+             （选择框越出卡片下边框压住下面那行），改 .picks 芯片。 -->
+        <section class="page sys" id="page-kb">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>知识库检索</h3>
+                        <div class="sp-r">
+                            <span class="hint">5 路联邦检索：tdai / turbovec / workspace / archived / local</span>
+                            <span class="hint" id="kbHint"></span>
+                        </div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="kbQ" placeholder="检索知识库（如：CCR / 备份 / 端口）…" onkeydown="if(event.key==='Enter')kbSearch()">
+                            <button class="btn sm" onclick="kbSearch()">检索</button>
+                        </div>
+                        <div class="toolbar">
+                            <span class="sp-sub" style="margin:0">检索路</span>
+                            <select id="kbRoutes" multiple size="5" title="检索路（多选）" style="min-width:130px">
+                                <option value="tdai" selected>TDAI L1</option>
+                                <option value="turbovec" selected>语义索引</option>
+                                <option value="workspace" selected>工作区全文</option>
+                                <option value="archived" selected>归档会话</option>
+                                <option value="local" selected>本地便签</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="sp-bd" style="padding-top:0;padding-bottom:6px">
+                        <div id="kbBadges" class="hint"></div>
+                        <!-- v0.13.28 批3：检索态 header 条（与记忆页同构，搜完可回退） -->
+                        <div id="kbQueryBar" class="toolbar" style="display:none;margin:2px 0 0"></div>
+                    </div>
+                    <div class="sp-bd box"><div id="kbResults" class="sp-list">输入关键词开始检索</div></div>
                 </div>
-                <div id="kbBadges" class="hint" style="margin:4px 0"></div>
-                <!-- v0.13.28 批3：检索态 header 条（与记忆页同构，搜完可回退） -->
-                <div id="kbQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
-                <div id="kbResults" class="mem-list">输入关键词开始检索</div>
-            </div>
-            <div class="mem-grid">
-                <div class="panel">
-                    <h3>各路健康</h3>
-                    <div id="kbStatus" class="hint tscroll">加载中…</div>
-                    <button class="btn ghost sm" style="margin-top:8px" onclick="loadKbStatus()">刷新</button>
-                </div>
-                <div class="panel">
-                    <h3>文档树（工作区文件 · 点目录下钻一层）</h3>
-                    <div id="kbCrumb" class="toolbar" style="margin-bottom:6px"></div>
-                    <div id="kbBrowse" class="hint tscroll">加载中…</div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>各路健康与文档树</h3>
+                        <div class="sp-r"><span class="hint">工作区文件 · 点目录名下钻一层</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="sp-grid">
+                            <div class="sp-cell">
+                                <div class="sp-sub">各路健康</div>
+                                <div id="kbStatus" class="hint tscroll">加载中…</div>
+                                <div class="toolbar" style="margin:10px 0 0">
+                                    <button class="btn ghost sm" onclick="loadKbStatus()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                                </div>
+                            </div>
+                            <div class="sp-cell">
+                                <div class="sp-sub">文档树</div>
+                                <div id="kbCrumb" class="toolbar" style="margin-bottom:6px"></div>
+                                <div id="kbBrowse" class="hint tscroll">加载中…</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <section class="page" id="page-assets">
-            <div class="panel">
-                <h3>资产门面（记忆 / 知识 / 技能 —— hub 只做门面，不建第二权威副本）</h3>
-                <div id="assetStatus" class="hint">未加载</div>
-                <div class="toolbar">
-                    <input id="assetQ" placeholder="一次问三路门面（如：端口 / 备份 / 技能）" style="max-width:340px">
-                    <button class="btn sm" data-asset="search">检索</button>
-                    <button class="btn sm" data-asset="refresh">重检健康</button>
-                    <span class="hint" id="assetHint"></span>
+        <!-- 资产门面（v0.13.40 统一骨架）：原「未加载」/健康徽标是一排整行宽的
+             .chip 块（长 note 把 chip 撑满一行、粗体标签和说明挤在一起读不动），
+             现在徽标块允许换行 + note 独占一行（.chip 规则见样式区），并收进
+             「门面健康」卡；三路结果仍是 .mem-grid（窄屏塌单列的既有契约不变，
+             见 tests/verify_asset_panel_live.py N4）。 -->
+        <section class="page sys" id="page-assets">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>资产门面</h3>
+                        <div class="sp-r"><span class="hint">记忆 / 知识 / 技能 —— hub 只做门面，不建第二权威副本</span></div>
+                    </div>
+                    <div class="sp-tools">
+                        <div class="toolbar">
+                            <input id="assetQ" placeholder="一次问三路门面（如：端口 / 备份 / 技能）">
+                            <button class="btn sm" data-asset="search">检索</button>
+                            <button class="btn sm" data-asset="refresh">重检健康</button>
+                            <span class="hint" id="assetHint"></span>
+                        </div>
+                    </div>
+                    <div class="sp-bd" style="padding-top:0"><div id="assetStatus" class="hint">未加载</div></div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>三路结果</h3>
+                        <div class="sp-r"><span class="hint">空查询时记忆 / 技术文档两路置为「待输入」（端点缺 q 按契约回 422）</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="mem-grid">
+                            <div class="sp-cell"><div class="sp-sub">记忆（本地 + TDAI RRF）</div><div id="assetMemory" class="hint tscroll">未检索</div></div>
+                            <div class="sp-cell"><div class="sp-sub">技术文档（turbovec 语义）</div><div id="assetKb" class="hint tscroll">未检索</div></div>
+                            <div class="sp-cell"><div class="sp-sub">技能（磁盘四路）</div><div id="assetSkill" class="hint tscroll">未检索</div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>四态语义</h3>
+                        <div class="sp-r"><span class="hint">「查不了」与「没有」必须能分辨</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="hint">
+                            <b>有结果</b> / <b>确实零命中</b>（后端全绿且 count=0）/
+                            <b>部分后端不可用</b>（某一路挂了，清单不完整 —— 不代表没资产）/
+                            <b>端点不可用</b>（端口 404，通常是代码比进程新、未重启）。
+                            把后两种渲染成「没东西」，就是本机最禁的「静默不可用」在前端层的形态。
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="mem-grid">
-                <div class="panel"><h3>记忆（本地 + TDAI RRF）</h3><div id="assetMemory" class="hint tscroll">未检索</div></div>
-                <div class="panel"><h3>技术文档（turbovec 语义）</h3><div id="assetKb" class="hint tscroll">未检索</div></div>
-                <div class="panel"><h3>技能（磁盘四路）</h3><div id="assetSkill" class="hint tscroll">未检索</div></div>
-            </div>
-            <div class="panel"><h3>四态语义</h3><div class="hint">
-                <b>有结果</b> / <b>确实零命中</b>（后端全绿且 count=0）/
-                <b>部分后端不可用</b>（某一路挂了，清单不完整 —— 不代表没资产）/
-                <b>端点不可用</b>（端口 404，通常是代码比进程新、未重启）。
-                把后两种渲染成「没东西」，就是本机最禁的「静默不可用」在前端层的形态。
-            </div></div>
         </section>
     </main>
     </div>
@@ -1400,6 +1732,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=cb30ec50"></script>
+    <script src="/static/hub.js?v=4674032c"></script>
 </body>
 </html>

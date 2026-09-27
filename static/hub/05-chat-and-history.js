@@ -59,7 +59,10 @@ async function loadMcp() {
     const s = await api('/mcp/servers');
     $('mcServers').innerHTML = '<table><thead><tr><th>名称</th><th>传输</th><th>目标</th><th></th></tr></thead><tbody>' +
       (s.servers || []).map(x => '<tr><td><b>' + escapeHtml(x.name) + '</b></td><td>' + x.transport + '</td>' +
-        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
+        /* v0.13.40：补 white-space:nowrap —— 只写 overflow/text-overflow 而没 nowrap
+           时省略号不生效，长 command 会把行撑成三行（1440 截图实测）。父级 .tscroll
+           已给横向滚动，兜住超长值。 */
+        '<td style="font-family:var(--font-mono);font-size:var(--fs-sm);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '">' + escapeHtml(x.transport === 'stdio' ? (x.command || '') + ' ' + (x.args || []).join(' ') : x.url || '') + '</td>' +
         '<td><button class="btn sm danger" onclick="delServer(\'' + x.id + '\')">' + ico('x') + '</button></td></tr>').join('') +
       '</tbody></table>';
     $('mcTools').innerHTML = '聚合工具中（stdio 会临时拉起进程）…';
