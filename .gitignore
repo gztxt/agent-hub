@@ -5,6 +5,10 @@ data/
 # 备份件与运行时产物不入库（.env.bak-* 含 token，绝不跟踪）
 *.bak
 *.bak-*
+# bak2/bak3/bak4 这类「改前留副本」的编号命名同样不入库：prepush ④ 闸用的是
+# `git ls-files -- '*.bak-*'`，匹配不到 .bak2- ⇒ 会被误收进提交（v0.13.42 后实测）
+*.bak[0-9]
+*.bak[0-9]-*
 *.log
 
 # 修复工具时间戳备份（data/backups/）
