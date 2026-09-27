@@ -144,7 +144,7 @@ async function api(path, opt) {
     const msg = (data && data.detail && (data.detail.error || (Array.isArray(data.detail) ? data.detail.map(d => d.msg).join(';') : data.detail))) || ('HTTP ' + r.status);
     const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     /* v0.13.27 additive：把 HTTP 状态码与响应体挂到错误对象上（既有调用方只读
-       .message 不受影响）。runlog 页靠 http===401/503 区分「鉴权态」与「故障态」；
+       .message 不受影响）。日志页靠 http===401/503 区分「鉴权态」与「故障态」；
        技能正文 409 靠 detail.candidates 渲染路候选——不再靠正则猜文案。 */
     err.http = r.status;
     err.payload = data;
@@ -256,7 +256,7 @@ function go(page) {
   if (page === 'settings-logs' && !setLogsPageLoaded) { setLogsPageLoaded = true; settingsLogsLoad(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
-  if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
+  // v0.13.47：原运行日志页的进页钩子随页面一并删除（内容并入设置→日志）
   if (page === 'chat') renderChatSide();
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
   if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
@@ -918,7 +918,7 @@ async function settingsGithubRefresh() {
       页内 #logStats 并 focus 口令框，与模型/GitHub 页 v0.13.45 的口径一致。
    后端按写方法鉴权（GET 也要口令），故 token 由本页自己带（api() 只给写方法带）。
    var 声明而非 let：go()（06 分片顶层就会跑）可能经 settingsLogsLoad 读到它，
-   与 RL_FIRST/setModelPageLoaded 同一条 TDZ 纪律。 */
+   与 setModelPageLoaded 同一条 TDZ 纪律。 */
 var LOG_LAST = null;      // 最近一次结果：复制/导出复用，不再为同一次查看打两次后端
 
 function settingsLogsParams() {
@@ -928,6 +928,7 @@ function settingsLogsParams() {
   if (v('logLevel')) p.set('level', v('logLevel'));
   if (v('logWindow')) p.set('window', v('logWindow'));
   if (v('logQ')) p.set('q', v('logQ'));
+  if (v('logSubject')) p.set('subject', v('logSubject'));
   p.set('limit', '200');
   return p;
 }
@@ -938,6 +939,7 @@ async function settingsLogsLoad() {
   boxBusy('logBody', '加载中…');
   const pc = ($('logPasscode') && $('logPasscode').value.trim()) || settingsPasscode();
   const opt = pc ? { headers: { 'x-hub-token': pc } } : {};
+  settingsLogsSyncSubject();
   try {
     const d = await api('/api/hublog?' + settingsLogsParams().toString(), opt);
     LOG_LAST = d;
@@ -948,10 +950,27 @@ async function settingsLogsLoad() {
   }
 }
 
+/* subject 下拉（三中心检索的 subject 枚举，后端随包给清单）：只填一次，
+   不覆盖用户已选值；服务日志那一路没有 subject ⇒ 选中时把它藏掉，避免「选了没反应」。 */
+function settingsLogsSyncSubject() {
+  const sel = $('logSubject'), src = $('logSource');
+  if (sel && src) sel.style.display = (src.value === 'journal') ? 'none' : '';
+}
+
+function settingsLogsFillSubjects(d) {
+  const sel = $('logSubject');
+  if (!sel) return;
+  const list = (d && d.subjects) || [];
+  if (!list.length || sel.options.length > 1) return;
+  sel.innerHTML = '<option value="">全部 subject</option>' +
+    list.map(s => '<option>' + escapeHtml(s) + '</option>').join('');
+}
+
 function settingsLogsRender(d) {
   const body = $('logBody');
   if (!body) return;
   const es = (d && d.entries) || [];
+  settingsLogsFillSubjects(d);
   if (!es.length) {
     body.innerHTML = '<div class="hint">该筛选下没有条目 —— 可放宽时间窗、换成「全部来源」，' +
       '或确认单元名（服务端未走 systemd 时 journald 一路为空）。</div>';
@@ -1100,7 +1119,8 @@ function settingsDelegates() {
        change 也挂在同一个委托出口里，不另起监听点。 */
     page.addEventListener('change', e => {
       const id = e.target && e.target.id;
-      if (id === 'logSource' || id === 'logLevel' || id === 'logWindow') return settingsLogsLoad();
+      if (id === 'logSource' || id === 'logLevel' || id === 'logWindow' ||
+          id === 'logSubject') return settingsLogsLoad();
     });
   });
 }
@@ -2940,7 +2960,7 @@ const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '�
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
                    ['skills', '技能中心', 'zap'], ['kb', '知识库', 'book'],
                    ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
-                   ['assets', '资产', 'layers'], ['runlog', '运行日志', 'radar']];
+                   ['assets', '资产', 'layers']];   // v0.13.47：运行日志页删除，内容并入设置→日志
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 /* v0.13.43 设置子菜单：与系统页同形态（data-sys → go(page) ⇒ 正文出页、窄屏自动收侧栏），
    只是单独成组挂在「系统」之下；这三项此前是右侧抽屉里的三个 tab。 */
@@ -2948,7 +2968,7 @@ const SET_PAGES = [['settings-model', '模型', 'cpu'], ['settings-github', 'Git
                    ['settings-token', '终端口令', 'terminal'], ['settings-logs', '日志', 'activity']];
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目',
+                      assets: '资产', localprojects: '本机项目', github: 'GitHub 项目',
                       'settings-model': '设置 · 模型', 'settings-github': '设置 · GitHub',
                       'settings-token': '设置 · 终端口令', 'settings-logs': '设置 · 日志' };
 const navOpenStored = lsGet('hub.nav.open');
@@ -3731,145 +3751,6 @@ async function loadAssets() {
   await loadAssetStatus();
   runAssetSearch();
 }
-/* ── 运行日志页（v0.13.27 批2）────────────────────────────────────────
- * 分片头注释（军规：分片源，不是 build 产物；产物在 static/hub.js 由
- * scripts/build_hubjs.sh 按字典序拼接，直接改产物会被 test_hubjs_split 判红）。
- *
- * 数据源：GET /api/runlog（后端按**写方法**鉴权——运行日志含查询词可反推意图，
- * 与 /api/audit/list 同口径）。api() 只给写方法自动带 token，本页是 GET ⇒
- * token 由本页自己带。鉴权 UX 三态（互斥）：
- *   ① 有 token → 直接带，正常三态（busy/数据/空窗）
- *   ② 401/503  → 容器渲染「需终端口令」+ 按钮（点了才 termToken() 弹框——
- *                别在 loadRunlog 里直接弹，05:297 的教训：刷新一次弹一次）
- *   ③ 空窗     →「该窗口内无事件」
- * 游标翻页：before_id = 上一页末行 id（append-only 表 id<? 恒定代价，不用 OFFSET）。
- * go() 里每次进页都 loadRunlog(true)（与 telemetry 同口径，不设 loaded 位）。
- */
-
-/* 三态渲染（busy 数据 空窗 互斥；鉴权态由 catch 401/503 分支接管） */
-function runlogRowHtml(e) {
-  let d = {};
-  try { d = JSON.parse(e.detail || '{}') || {}; } catch (x) { /* 容错：detail 形状漂移就当无附加信息 */ }
-  const st = e.status === 'success' ? 'g' : 'r';
-  const bad = (d.degraded || []).length;
-  const q = d.q || '';
-  return '<tr><td>' + (e.created_at || '').slice(5, 16).replace('T', ' ') + '</td>' +
-    '<td>' + escapeHtml(e.source || '') + '</td>' +
-    '<td><b>' + escapeHtml(e.subject || '') + '</b></td>' +
-    '<td><span class="hdot ' + st + '"></span>' + escapeHtml(e.status || '') + '</td>' +
-    '<td>' + (e.duration_ms == null ? '-' : e.duration_ms + 'ms') + '</td>' +
-    '<td>' + escapeHtml(d.channel || '-') + '</td>' +
-    '<td>' + (bad ? '<span style="color:var(--st-error,var(--danger,#c00))">' + bad + ' 路</span>' : '-') + '</td>' +
-    '<td class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
-    escapeHtml(String(q).slice(0, 60)) + '</td></tr>';
-}
-
-function renderRunlog(events) {
-  const body = $('runlogBody');
-  if (!body) return;
-  body.innerHTML = events.length ? events.map(runlogRowHtml).join('')
-    : '<tr><td colspan="8" class="hint">该窗口内无事件（进三中心检索一次即有留痕）</td></tr>';
-}
-
-/* 鉴权失败态：容器出「输入口令并重试」按钮，点击才弹 termToken()（不自动弹） */
-function runlogAuthGate() {
-  const body = $('runlogBody');
-  if (!body) return;
-  body.innerHTML = '<tr><td colspan="8" class="hint">运行日志需终端口令。' +
-    '<button class="btn sm" style="margin-left:8px" onclick="runlogTokenRetry()">输入口令并重试</button></td></tr>';
-}
-
-function runlogTokenRetry() {
-  termToken();                       // 弹一次，存 localStorage 后不再弹
-  loadRunlog(true);
-}
-
-/* 首次带 token 的 GET（api() 不会给 GET 带 token，本页自己带；无 token 也发——
- * 让后端 401 说话，别在前端先猜「没 token 必失败」而渲染成挂了） */
-function runlogFetch(params) {
-  const opt = {};
-  const tk = lsGet('hub.term.token');
-  if (tk) opt.headers = { 'x-hub-token': tk };
-  return api('/api/runlog' + (params || ''), opt);
-}
-
-/* 游标用 var 不用 let：go()（01 分片，拼接序在前）会经 loadRunlog 读到它们，
-   let 的 TDZ 静态序风险会被 test_tdz_order 判红——07-asset-panel 同教训。 */
-var RL_FIRST = null;    // 本页当前首页末行游标（翻页链表头）
-var RL_CUR = null;      // 下一页的 before_id
-
-async function loadRunlog(reset) {
-  const hint = $('rlHint');
-  const body = $('runlogBody');
-  if (!body) return;
-  if (reset) { RL_FIRST = null; RL_CUR = null; }
-  if (hint) hint.textContent = '加载中…';
-  /* 筛选控件的首个选项初始化只做一次（source/subject 清单后端随包返回） */
-  const p = new URLSearchParams();
-  const v = id => { const el = $(id); return el && el.value ? el.value : ''; };
-  if (v('rlSource')) p.set('source', v('rlSource'));
-  if (v('rlSubject')) p.set('subject', v('rlSubject'));
-  if (v('rlStatus')) p.set('status', v('rlStatus'));
-  if (v('rlWindow')) p.set('window', v('rlWindow'));
-  p.set('limit', '50');
-  try {
-    const d = await runlogFetch('?' + p.toString());
-    renderRunlog(d.events || []);
-    if (hint) hint.textContent = (d.count || 0) + ' 条';
-    RL_FIRST = (d.events || []).length ? d.events[d.events.length - 1].id : null;
-    RL_CUR = d.next_before_id || null;
-    const btn = $('rlMoreBtn');
-    if (btn) btn.style.display = RL_CUR ? '' : 'none';
-    /* source/subject 下拉：后端给的是全量清单，只填一次不覆盖用户选择 */
-    if ($('rlSource').options.length <= 1 && (d.sources || []).length) {
-      $('rlSource').innerHTML = '<option value="">全部 source</option>' +
-        d.sources.map(s => '<option>' + escapeHtml(s) + '</option>').join('');
-    }
-    if ($('rlSubject').options.length <= 1 && (d.subjects || []).length) {
-      $('rlSubject').innerHTML = '<option value="">全部 subject</option>' +
-        d.subjects.map(s => '<option>' + escapeHtml(s) + '</option>').join('');
-    }
-  } catch (e) {
-    /* 401/503 = 鉴权态（出按钮）；其他错误 = 加载失败态（错误文案上屏，不 toast 装看不见） */
-    const gate = e.http === 401 || e.http === 503;
-    if (gate) {
-      if (hint) hint.textContent = '';
-      runlogAuthGate();
-    } else {
-      if (hint) hint.textContent = '加载失败';
-      body.innerHTML = '<tr><td colspan="8" class="hint">加载失败：' + escapeHtml(e.message || '') +
-        ' <button class="btn sm" onclick="loadRunlog(true)">重试</button></td></tr>';
-    }
-    const btn = $('rlMoreBtn');
-    if (btn) btn.style.display = 'none';
-  }
-}
-
-async function loadRunlogMore() {
-  if (!RL_CUR) return;
-  const hint = $('rlHint');
-  if (hint) hint.textContent = '加载中…';
-  const p = new URLSearchParams();
-  const v = id => { const el = $(id); return el && el.value ? el.value : ''; };
-  if (v('rlSource')) p.set('source', v('rlSource'));
-  if (v('rlSubject')) p.set('subject', v('rlSubject'));
-  if (v('rlStatus')) p.set('status', v('rlStatus'));
-  if (v('rlWindow')) p.set('window', v('rlWindow'));
-  p.set('limit', '50');
-  p.set('before_id', String(RL_CUR));
-  try {
-    const d = await runlogFetch('?' + p.toString());
-    const body = $('runlogBody');
-    /* 追加不是覆盖（首页数据还在 DOM 里，直接 innerHTML += 会重排——量级 50 行无所谓） */
-    body.insertAdjacentHTML('beforeend', (d.events || []).map(runlogRowHtml).join(''));
-    RL_CUR = d.next_before_id || null;
-    const btn = $('rlMoreBtn');
-    if (btn) btn.style.display = RL_CUR ? '' : 'none';
-    if (hint) hint.textContent = '又 ' + (d.count || 0) + ' 条';
-  } catch (e) {
-    if (hint) hint.textContent = '翻页失败：' + (e.message || '');
-  }
-}
 /* ── 本机项目页（v0.13.30）────────────────────────────────────────
  * 分片头注释（军规：分片源，不是 build 产物；产物在 static/hub.js 由
  * scripts/build_hubjs.sh 按字典序拼接，直接改产物会被 test_hubjs_split 判红）。
@@ -3886,7 +3767,7 @@ async function loadRunlogMore() {
  *   勾选顶部 #lpHidden「显示隐藏」才回列（回列时半透明以示状态）。
  * 状态变量用 var：go()（01 分片，拼接序在前）会经顶层 go(lsGet('hub.page'))
  * 同步走到本分片函数体，let 的 TDZ 静态序风险会被 test_tdz_order 判红——
- * 08-runlog 同教训（RL_FIRST/RL_CUR）。localStorage 一律走 lsGet/lsSet 守卫
+ * 原 08-runlog 分片同教训（RL_FIRST/RL_CUR，v0.13.47 随运行日志页一并删除）。localStorage 一律走 lsGet/lsSet 守卫
  * （test_ls_guard R1：裸调用判红）。 */
 
 var LP = [];         // 全量项目（过滤前的缓存）

@@ -144,7 +144,7 @@ async function api(path, opt) {
     const msg = (data && data.detail && (data.detail.error || (Array.isArray(data.detail) ? data.detail.map(d => d.msg).join(';') : data.detail))) || ('HTTP ' + r.status);
     const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     /* v0.13.27 additive：把 HTTP 状态码与响应体挂到错误对象上（既有调用方只读
-       .message 不受影响）。runlog 页靠 http===401/503 区分「鉴权态」与「故障态」；
+       .message 不受影响）。日志页靠 http===401/503 区分「鉴权态」与「故障态」；
        技能正文 409 靠 detail.candidates 渲染路候选——不再靠正则猜文案。 */
     err.http = r.status;
     err.payload = data;
@@ -256,7 +256,7 @@ function go(page) {
   if (page === 'settings-logs' && !setLogsPageLoaded) { setLogsPageLoaded = true; settingsLogsLoad(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
-  if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
+  // v0.13.47：原运行日志页的进页钩子随页面一并删除（内容并入设置→日志）
   if (page === 'chat') renderChatSide();
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
   if (page === 'jobs') { fillAgentSelect($('jobAgent'), false); loadJobs(); }
@@ -918,7 +918,7 @@ async function settingsGithubRefresh() {
       页内 #logStats 并 focus 口令框，与模型/GitHub 页 v0.13.45 的口径一致。
    后端按写方法鉴权（GET 也要口令），故 token 由本页自己带（api() 只给写方法带）。
    var 声明而非 let：go()（06 分片顶层就会跑）可能经 settingsLogsLoad 读到它，
-   与 RL_FIRST/setModelPageLoaded 同一条 TDZ 纪律。 */
+   与 setModelPageLoaded 同一条 TDZ 纪律。 */
 var LOG_LAST = null;      // 最近一次结果：复制/导出复用，不再为同一次查看打两次后端
 
 function settingsLogsParams() {
@@ -928,6 +928,7 @@ function settingsLogsParams() {
   if (v('logLevel')) p.set('level', v('logLevel'));
   if (v('logWindow')) p.set('window', v('logWindow'));
   if (v('logQ')) p.set('q', v('logQ'));
+  if (v('logSubject')) p.set('subject', v('logSubject'));
   p.set('limit', '200');
   return p;
 }
@@ -938,6 +939,7 @@ async function settingsLogsLoad() {
   boxBusy('logBody', '加载中…');
   const pc = ($('logPasscode') && $('logPasscode').value.trim()) || settingsPasscode();
   const opt = pc ? { headers: { 'x-hub-token': pc } } : {};
+  settingsLogsSyncSubject();
   try {
     const d = await api('/api/hublog?' + settingsLogsParams().toString(), opt);
     LOG_LAST = d;
@@ -948,10 +950,27 @@ async function settingsLogsLoad() {
   }
 }
 
+/* subject 下拉（三中心检索的 subject 枚举，后端随包给清单）：只填一次，
+   不覆盖用户已选值；服务日志那一路没有 subject ⇒ 选中时把它藏掉，避免「选了没反应」。 */
+function settingsLogsSyncSubject() {
+  const sel = $('logSubject'), src = $('logSource');
+  if (sel && src) sel.style.display = (src.value === 'journal') ? 'none' : '';
+}
+
+function settingsLogsFillSubjects(d) {
+  const sel = $('logSubject');
+  if (!sel) return;
+  const list = (d && d.subjects) || [];
+  if (!list.length || sel.options.length > 1) return;
+  sel.innerHTML = '<option value="">全部 subject</option>' +
+    list.map(s => '<option>' + escapeHtml(s) + '</option>').join('');
+}
+
 function settingsLogsRender(d) {
   const body = $('logBody');
   if (!body) return;
   const es = (d && d.entries) || [];
+  settingsLogsFillSubjects(d);
   if (!es.length) {
     body.innerHTML = '<div class="hint">该筛选下没有条目 —— 可放宽时间窗、换成「全部来源」，' +
       '或确认单元名（服务端未走 systemd 时 journald 一路为空）。</div>';
@@ -1100,7 +1119,8 @@ function settingsDelegates() {
        change 也挂在同一个委托出口里，不另起监听点。 */
     page.addEventListener('change', e => {
       const id = e.target && e.target.id;
-      if (id === 'logSource' || id === 'logLevel' || id === 'logWindow') return settingsLogsLoad();
+      if (id === 'logSource' || id === 'logLevel' || id === 'logWindow' ||
+          id === 'logSubject') return settingsLogsLoad();
     });
   });
 }

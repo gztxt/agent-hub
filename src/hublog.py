@@ -1,14 +1,21 @@
-"""Hub 日志中心（v0.13.46）：设置→日志子菜单的数据面。
+"""Hub 日志中心（v0.13.46，v0.13.47 并入运行日志）：设置→日志子菜单的数据面。
 
 用户诉求是「全面收集 agent hub 的操作日志和错误日志」，而这两类日志**压根不在
 同一个地方**：
 
   ① **操作日志** = `profile_events` 表（hub_chat / task_exec / cron_run / mcp_call /
-     rest / hubself_* / manager_*）。既有的「运行日志」页只挑 `source='rest'` 的
-     三中心检索留痕，本页按全量 source 出 —— 两页互补，不是重复造。
+     rest / hubself_* / manager_*）。其中 `source='rest'` 是三中心检索留痕（记忆 /
+     知识 / 技能 / cc.start），带耗时、通道、降级路、查询词。
   ② **错误日志** = 进程的 stdout/stderr。hub 自己**不落文件**（systemd 的
      StandardOutput=journal），Traceback / uvicorn 5xx / [writegate] 401 全在
      journald 里 —— 不看 journald 就永远看不到"到底报了什么错"。
+
+v0.13.47：系统菜单的「运行日志」页**删除**，它挑 `source='rest'` 的那一份内容并
+入本端点 —— `source=rest` 视图 + `subject` 过滤（subject 枚举照抄 runlog.SUBJECTS，
+非法值 400）。运行日志页的翻页游标（before_id）不迁：本页 limit 上限 500，一次
+拉取足够，游标留着只会让 UI 多一个「下一页」状态要维护。埋点与
+`GET /api/runlog` 门面本身保留（7 个端点的 track() 装饰器和外部查询都靠它），
+变的只是**唯一 UI 入口**。
 
 设计口径（与 runlog.py 同源，别各写一套）：
 - **零新表**：journald 现拉（只读 journalctl，不写任何东西），事件走既有表。
@@ -35,6 +42,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 import db
+import runlog           # 只为复用 SUBJECTS 枚举（三中心 subject 的唯一权威定义）
 import writeauth
 
 router = APIRouter()
@@ -183,13 +191,24 @@ def _event_msg(row: Dict[str, Any]) -> str:
     return " · ".join(str(b) for b in bits if b)
 
 
-def _event_entries(window_h: int, limit: int) -> Tuple[List[Dict[str, Any]], str]:
+def _event_entries(window_h: int, limit: int, subject: str = "",
+                   only_rest: bool = False) -> Tuple[List[Dict[str, Any]], str]:
+    """事件路取数。`only_rest` = 只要三中心检索留痕（原「运行日志」页的那一份）。"""
     sql = "SELECT id,source,subject,trace_id,status,duration_ms,detail,created_at FROM profile_events"
+    conds: List[str] = []
     params: List[Any] = []
     cut = _cutoff_iso(window_h)
     if cut:
-        sql += " WHERE created_at>=?"
+        conds.append("created_at>=?")
         params.append(cut)
+    if only_rest:
+        conds.append("source=?")
+        params.append(runlog.SOURCE)
+    if subject:
+        conds.append("subject=?")
+        params.append(subject)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
     try:
@@ -220,8 +239,12 @@ async def hublog_query(request: Request,
                        q: str = Query(default="", max_length=120),
                        window: int = Query(default=24, ge=0, le=720),
                        limit: int = Query(default=200, ge=1, le=500),
+                       subject: str = Query(default="", max_length=40),
                        format: str = Query(default="json", max_length=4)):
     """日志中心查询：journald 服务日志 + profile_events 操作事件，合并按时间倒序。
+
+    `source=rest` = 原「运行日志」页那一份（三中心检索留痕）；`subject` 按
+    runlog.SUBJECTS 校验（非法 400，与 /api/runlog 同口径）。
 
     GET 但**按写方法鉴权**（与 /api/runlog 同口径）：日志含 IP/路径/查询词。
     """
@@ -234,17 +257,22 @@ async def hublog_query(request: Request,
               f"来源={request.client.host if request.client else '?'} —— {reason}", flush=True)
         raise HTTPException(status_code=503 if verdict == "misconfig" else 401, detail=reason)
 
-    if source not in ("all", "journal", "event", "error"):
-        raise HTTPException(400, "source must be all|journal|event|error")
+    if source not in ("all", "journal", "event", "error", "rest"):
+        raise HTTPException(400, "source must be all|journal|event|error|rest")
     if level not in ("all", "info", "warn", "error"):
         raise HTTPException(400, "level must be all|info|warn|error")
+    if subject and subject not in runlog.SUBJECTS:
+        raise HTTPException(400, f"subject must be one of {list(runlog.SUBJECTS)}")
 
-    jr_entries, jr_note = ([], "本视图未取 journald") if source == "event" \
+    jr_entries, jr_note = ([], "本视图未取 journald") if source in ("event", "rest") \
         else _journal_entries(window, _JOURNAL_MAX_LINES)
     ev_entries, ev_note = ([], "本视图未取事件表") if source == "journal" \
-        else _event_entries(window, max(limit * 2, 200))
+        else _event_entries(window, max(limit * 2, 200), subject=subject or "",
+                            only_rest=(source == "rest"))
 
     entries = jr_entries + ev_entries
+    if source == "rest":
+        entries = [e for e in entries if e["src"] == "event" and e["tag"] == runlog.SOURCE]
     if source == "error" or level == "error":
         entries = [e for e in entries if e["level"] == "error"]
     elif level == "warn":
@@ -286,5 +314,6 @@ async def hublog_query(request: Request,
 
     return {"entries": entries, "count": len(entries), "stats": stats,
             "sources": sources, "truncated": truncated,
+            "subjects": list(runlog.SUBJECTS),
             "query": {"source": source, "level": level, "q": q,
-                      "window": window, "limit": limit}}
+                      "window": window, "limit": limit, "subject": subject}}

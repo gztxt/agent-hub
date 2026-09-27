@@ -455,7 +455,7 @@
              ④ 高度一律由内容或视口决定，不写 calc(100vh - 常数) 这类拍脑袋常数。
 
            滚动归谁（两种形态，按页面内容量选，页面自己决定一次）：
-             · 单表 / 单列表页（端口、运行日志、协同、定时、技能、工具）→ **盒级**：
+             · 单表 / 单列表页（端口、协同、定时、技能、工具）→ **盒级**：
                表格进 .sp-bd.box.flush.tscroll，内容短时按内容收缩、长了盒内滚，
                卡片与 sticky 表头都留在视口里（与本机项目 / GitHub 项目两页同观感）。
              · 多块异质页（遥测、记忆、知识库、资产）→ **页级**：section.page.sys
@@ -1376,45 +1376,9 @@
             </div>
         </section>
 
-        <!-- v0.13.27：运行日志页——三中心检索留痕的查询面（读 /api/runlog，按写鉴权）。
-             「为后续迭代提供参考」的落点：谁在调三中心、多快、哪路常降级，一页可翻。 -->
-        <section class="page sys" id="page-runlog">
-            <div class="sp">
-            <div class="sp-card">
-                <div class="sp-hd">
-                    <h3>运行日志</h3>
-                    <div class="sp-r">
-                        <span class="hint">三中心调用留痕：来源 / 耗时 / 通道 / 降级路 / 查询词</span>
-                        <span class="hint" id="rlHint"></span>
-                        <span class="hint" id="rlMore"></span>
-                        <button class="btn ghost sm" id="rlMoreBtn" onclick="loadRunlogMore()" style="display:none">下一页</button>
-                    </div>
-                </div>
-                <div class="sp-tools">
-                <div class="toolbar">
-                    <select id="rlSource" style="max-width:130px"><option value="">全部 source</option></select>
-                    <select id="rlSubject" style="max-width:130px"><option value="">全部 subject</option></select>
-                    <select id="rlStatus" style="max-width:110px"><option value="">全部状态</option><option>success</option><option>fail</option></select>
-                    <select id="rlWindow" style="max-width:130px">
-                        <option value="0">全部时间</option>
-                        <option value="24">近 24 小时</option>
-                        <option value="168">近 7 天</option>
-                        <option value="720">近 30 天</option>
-                    </select>
-                    <button class="btn sm" onclick="loadRunlog(true)">筛选</button>
-                </div>
-                </div>
-                <div class="sp-bd box flush tscroll">
-                    <table><thead><tr><th>时间</th><th>source</th><th>subject</th><th>状态</th><th>耗时</th><th>通道</th><th>降级路</th><th>查询词</th></tr></thead>
-                    <tbody id="runlogBody"></tbody></table>
-                </div>
-                <!-- 条数/页码与「下一页」都收进卡头：原来它们在页尾单独一行，
-                     data 未加载（鉴权态）时留一条空白带。 -->
-                <div class="sp-note">读取本页需终端口令（与审计导出同口径：运行日志含查询词，按写端点鉴权）。</div>
-            </div>
-            </div>
-        </section>
-
+        <!-- v0.13.47：原「运行日志」页（#page-runlog）已删除——系统菜单不再单独挂它，
+             三中心检索留痕改由「设置 → 日志」的「运行日志（三中心检索）」来源视图承接
+             （后端 /api/hublog?source=rest；埋点 track() 与 /api/runlog 门面保留）。 -->
         <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
              不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
              列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
@@ -1740,7 +1704,11 @@
                                 <option value="all">全部来源</option>
                                 <option value="journal">服务日志（journald）</option>
                                 <option value="event">操作事件</option>
+                                <option value="rest">运行日志（三中心检索 · rest）</option>
                                 <option value="error">只看错误</option>
+                            </select>
+                            <select id="logSubject" aria-label="检索 subject">
+                                <option value="">全部 subject</option>
                             </select>
                             <select id="logLevel" aria-label="级别">
                                 <option value="all">全部级别</option>
@@ -1766,7 +1734,9 @@
                         <div id="logBody"></div>
                     </div>
                     <div class="sp-note">只读：本页不写配置、不建新表；「只看错误」同时扫 journald 的
-                        Traceback / 5xx 与事件表里的 fail 事件。</div>
+                        Traceback / 5xx 与事件表里的 fail 事件。选「运行日志」来源时，subject 下拉
+                        可只看某一路检索（mem.search / kb.search / skill.read …）—— 这就是原来系统菜单里
+                        「运行日志」页的那一份，现已并入本页。</div>
                 </div>
             </div>
         </section>
@@ -1923,6 +1893,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=50bbc1f7"></script>
+    <script src="/static/hub.js?v=8a88d52c"></script>
 </body>
 </html>

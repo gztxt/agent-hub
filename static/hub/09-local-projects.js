@@ -14,7 +14,7 @@
  *   勾选顶部 #lpHidden「显示隐藏」才回列（回列时半透明以示状态）。
  * 状态变量用 var：go()（01 分片，拼接序在前）会经顶层 go(lsGet('hub.page'))
  * 同步走到本分片函数体，let 的 TDZ 静态序风险会被 test_tdz_order 判红——
- * 08-runlog 同教训（RL_FIRST/RL_CUR）。localStorage 一律走 lsGet/lsSet 守卫
+ * 原 08-runlog 分片同教训（RL_FIRST/RL_CUR，v0.13.47 随运行日志页一并删除）。localStorage 一律走 lsGet/lsSet 守卫
  * （test_ls_guard R1：裸调用判红）。 */
 
 var LP = [];         // 全量项目（过滤前的缓存）
