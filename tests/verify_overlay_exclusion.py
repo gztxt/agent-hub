@@ -53,6 +53,11 @@ STATE = r"""
 def click(c, sel, x=None, y=None, W=390, H=844):
     """真事件点击；元素在视口外直接判定点不到（这正是本次事故的关键条件）。"""
     if (x, y) == (None, None):
+        # 侧栏是可滚容器：设置组在 800 高视口里落在折线下（实测 top=713 > vh=657），
+        # 不滚就点不到 —— 这正是"用户够不着"的真形态，先滚再点是用户的真实动作。
+        c.eval("(() => { const e = document.querySelector(%s);"
+               " if (e && e.scrollIntoView) e.scrollIntoView({block: 'center'}); })()" % json.dumps(sel))
+        time.sleep(0.3)
         raw = c.eval("(() => { const e = document.querySelector(%s); if (!e) return 'null';"
                      " const b = e.getBoundingClientRect();"
                      " return JSON.stringify([Math.round(b.left+b.width/2), Math.round(b.top+b.height/2)]); })()"
