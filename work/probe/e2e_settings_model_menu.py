@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""设置→模型子菜单真渲染取证（v0.13.41）。
+"""设置→模型 子菜单真渲染取证（v0.13.41 建、v0.13.43 改手风琴）。
 
 为什么必须跑真渲染而不是只看 /api/settings/models 返回：09-23 那次事故里
 「后端全绿 + 前端整块被盖住」同时成立。这里每一条判据都写成**可断言的量**：
-  ① 打开设置后浮层**只有一个**（settingsDrawer.on 且 detailDrawer/skillDocDrawer 都不 on）；
-  ② 「模型」子页默认选中，agent 按钮 ≥6 个（含 2 个置灰的不可写 agent）；
+  ① 从左侧「设置」手风琴进「模型」子页 ⇒ **零浮层**（抽屉形态已拆，09-23 的正身）；
+  ② agent 按钮 ≥6 个（含 2 个置灰的不可写 agent）；
   ③ 点一个可写 agent ⇒ #setModelStep 可见且 #setModelSel 的 option > 3；
-  ④ 点「预览变更」⇒ #setDiffBox 可见且含 "→" 的 diff 行；
-  ⑤ 点遮罩 ⇒ 抽屉关闭（手机没有 ESC：点空白关不掉＝没有关闭）。
-两档视口各跑一遍（1440 桌面 / 390 窄屏），窄屏额外量抽屉宽度占比。
+  ④ 点「预览变更」⇒ #setDiffBox 可见且含 "→" 的 diff 行，保存按钮解禁；
+  ⑤ 点「总览」导航离开 ⇒ 零浮层残留（手机上没有 ESC，导航必须收场）。
+两档视口各跑一遍（1440 桌面 / 390 窄屏），窄屏额外量侧栏收起与遮罩关闭。
 """
 import json
 import os
@@ -23,19 +23,23 @@ URL = os.getenv("PROBE_URL", "http://127.0.0.1:3199/")
 REMOTE_PORT = int(os.getenv("PROBE_CDP", "9481"))
 
 READ = """() => {
-  const on = ['detailDrawer','settingsDrawer','skillDocDrawer']
-    .filter(id => document.getElementById(id).classList.contains('on'));
-  const drawer = document.getElementById('settingsDrawer');
+  const on = ['detailDrawer','skillDocDrawer']
+    .filter(id => document.getElementById(id) && document.getElementById(id).classList.contains('on'));
+  const pg = document.getElementById('page-settings-model');
   const agents = [...document.querySelectorAll('#setAgentList [data-settings-agent]')];
   const sel = document.getElementById('setModelSel');
   const diff = document.getElementById('setDiffBox');
   const step = document.getElementById('setModelStep');
+  const sb = document.getElementById('sidebar');
   return JSON.stringify({
     overlays_on: on,
-    drawer_on: drawer.classList.contains('on'),
-    drawer_w: Math.round(drawer.getBoundingClientRect().width),
+    page_on: !!(pg && pg.classList.contains('on')),
+    grp_open: (document.querySelector('.nav-acc-head[data-group="settings"]')||{})
+                .getAttribute('aria-expanded'),
     vw: window.innerWidth,
-    tab_on: (document.querySelector('.set-tab.on') || {}).textContent || '',
+    collapsed: sb.classList.contains('collapsed'),
+    mask_on: !!(document.getElementById('sideMask')||{}).classList
+             && document.getElementById('sideMask').classList.contains('on'),
     agents: agents.map(b => b.dataset.settingsAgent),
     agents_disabled: agents.filter(b => b.getAttribute('aria-disabled') === 'true')
                            .map(b => b.dataset.settingsAgent),
@@ -43,10 +47,12 @@ READ = """() => {
     options: sel ? sel.options.length : -1,
     apply_disabled: !!document.getElementById('setApplyBtn').disabled,
     diff_visible: diff && diff.style.display !== 'none',
-    diff_rows: diff ? (diff.textContent.match(/→/g) || []).length : 0,
-    mask_on: !!document.querySelector('.modal-mask.on')
+    diff_rows: diff ? (diff.textContent.match(/→/g) || []).length : 0
   });
 }"""
+
+OPEN_SET = ("document.querySelector('.nav-acc-head[data-group=\"settings\"]').click();"
+            "document.querySelector('[data-sys=\"%s\"]').click();")
 
 
 def run(width, height, tag):
@@ -62,11 +68,11 @@ def run(width, height, tag):
         c.send("Page.reload", ignoreCache=True)
         time.sleep(4)
         for _ in range(30):
-            if (c.eval("(typeof settingsTab!=='undefined')") or "") == "true":
+            if (c.eval("(typeof settingsModelsLoad!=='undefined')") or "") == "function":
                 break
             time.sleep(0.5)
-        # ① 打开设置（走侧栏按钮的真实点击路径，不直接调 openSettings）
-        c.eval("document.querySelector('[data-settings]').click()")
+        # ① 走手风琴真实点击路径（不直接调 go()）
+        c.eval(OPEN_SET % "settings-model")
         time.sleep(1.2)
         for _ in range(20):                       # agent 清单异步到位
             st = json.loads(c.eval("(%s)()" % READ))
@@ -86,15 +92,12 @@ def run(width, height, tag):
         st3 = json.loads(c.eval("(%s)()" % READ))
         out["after_preview"] = {k: st3[k] for k in
                                 ("diff_visible", "diff_rows", "apply_disabled", "overlays_on")}
-        # ⑤ 逃生路径：遮罩开着就点遮罩（手机没有 ESC）；桌面档抽屉按常驻面板处理，走关闭按钮
-        c.eval("const m=document.getElementById('sideMask');"
-               "if(m && m.classList.contains('on')) m.click();"
-               "else { const b=document.querySelector('#settingsDrawer .btn.ghost.sm');"
-               "if(b) b.click(); }")
+        # ⑤ 导航离开 ⇒ 零浮层残留
+        c.eval("document.getElementById('btnNavHome').click()")
         time.sleep(1.0)
         st4 = json.loads(c.eval("(%s)()" % READ))
-        out["after_mask_click"] = {k: st4[k] for k in ("drawer_on", "overlays_on", "mask_on")}
-        out["drawer_width_ratio"] = round(st["drawer_w"] / max(1, st["vw"]), 3)
+        out["after_nav_away"] = {k: st4[k] for k in
+                                 ("page_on", "overlays_on", "mask_on", "collapsed")}
     finally:
         if c:
             try:
@@ -113,10 +116,11 @@ def main():
     print(json.dumps(res, ensure_ascii=False, indent=1))
     # 机器判据写在这里，免得"看了截图"就算过
     for tag, r in res.items():
-        assert r["after_open"]["overlays_on"] == ["settingsDrawer"], f"{tag}: 浮层不唯一"
-        assert r["after_open"]["tab_on"].strip() == "模型", f"{tag}: 默认子页不是「模型」"
-        assert len(r["after_open"]["agents"]) >= 6, f"{tag}: agent 清单没渲染"
-        assert set(r["after_open"]["agents_disabled"]) >= {"codebuddy", "qwenpaw"}, \
+        a = r["after_open"]
+        assert a["overlays_on"] == [], f"{tag}: 进设置页竟有浮层 {a['overlays_on']}"
+        assert a["page_on"] and a["grp_open"] == "true", f"{tag}: 手风琴没展开/没进模型页"
+        assert len(a["agents"]) >= 6, f"{tag}: agent 清单没渲染"
+        assert set(a["agents_disabled"]) >= {"codebuddy", "qwenpaw"}, \
             f"{tag}: 不可写 agent 没置灰"
         assert r["after_pick_agent"]["step_visible"] and r["after_pick_agent"]["options"] > 3, \
             f"{tag}: 选 agent 后模型下拉没出来"
@@ -124,8 +128,12 @@ def main():
         assert r["after_preview"]["diff_visible"] and r["after_preview"]["diff_rows"] > 0, \
             f"{tag}: 预览没出 diff"
         assert not r["after_preview"]["apply_disabled"], f"{tag}: 预览后保存仍禁用"
-        assert r["after_mask_click"]["drawer_on"] is False, f"{tag}: 点遮罩关不掉抽屉"
-        assert r["after_mask_click"]["overlays_on"] == [], f"{tag}: 关闭后仍有浮层残留"
+        n = r["after_nav_away"]
+        assert not n["page_on"] and n["overlays_on"] == [], f"{tag}: 导航后仍有残留 {n}"
+    # 窄屏额外：进页后侧栏必须收起、遮罩必须关（否则正文被压）
+    assert res["narrow"]["after_open"]["collapsed"] and not res["narrow"]["after_open"]["mask_on"], \
+        "窄屏进设置页后侧栏没收起 / 遮罩没关"
+    assert not res["desktop"]["after_open"]["collapsed"], "桌面不该被强制收侧栏"
     print("ALL ASSERTIONS PASS")
 
 

@@ -355,10 +355,12 @@ class TestFrontendWiring(unittest.TestCase):
         self.html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
         self.js = (_REPO / "static" / "hub.js").read_text(encoding="utf-8")
 
-    def test_third_tab_and_panel(self):
-        self.assertIn('data-settings-tab="github"', self.html)
-        self.assertIn('id="setPanelGithub"', self.html)
-        self.assertIn("github: 'Github'", self.js, "settingsTab 面板映射缺 GitHub")
+    def test_github_settings_page(self):
+        """v0.13.43：GitHub 设置从"抽屉里的第三个 tab"改成正文页 #page-settings-github。"""
+        self.assertIn('id="page-settings-github"', self.html)
+        self.assertNotIn('id="setPanelGithub"', self.html, "抽屉面板已拆，不该还有")
+        self.assertIn("SET_PAGE_IDS", self.js, "委托清单缺设置三页")
+        self.assertIn("'settings-github'", self.js, "go() 懒加载缺 GitHub 设置页")
         for dom in ("ghApiBase", "ghGitHost", "ghOwner", "ghToken", "ghCloneBase",
                     "ghWriteFiles", "ghStatus", "ghDiff", "ghTokenState"):
             self.assertIn(f'id="{dom}"', self.html, f"#{dom} 缺失 ⇒ JS 取值 null")

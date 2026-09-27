@@ -95,6 +95,11 @@ var lpLoaded = false;
 /* v0.13.31 GitHub 页同型（双 var 冗余纪律见上）；10 分片里 var ghLoaded 提升
    保证 06 顶层 go() 先行调用读到 undefined 而非 TDZ。 */
 var ghLoaded = false;
+/* v0.13.43 设置三页懒加载标志：go() 在 06 分片顶层就会跑（可能早于 01 里
+   settingsModelsLoad 之外的一些初始化），故同样用 var 提升规避 TDZ —— 与
+   lpLoaded / ghLoaded 同一条纪律；真值在 go() 里首次进页时才置。 */
+var setModelPageLoaded = false;
+var setGithubPageLoaded = false;
 /* v0.13.32 TDZ 补丁（真事故驱动的修复）：06 顶层 go(lsGet('hub.page')) 在
    09/10 分片顶层初始化**之前**就能调到 loadLocalProjects()/loadGithubRepos()
    （函数声明提升），而 LP/GH/lpStars… 的 `var X = …` 初始化还没跑 ⇒ 函数里
@@ -180,14 +185,15 @@ function boxFail(id, err, retryFn) {
 var CENTER_HEALTH = { memory: '', skills: '', kb: '' };
 
 /* ── 浮层唯一性（2026-09-23 事故：窄屏「设置」抽屉盖掉 92% 画面且没人关）────────
-   三个浮层（侧栏抽屉 / detailDrawer / settingsDrawer）此前各开各的：
+   三个浮层（侧栏抽屉 / detailDrawer / settingsDrawer）此前各开各的
+   （v0.13.43 起设置抽屉已拆成左侧手风琴 + 正文页，剩 detailDrawer / skillDocDrawer 两个）：
    开设置不关侧栏、导航不收抽屉、遮罩只管侧栏 —— 窄屏抽屉宽 min(400px,92vw)，
    一旦残留就把整页压成"白板 + 点不动"。规则钉死三条：
    ① 同一时刻最多一个抽屉是 on（开新的必先清旧的）；
    ② 导航 = 清抽屉（go 里做，不留给调用方自觉）；
    ③ 遮罩只有一个计算出口（06 的 syncOverlayMask），且点它一定关干净 ——
       手机上没有 ESC 键，点空白是唯一逃生路径。 */
-const OVERLAY_IDS = ['detailDrawer', 'settingsDrawer', 'skillDocDrawer'];
+const OVERLAY_IDS = ['detailDrawer', 'skillDocDrawer'];   // v0.13.43：设置抽屉已拆，改走正文页
 const overlayOpen = id => { const el = $(id); return !!(el && el.classList.contains('on')); };
 window.overlayAnyOpen = () => OVERLAY_IDS.some(overlayOpen);
 function closeDrawers() {
@@ -240,6 +246,9 @@ function go(page) {
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）
   if (page === 'github' && !ghLoaded) { ghLoaded = true; loadGithubRepos(); }   // v0.13.31 GitHub 项目页（10 分片）
+  // v0.13.43 设置三页：与系统页同口径，进页才拉（模型清单 / GitHub 现值）
+  if (page === 'settings-model' && !setModelPageLoaded) { setModelPageLoaded = true; settingsModelsLoad(); }
+  if (page === 'settings-github' && !setGithubPageLoaded) { setGithubPageLoaded = true; settingsGithubLoad(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
@@ -418,12 +427,10 @@ async function verifyAgent(id) {
   } catch (e) { toast('体检失败：' + e.message, 'err'); }
 }
 
-/* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
-function openSettings() {
-  openOverlay('settingsDrawer');
-  settingsTab('model');   // 默认落在「模型」子页（不读存档：同一入口每次给同一结果）
-}
-function closeSettings() { closeOverlay('settingsDrawer'); }
+/* ── 设置（口令保护的 TERM_TOKEN 查看/应用）──
+   v0.13.43：设置不再是抽屉。三个子页（模型 / GitHub / 终端口令）是 main 里的
+   section.page，由左侧「设置」手风琴组切换 —— 入口从 btnSettings 的 inline onclick
+   变成与系统页同口径的 data-sys ⇒ 委托 ⇒ go(page)，顺带继承"窄屏点完自动收侧栏"。 */
 function settingsPasscode() { return lsGet('hub.passcode') || ''; }
 
 async function settingsViewToken() {
@@ -483,29 +490,18 @@ function settingsClearPasscode() {
    交互两步：先选 agent，再选该 agent 要用的 CCR 模型；保存前给 diff 预览，
    保存时要口令（HUB_PASSCODE，与「终端口令」子页共用一个本机缓存的口令）。
    三条纪律：
-     ① **不新增浮层**：两个子页只是 settingsDrawer 内两个 section 的显示切换
-        （09-23 事故正身＝两个浮层叠加把正文压住）；
-     ② **不用 inline onclick**：一切走 #settingsDrawer 上的单一委托
+     ① **不新增浮层**：v0.13.43 起三个子页是 main 里的 section.page（抽屉已拆），
+        切换由左侧手风琴 + go(page) 完成 —— 比"抽屉内切 section"更彻底：压根没有浮层；
+     ② **不用 inline onclick**：一切走三个设置页上的同一委托 settingsDelegates()
         （inline 会旁路委托，把"导航即清浮层"那类收场逻辑整段跳过）；
-     ③ **档位判定读当前值、不读存档**：子页选择不写 localStorage，刷新回落到
-        「模型」页是**常量**而非记忆（跨 origin 分叉那条不变量的同款要求）。 */
+     ③ **档位判定读当前值、不读存档**：进哪个子页由点击决定，不写 localStorage
+        （跨 origin 分叉那条不变量的同款要求）。 */
 let SET_AGENTS = [];          // /api/settings/models 的 agents 段
 let SET_AGENT = '';           // 当前选中的 agent（不落盘）
 let SET_MODELS = null;        // /api/models 缓存（60s）
 let SET_DIFF = null;          // 最近一次预览结果（保存时复用同一个 model 值）
-
-const SET_PANELS = { model: 'Model', github: 'Github', token: 'Token' };
-function settingsTab(name) {
-  Object.keys(SET_PANELS).forEach(n => {
-    const tab = document.querySelector('.set-tab[data-settings-tab="' + n + '"]');
-    const panel = $('setPanel' + SET_PANELS[n]);
-    const on = (n === name);
-    if (tab) { tab.classList.toggle('on', on); tab.setAttribute('aria-selected', on ? 'true' : 'false'); }
-    if (panel) panel.style.display = on ? '' : 'none';
-  });
-  if (name === 'model') settingsModelsLoad();
-  if (name === 'github') settingsGithubLoad();
-}
+/* 三个设置页的 id —— 委托与 go() 懒加载共用这一份清单，别再各处写字面量 */
+const SET_PAGE_IDS = ['page-settings-model', 'page-settings-github', 'page-settings-token'];
 
 async function settingsModelsLoad(force) {
   const box = $('setAgentList');
@@ -649,7 +645,7 @@ async function settingsApplyModel() {
 /* ── 设置 → GitHub 子菜单（v0.13.42）──────────────────────────────────────
    把原来写死在 githubprojects.py 里的三样东西（API 基址 / token 文件 / 克隆落点）
    变成运行时可配。三条纪律与模型页同源：
-     ① 不新增浮层（只是 settingsDrawer 内第三个 section）；
+     ① 不新增浮层（第三个设置页，与模型页并列在 main 里）；
      ② 按钮一律 data-settings-act 走同一委托，无 inline onclick；
      ③ key 是**只写**字段：页面只显示掩码与来源，输入框留空 = 不改动（清除走按钮）。
    读取顺序 Hub 设置 → 环境变量 → 内置默认，改完即时生效（服务端每次现读）。 */
@@ -803,13 +799,12 @@ async function settingsGithubRefresh() {
   }
 }
 
-/* 设置抽屉内的**唯一**委托出口：子页切换 / 选 agent / 预览 / 保存 / GitHub */
+/* 三个设置正文页的**唯一**委托出口：选 agent / 预览 / 保存 / GitHub / 口令 */
 function settingsDelegates() {
-  const drawer = $('settingsDrawer');
-  if (!drawer) return;
-  drawer.addEventListener('click', e => {
-    const tab = e.target.closest('[data-settings-tab]');
-    if (tab) return settingsTab(tab.dataset.settingsTab);
+  SET_PAGE_IDS.forEach(id => {
+    const page = document.getElementById(id);
+    if (!page) return;
+    page.addEventListener('click', e => {
     const ag = e.target.closest('[data-settings-agent]');
     if (ag) {
       if (ag.getAttribute('aria-disabled') === 'true') {
@@ -826,7 +821,14 @@ function settingsDelegates() {
       if (a === 'gh-apply') return settingsGithubApply();
       if (a === 'gh-clear') return settingsGithubClear();
       if (a === 'gh-refresh') return settingsGithubRefresh();
+      /* 终端口令页：原先是 inline onclick，随抽屉一起改走委托（同一个出口） */
+      if (a === 'token-view') return settingsViewToken();
+      if (a === 'token-clear') return settingsClearPasscode();
+      if (a === 'token-copy') return settingsCopyToken();
+      if (a === 'token-apply') return settingsApplyToken();
+      if (a === 'token-toggle') return settingsToggleShow();
     }
+    });
   });
 }
 /* 注意：settingsDelegates() 的**调用**放在启动尾（06 分片），不在这里立即执行 ——
@@ -2658,18 +2660,24 @@ function cmdGo(id) { closeCmd(); gotoChat(id); }
 
 /* ── v0.7 左侧手风琴导航：单开模式 + 搜索 + 展开态持久化 ──
    20 个实体全部收拢进左栏（AGENTS 8 / 基础设施 12），系统功能仍走 go(page) ── */
-const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统' };
-const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders' };   // 收起成图标条时仍可辨认（sprite id）
-const NAV_ORDER = ['agents', 'infra', 'system'];
+const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统', settings: '设置' };
+const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders', settings: 'settings' };   // 收起成图标条时仍可辨认（sprite id）
+const NAV_ORDER = ['agents', 'infra', 'system', 'settings'];
 const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
                    ['skills', '技能中心', 'zap'], ['kb', '知识库', 'book'],
                    ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
                    ['assets', '资产', 'layers'], ['runlog', '运行日志', 'radar']];
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
+/* v0.13.43 设置子菜单：与系统页同形态（data-sys → go(page) ⇒ 正文出页、窄屏自动收侧栏），
+   只是单独成组挂在「系统」之下；这三项此前是右侧抽屉里的三个 tab。 */
+const SET_PAGES = [['settings-model', '模型', 'cpu'], ['settings-github', 'GitHub', 'globe'],
+                   ['settings-token', '终端口令', 'terminal']];
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目' };
+                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目',
+                      'settings-model': '设置 · 模型', 'settings-github': '设置 · GitHub',
+                      'settings-token': '设置 · 终端口令' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
@@ -2840,6 +2848,7 @@ function renderNav() {
     agents: q ? all.filter(a => navMatch(a, q)) : all.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
     infra: q ? infra.filter(a => navMatch(a, q)) : infra.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
     system: q ? [] : SYS_PAGES,
+    settings: q ? [] : SET_PAGES,   // v0.13.43：设置组（模型 / GitHub / 终端口令）
   };
   // 搜索结果计数
   let totalMatch = 0;
@@ -2858,7 +2867,8 @@ function renderNav() {
       });
       const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
       if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navRow).join('');
-    } else if (g === 'system') {
+    } else if (g === 'system' || g === 'settings') {
+      /* 设置组与系统页同渲染（data-sys ⇒ 侧栏委托 go(page)），只是不挂健康点。 */
       /* v0.13.27：三中心（memory/skills/kb）行尾挂健康点（CENTER_HEALTH，
          loader 完成时写入；空=未加载不显示，ok/warn/err 对应 s-badge 色族）。 */
       const hlth = p => (typeof CENTER_HEALTH !== 'undefined' && CENTER_HEALTH[p]) ?
@@ -3048,8 +3058,6 @@ function initSidebar() {
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
     if (el) { go(el.dataset.page); if (narrow()) apply(true); return; }
-    el = e.target.closest('button[data-settings]');
-    if (el) { openSettings(); return; }   // 「设置」以前走 inline onclick 旁路委托 ⇒ 抽屉永远不收
     el = e.target.closest('button[data-sys]');
     if (el) { go(el.dataset.sys); if (narrow()) apply(true); return; }
     el = e.target.closest('.hh-row');                     // 历史条目：续聊，窄屏顺手收抽屉
@@ -3157,7 +3165,6 @@ document.addEventListener('keydown', e => {
     // 终端里的 Esc 原样给 pty；只有搜索框自己认领"Esc 清空"
     if (editing && !(e.target && e.target.id === 'navSearch')) return;
     closeDetail();
-    closeSettings();
     const si = $('navSearch');
     if (si && si.value) { si.value = ''; renderNav(); return; }
     return;
