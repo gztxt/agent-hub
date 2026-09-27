@@ -43,6 +43,14 @@ class TestEnvParsing(unittest.TestCase):
     def test_missing_file_is_empty_dict(self):
         self.assertEqual(hublog_cli._read_env("/nonexistent/.env-nope"), {})
 
+    def test_env_path_follows_symlink_to_real_repo(self):
+        """~/bin/hublog 是软链接：仓库根必须按 realpath 算，否则读到 home/.env。"""
+        repo = os.path.dirname(os.path.dirname(os.path.realpath(_SCRIPT)))
+        self.assertTrue(os.path.isdir(repo), repo)
+        self.assertIn("agent-hub", os.path.basename(repo),
+                      "软链接要用 realpath 解析，不能停在链接那一侧")
+        self.assertIn("realpath", open(_SCRIPT, encoding="utf-8").read().lower())
+
 
 class TestUrlBuilding(unittest.TestCase):
     def test_free_text_is_urlencoded(self):
