@@ -1611,6 +1611,11 @@
                             <select id="setModelSel" aria-label="CCR 模型" style="width:100%"></select>
                             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
                                 <button class="btn sm" type="button" data-settings-act="preview">预览变更</button>
+                                <!-- v0.13.44：页内口令框。APP 内嵌 WebView 会吞掉 prompt()，
+                                     那种环境里"点保存毫无反应"就是这么来的；留了缓存口令时可不填。 -->
+                                <input id="setPasscode" type="password" autocomplete="off" spellcheck="false"
+                                       placeholder="设置口令（留空用本机缓存）" aria-label="设置口令"
+                                       style="max-width:220px">
                                 <button class="btn sm" type="button" id="setApplyBtn" data-settings-act="apply" disabled>保存（需口令）</button>
                             </div>
                             <div id="setDiffBox" style="display:none"></div>
@@ -1663,6 +1668,9 @@
                             <span>同时回写到 <code>github.txt</code> 与 <code>.env</code>（默认关；落笔前自动时间戳备份，重启后仍生效）</span>
                         </label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                            <input id="ghPasscode" type="password" autocomplete="off" spellcheck="false"
+                                   placeholder="设置口令（留空用本机缓存）" aria-label="设置口令"
+                                   style="max-width:220px">
                             <button class="btn sm" type="button" data-settings-act="gh-test">测试连接</button>
                             <button class="btn sm" type="button" data-settings-act="gh-apply">保存（需口令）</button>
                             <button class="btn ghost sm" type="button" data-settings-act="gh-clear">清除设置</button>
@@ -1857,6 +1865,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=2f45d584"></script>
+    <script src="/static/hub.js?v=0cf467b0"></script>
 </body>
 </html>

@@ -74,7 +74,7 @@ import ghsettings as ghsettings_mod  # GitHub 地址/key/落点（v0.13.42：设
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.43"   # 设置从「右侧抽屉」改成左侧手风琴第四组：模型 / GitHub / 终端口令
+VERSION = "0.13.44"   # 设置→模型「保存不生效」：结果常驻回显 + 写前可写性预检 + 页内口令框（不再依赖 prompt）
                       #   三个子项与系统页同口径（data-sys ⇒ 委托 ⇒ go(page) ⇒ 正文出页），
                       #   设置抽屉整体拆除 ⇒ 09-23「手机上被浮层糊住」的形态不再存在。
                       #   ↑ v0.13.42：设置→GitHub 子菜单（远程地址/key/归属/克隆落点不再硬编码）
