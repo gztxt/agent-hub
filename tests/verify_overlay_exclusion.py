@@ -14,7 +14,7 @@ from _cdp_min import CDP, launch_chrome, page_target
 
 BASE = "http://127.0.0.1:3102"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9371
-OVERLAYS = ("#sideMask", "#detailDrawer", "#settingsDrawer", "#regMask")
+OVERLAYS = ("#sideMask", "#detailDrawer", "#regMask")   # v0.13.43：设置抽屉已拆
 results = []
 
 
@@ -34,7 +34,9 @@ STATE = r"""
              ? [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)] : null; };
   const sb = document.getElementById('sidebar');
   const ccx = Math.round(innerWidth*0.6), ccy = Math.round(innerHeight*0.5);
-  const drawn = ['detailDrawer','settingsDrawer','regMask'].filter(on);
+  const drawn = ['detailDrawer','regMask'].filter(on);
+  const setGrpOpen = (document.querySelector('.nav-acc-head[data-group="settings"]')||{})
+      .getAttribute('aria-expanded');
   const covering = OVERLAY_IDS.filter(id => { const b = box(id);
       return b && b[0] <= %s && b[2] >= %s && (b[3]-b[1]) > innerHeight*0.5; });
   return { vw: innerWidth, collapsed: sb.classList.contains('collapsed'),
@@ -42,6 +44,7 @@ STATE = r"""
            coveringContent: covering, contentHit: key(document.elementFromPoint(ccx, ccy)),
            contentClickable: !OVERLAY_IDS.includes('#' + (document.elementFromPoint(ccx, ccy)||{id:''}).id),
            pageOn: [...document.querySelectorAll('section.page.on')].map(e=>e.id).join(','),
+           setGrpOpen: setGrpOpen,
            errs: (window.__errs||[]).slice(0,3) };
 })()
 """.replace("OVERLAY_IDS", json.dumps(list(OVERLAYS)))
@@ -91,38 +94,40 @@ print("== 窄屏 390×844：用户操作路径 ==")
 d = load(c, 390, 844, "localStorage.clear();localStorage.setItem('hub.sidebar.narrow','0');")
 chk("起点：抽屉展开且遮罩在", d["maskOn"] and not d["collapsed"], "mask=%s" % d["maskOn"])
 
-_, why = click(c, "#btnSettings")
+_, why = click(c, '.nav-acc-head[data-group="settings"]')
 d = c.eval(STATE % (234, 234))
-chk("点「设置」→ 设置抽屉开", d["drawersOpen"] == ["settingsDrawer"], why)
-chk("点「设置」→ 侧栏自动收起（不叠两层）", d["collapsed"], "drawers=%s" % d["drawersOpen"])
-chk("点「设置」→ 最多一个抽屉在开", len(d["drawersOpen"]) <= 1, str(d["drawersOpen"]))
-chk("点「设置」→ 遮罩仍在（点空白可逃）", d["maskOn"], "")
+chk("点「设置」组头 → 手风琴展开（不是开抽屉）", d["setGrpOpen"] == "true", why)
+chk("点「设置」组头 → 一个抽屉都没开", d["drawersOpen"] == [], str(d["drawersOpen"]))
+
+_, why = click(c, '[data-sys="settings-model"]')
+d = c.eval(STATE % (234, 234))
+chk("点「模型」子项 → 进正文页 page-settings-model", d["pageOn"] == "page-settings-model",
+    "%s / page=%s" % (why, d["pageOn"]))
+chk("点「模型」子项 → 零浮层（抽屉形态已拆）", d["drawersOpen"] == [], str(d["drawersOpen"]))
+chk("点「模型」子项 → 侧栏自动收起且遮罩关掉（不叠两层）", d["collapsed"] and not d["maskOn"],
+    "collapsed=%s mask=%s" % (d["collapsed"], d["maskOn"]))
+chk("★正文中心不再被任何浮层盖住", not d["coveringContent"],
+    "残留层=%s / 中心命中=%s" % (d["coveringContent"], d["contentHit"]))
 
 _, why = click(c, "#btnNavHome")
 d = c.eval(STATE % (234, 234))
-chk("点「总览」→ 设置抽屉被导航关掉", d["drawersOpen"] == [], "drawers=%s %s" % (d["drawersOpen"], why))
-chk("点「总览」→ 遮罩关掉", not d["maskOn"], "")
-chk("★正文中心不再被任何浮层盖住", not d["coveringContent"],
-    "残留层=%s / 中心命中=%s" % (d["coveringContent"], d["contentHit"]))
-chk("★导航确实生效（页面=classroom）", d["pageOn"] == "page-classroom", d["pageOn"])
-
-# 逃生路径：重开设置，点侧边 8% 留白（遮罩区）应一次关干净
-click(c, "#btnSettings")
-d = c.eval(STATE % (234, 234))
-chk("重开设置后抽屉在开", d["drawersOpen"] == ["settingsDrawer"], "")
-_, why = click(c, None, x=10, y=430)
-d = c.eval(STATE % (234, 234))
-chk("点遮罩留白 → 抽屉与遮罩一次关干净", not d["coveringContent"] and not d["maskOn"],
-    "%s 中心命中=%s" % (why, d["contentHit"]))
+chk("点「总览」→ 导航生效（页面=classroom）", d["pageOn"] == "page-classroom",
+    "%s / page=%s" % (why, d["pageOn"]))
+chk("★导航后正文可点且零浮层", not d["coveringContent"] and d["drawersOpen"] == [],
+    "残留层=%s 中心命中=%s" % (d["coveringContent"], d["contentHit"]))
 chk("窄屏全程零 JS 异常", not d["errs"], str(d["errs"]))
 
 print("\n== 桌面 1280×800：不得改坏原有行为 ==")
 d = load(c, 1280, 800, "localStorage.clear();")
 chk("桌面默认展开侧栏", not d["collapsed"] and d["sidebarBox"][2] - d["sidebarBox"][0] > 200,
     "宽=%s" % (d["sidebarBox"][2] - d["sidebarBox"][0]))
-click(c, "#btnSettings")
+click(c, '.nav-acc-head[data-group="settings"]')
 d = c.eval(STATE % (768, 768))
-chk("桌面点设置 → 抽屉开且侧栏不被强制收起", d["drawersOpen"] == ["settingsDrawer"] and not d["collapsed"], "")
+chk("桌面点「设置」组头 → 展开且不收侧栏", d["setGrpOpen"] == "true" and not d["collapsed"], "")
+click(c, '[data-sys="settings-github"]')
+d = c.eval(STATE % (768, 768))
+chk("桌面点「GitHub」子项 → 进正文页且零抽屉", d["pageOn"] == "page-settings-github" and d["drawersOpen"] == [],
+    "page=%s drawers=%s" % (d["pageOn"], d["drawersOpen"]))
 chk("桌面不显示窄屏遮罩", not d["maskOn"], "")
 click(c, "#btnNavHome")
 d = c.eval(STATE % (768, 768))

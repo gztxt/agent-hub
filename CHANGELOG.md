@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## v0.13.43 — 设置从「右侧抽屉」改成左侧手风琴第四组：模型 / GitHub / 终端口令
+
+> 施工会话：551f6b59。基线：v0.13.42。用户诉求原话：「设置菜单不是弹页面，
+> 也要手风琴一样的下拉子菜单」。
+>
+> - **怎么改的**：`设置` 不再是侧栏底部常驻按钮 + 右边 400px 抽屉，而是 `#navTree`
+>   里的**第四组手风琴**（AGENTS / 基础设施 / 系统 / 设置），三个子项与系统页
+>   **同口径**：`data-sys` ⇒ 侧栏委托 ⇒ `go(page)` ⇒ 正文出页（窄屏顺带收侧栏）。
+>   三个子项各是一个 `section.page.sys`，外套 v0.13.40 的统一骨架 `.sp/.sp-card`。
+> - **顺带拆掉的**：`#settingsDrawer` 整个浮层、`#btnSettings` 的 `data-settings`
+>   入口、子页 tab（`.set-tabs/.set-tab`）、`openSettings/closeSettings/settingsTab`、
+>   Esc 里的 `closeSettings()`、`OVERLAY_IDS` 里的 `settingsDrawer`。
+>   **09-23 事故正身（手机上浮层盖掉 92% 且无逃生路径）在设置这条路径上不再存在。**
+> - **纪律照旧**：终端口令页的 5 个按钮从 inline onclick 改成 `data-settings-act`
+>   走同一个委托；子页选择不落 localStorage（进哪页由点击决定）。
+> - **闸门**：L0 717 全绿（改了 `tests/test_overlay_exclusion.py` 与
+>   `tests/test_ghsettings.py` 的静态断言，钉死「抽屉不许回来」）；
+>   `tests/verify_overlay_exclusion.py`（L1 真鼠标）重写成手风琴路径；
+>   两个 `work/probe` 真渲染探针 1440/390 两档全过（零浮层、正文可点、导航收场）。
+
 ## v0.13.42 — 设置新增「GitHub」子菜单：远程地址 / key / 归属 / 克隆落点不再硬编码
 
 > 施工会话：551f6b59。基线：v0.13.41。改动文件：新增 `src/ghsettings.py`、

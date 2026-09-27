@@ -151,18 +151,24 @@ function cmdGo(id) { closeCmd(); gotoChat(id); }
 
 /* ── v0.7 左侧手风琴导航：单开模式 + 搜索 + 展开态持久化 ──
    20 个实体全部收拢进左栏（AGENTS 8 / 基础设施 12），系统功能仍走 go(page) ── */
-const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统' };
-const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders' };   // 收起成图标条时仍可辨认（sprite id）
-const NAV_ORDER = ['agents', 'infra', 'system'];
+const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统', settings: '设置' };
+const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders', settings: 'settings' };   // 收起成图标条时仍可辨认（sprite id）
+const NAV_ORDER = ['agents', 'infra', 'system', 'settings'];
 const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
                    ['skills', '技能中心', 'zap'], ['kb', '知识库', 'book'],
                    ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
                    ['assets', '资产', 'layers'], ['runlog', '运行日志', 'radar']];
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
+/* v0.13.43 设置子菜单：与系统页同形态（data-sys → go(page) ⇒ 正文出页、窄屏自动收侧栏），
+   只是单独成组挂在「系统」之下；这三项此前是右侧抽屉里的三个 tab。 */
+const SET_PAGES = [['settings-model', '模型', 'cpu'], ['settings-github', 'GitHub', 'globe'],
+                   ['settings-token', '终端口令', 'terminal']];
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目' };
+                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目',
+                      'settings-model': '设置 · 模型', 'settings-github': '设置 · GitHub',
+                      'settings-token': '设置 · 终端口令' };
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
@@ -333,6 +339,7 @@ function renderNav() {
     agents: q ? all.filter(a => navMatch(a, q)) : all.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
     infra: q ? infra.filter(a => navMatch(a, q)) : infra.slice().sort((x, y) => navRank(x) - navRank(y) || String(x.name||'').localeCompare(String(y.name||''), 'zh')),
     system: q ? [] : SYS_PAGES,
+    settings: q ? [] : SET_PAGES,   // v0.13.43：设置组（模型 / GitHub / 终端口令）
   };
   // 搜索结果计数
   let totalMatch = 0;
@@ -351,7 +358,8 @@ function renderNav() {
       });
       const rest = list.filter(a => !NAV_SUB_KINDS.some(([k]) => k === a.kind));
       if (rest.length) body += '<div class="nav-sub">其他</div>' + rest.map(navRow).join('');
-    } else if (g === 'system') {
+    } else if (g === 'system' || g === 'settings') {
+      /* 设置组与系统页同渲染（data-sys ⇒ 侧栏委托 go(page)），只是不挂健康点。 */
       /* v0.13.27：三中心（memory/skills/kb）行尾挂健康点（CENTER_HEALTH，
          loader 完成时写入；空=未加载不显示，ok/warn/err 对应 s-badge 色族）。 */
       const hlth = p => (typeof CENTER_HEALTH !== 'undefined' && CENTER_HEALTH[p]) ?

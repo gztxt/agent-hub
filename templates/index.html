@@ -540,19 +540,17 @@
         .modal .row input { flex: 1; }
 
         /* ── 实体详情/设置抽屉（右侧滑出）── */
-        #detailDrawer, #settingsDrawer, #skillDocDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
-        #detailDrawer.on, #settingsDrawer.on, #skillDocDrawer.on { right: 0; }
+        #detailDrawer, #skillDocDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
+        #detailDrawer.on, #skillDocDrawer.on { right: 0; }
         .token-box { font-family: var(--font-mono); font-size: var(--fs-sm); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
-        /* ── 设置抽屉子菜单与模型面板（v0.13.41）─────────────────────────────
+        /* ── 设置面板（v0.13.41 起；v0.13.43：宿主由抽屉换成正文页 ────────────
            四条约束（与 v0.13.40 系统页骨架同源）：
-             ① 不新增 @media：抽屉宽度由既有 min(400px,92vw) 决定，窄屏靠 flex-wrap 自塌；
+             ① 不新增 @media：宽度由正文页 / .sp-card 决定，窄屏靠 flex-wrap 自塌；
              ② 不新增色 token：只引用 --text-2/--muted/--border/--divider/--surface-2；
-             ③ 不新增浮层：两个子页只是两个 section 的显示切换；
+             ③ 不新增浮层：三个子页是 main 里三个 section，由左侧手风琴切换；
              ④ 高度由内容决定，写死高度必然在某个视口上把面板挤成 0（09-27 记忆页同款代价）。 */
-        .set-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider); margin-bottom: 8px; }
-        .set-tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
-                   padding: 7px 10px; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
-        .set-tab.on { color: var(--text-1); font-weight: 600; border-bottom-color: var(--text-2); }
+        /* v0.13.43：子页 tab 随抽屉一起拆除（改走左侧手风琴 → 正文出页），
+           这两条规则已无宿主，留着只会让人以为还有第二个浮层。 */
         .set-sub { font-size: var(--fs-sm); font-weight: 600; color: var(--text-2); margin: 12px 0 6px; }
         .set-agents { display: flex; flex-wrap: wrap; gap: 6px; }
         .set-agents .btn.on { font-weight: 600; }
@@ -864,7 +862,9 @@
                 aria-label="GitHub 项目" title="GitHub 项目 · 远端仓库清单，本地没有的即时克隆后开会话"><svg class="i" aria-hidden="true"><use href="#i-globe"/></svg><span class="lbl">GitHub 项目</span></button>
         <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
         <div id="navTree"></div>
-        <button class="side-item" id="btnSettings" aria-label="打开设置" data-settings="1" title="设置：终端 token 查看与应用"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">设置</span></button>
+        <!-- v0.13.43：设置从「右侧抽屉」改成手风琴第四组（模型 / GitHub / 终端口令），
+             由 renderNav() 渲染进 #navTree；子项与系统页同口径（data-sys → go(page)），
+             正文在 main 里出页，不再有第二个浮层。 -->
         <button class="side-toggle" id="btnSideToggle" title="收起 / 展开侧栏"><svg class="i xs" aria-hidden="true"><use href="#i-panel-collapse"/></svg><span class="lbl">收起</span></button>
     </aside>
     <div id="sideMask" aria-hidden="true"></div>
@@ -1591,6 +1591,120 @@
                 </div>
             </div>
         </section>
+        <!-- 设置 · 模型（v0.13.43：设置子菜单改成手风琴 → 正文出页，不再有抽屉）
+             内容与 v0.13.41 的面板一致，只是外套换成系统页统一骨架 .sp/.sp-card。 -->
+        <section class="page sys" id="page-settings-model">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>模型设置</h3>
+                        <div class="sp-r"><span class="hint">选 agent → 选 CCR 模型 → 预览 → 口令保存</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="hint" style="margin-bottom:10px">保存同时写入<b>该 agent 自己的配置文件</b>
+                            （落笔前自动时间戳备份）与 <b>hub 侧</b>（拉起终端时按白名单注入 <code>--model</code>）。</div>
+                        <div class="set-sub">1 · 选择 agent</div>
+                        <div id="setAgentList" class="set-agents"><span class="hint">加载中…</span></div>
+                        <div id="setModelStep" style="display:none">
+                            <div class="set-sub">2 · 选择模型（CCR :3456 清单）</div>
+                            <div id="setAgentMeta" class="hint" style="margin-bottom:6px"></div>
+                            <select id="setModelSel" aria-label="CCR 模型" style="width:100%"></select>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                                <button class="btn sm" type="button" data-settings-act="preview">预览变更</button>
+                                <button class="btn sm" type="button" id="setApplyBtn" data-settings-act="apply" disabled>保存（需口令）</button>
+                            </div>
+                            <div id="setDiffBox" style="display:none"></div>
+                        </div>
+                        <div class="set-sub">CCR 网关 Router（只读，不写）</div>
+                        <div id="setCcrRouter" class="hint"></div>
+                    </div>
+                    <div class="sp-note">CCR Router 五场景属三方互斥军规保护面：本页只读展示，不提供写入。</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 设置 · GitHub（v0.13.42 的内容，v0.13.43 改出页） -->
+        <section class="page sys" id="page-settings-github">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>GitHub 设置</h3>
+                        <div class="sp-r"><span class="hint">远程地址 / key / 归属 / 克隆落点 · 改完即时生效</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="hint" style="margin-bottom:10px">GitHub 项目页的<b>远程地址、key、归属、克隆落点</b>
+                            都在这里改，<b>改完立即生效（不用重启）</b>；读取顺序：本页设置 → 环境变量 → 内置默认。
+                            key 只写不读（页面只显示掩码），保存需设置口令。</div>
+                        <div class="set-sub">远程</div>
+                        <label class="set-field">远程地址（API 基址）<span class="set-src" id="ghApiBaseSrc"></span>
+                            <input id="ghApiBase" type="url" autocomplete="off" spellcheck="false"
+                                   placeholder="https://api.github.com" aria-label="GitHub API 基址">
+                        </label>
+                        <label class="set-field">Git 主机（克隆与本地匹配按它生成，留空按远程地址派生）<span class="set-src" id="ghGitHostSrc"></span>
+                            <input id="ghGitHost" type="text" autocomplete="off" spellcheck="false"
+                                   placeholder="github.com" aria-label="Git 主机">
+                        </label>
+                        <label class="set-field">归属 owner（可选；留空 = 当前账号可见的全部仓库）
+                            <input id="ghOwner" type="text" autocomplete="off" spellcheck="false"
+                                   placeholder="gztxt" aria-label="归属 owner">
+                        </label>
+                        <div class="set-sub">凭据</div>
+                        <label class="set-field">Key（<span id="ghTokenState" class="set-src">未设置</span>，留空表示不改动）
+                            <input id="ghToken" type="password" autocomplete="off" spellcheck="false"
+                                   placeholder="ghp_… / github_pat_…" aria-label="GitHub key">
+                        </label>
+                        <div class="set-sub">本地</div>
+                        <label class="set-field">克隆落点<span class="set-src" id="ghCloneBaseSrc"></span>
+                            <input id="ghCloneBase" type="text" autocomplete="off" spellcheck="false"
+                                   placeholder="/fs/1000/ftp/技术文档" aria-label="克隆落点">
+                        </label>
+                        <label class="set-check">
+                            <input id="ghWriteFiles" type="checkbox">
+                            <span>同时回写到 <code>github.txt</code> 与 <code>.env</code>（默认关；落笔前自动时间戳备份，重启后仍生效）</span>
+                        </label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                            <button class="btn sm" type="button" data-settings-act="gh-test">测试连接</button>
+                            <button class="btn sm" type="button" data-settings-act="gh-apply">保存（需口令）</button>
+                            <button class="btn ghost sm" type="button" data-settings-act="gh-clear">清除设置</button>
+                            <button class="btn ghost sm" type="button" data-settings-act="gh-refresh">刷新清单</button>
+                        </div>
+                        <div id="ghStatus" class="set-status" style="display:none"></div>
+                        <div id="ghDiff" style="display:none"></div>
+                    </div>
+                    <div class="sp-note">只做<b>只读 + 克隆</b>（列仓库、单仓核对、克隆到本地）；地址必须 https，
+                        内网 / 回环地址一律拒绝（防止把 key 明文发到内网）。</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 设置 · 终端口令 -->
+        <section class="page sys" id="page-settings-token">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>终端口令</h3>
+                        <div class="sp-r"><span class="hint">HUB_PASSCODE · 口令只存在本浏览器</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
+                        <div style="display:flex;gap:8px;margin-bottom:8px">
+                            <button class="btn sm" id="btnViewToken" type="button" data-settings-act="token-view">查看终端 TERM_TOKEN</button>
+                            <button class="btn ghost sm" type="button" data-settings-act="token-clear">清除本机口令</button>
+                        </div>
+                        <div id="settingsTokenBox" style="display:none">
+                            <div class="token-box" id="settingsTokenVal"></div>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                                <button class="btn sm" type="button" data-settings-act="token-copy">复制</button>
+                                <button class="btn sm" type="button" data-settings-act="token-apply">应用到终端（本浏览器不再弹框）</button>
+                                <button class="btn ghost sm" id="settingsToggleShow" type="button" data-settings-act="token-toggle">隐藏</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sp-note">口令错 / 服务端未配时会立刻清除本机缓存，下次查看需重新输入。</div>
+                </div>
+            </div>
+        </section>
+
     </main>
     </div>
 
@@ -1626,105 +1740,6 @@
         <div id="detailBody" class="hint"></div>
     </aside>
 
-    <!-- 设置抽屉（v0.13.41：子菜单 = 模型 / 终端口令）
-         两个子页共用**同一个**浮层（settingsDrawer）——切片只切 section，不再开第二个抽屉：
-         09-23 事故的正身就是"两个浮层叠加 ⇒ 手机上后开的把先开的连同正文一起压住"。
-         子页切换与面板内按钮一律走 data-* 委托（见 01-core-boot.js 的 settingsDelegates），
-         不再加 inline onclick（inline 会旁路委托，"导航即清浮层"那类收场逻辑会被整段跳过）。 -->
-    <aside id="settingsDrawer" role="dialog" aria-label="设置">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <b style="font-size:var(--fs-lg);display:inline-flex;align-items:center;gap:6px"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg>设置</b>
-            <button class="btn ghost sm" aria-label="关闭设置" onclick="closeSettings()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
-        </div>
-        <div class="set-tabs" id="settingsTabs" role="tablist" aria-label="设置子菜单">
-            <button class="set-tab on" type="button" role="tab" aria-selected="true" data-settings-tab="model">模型</button>
-            <button class="set-tab" type="button" role="tab" aria-selected="false" data-settings-tab="github">GitHub</button>
-            <button class="set-tab" type="button" role="tab" aria-selected="false" data-settings-tab="token">终端口令</button>
-        </div>
-
-        <!-- ① 模型：先选 agent → 再选 CCR 模型 → 预览 → 口令保存 -->
-        <section id="setPanelModel" role="tabpanel" aria-label="模型设置">
-            <div class="hint" style="margin:8px 0 10px">选 agent → 选 CCR 模型。保存同时写入
-                <b>该 agent 自己的配置文件</b>（落笔前自动时间戳备份）与 <b>hub 侧</b>
-                （拉起终端时按白名单注入 <code>--model</code>）。</div>
-            <div class="set-sub">1 · 选择 agent</div>
-            <div id="setAgentList" class="set-agents"><span class="hint">加载中…</span></div>
-            <div id="setModelStep" style="display:none">
-                <div class="set-sub">2 · 选择模型（CCR :3456 清单）</div>
-                <div id="setAgentMeta" class="hint" style="margin-bottom:6px"></div>
-                <select id="setModelSel" aria-label="CCR 模型" style="width:100%"></select>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-                    <button class="btn sm" type="button" data-settings-act="preview">预览变更</button>
-                    <button class="btn sm" type="button" id="setApplyBtn" data-settings-act="apply" disabled>保存（需口令）</button>
-                </div>
-                <div id="setDiffBox" style="display:none"></div>
-            </div>
-            <div class="set-sub">CCR 网关 Router（只读，不写）</div>
-            <div id="setCcrRouter" class="hint"></div>
-        </section>
-
-        <!-- ② GitHub：远程地址 + key + 归属 + 克隆落点（v0.13.42，不再硬编码）
-             所有按钮走 data-settings-act 委托（与模型页同一出口），无 inline onclick。 -->
-        <section id="setPanelGithub" role="tabpanel" aria-label="GitHub 设置" style="display:none">
-            <div class="hint" style="margin:8px 0 10px">GitHub 项目页的<b>远程地址、key、归属、克隆落点</b>
-                都在这里改，<b>改完立即生效（不用重启）</b>；读取顺序：本页设置 → 环境变量 → 内置默认。
-                key 只写不读（页面只显示掩码），保存需设置口令。</div>
-            <div class="set-sub">远程</div>
-            <label class="set-field">远程地址（API 基址）<span class="set-src" id="ghApiBaseSrc"></span>
-                <input id="ghApiBase" type="url" autocomplete="off" spellcheck="false"
-                       placeholder="https://api.github.com" aria-label="GitHub API 基址">
-            </label>
-            <label class="set-field">Git 主机（克隆与本地匹配按它生成，留空按远程地址派生）<span class="set-src" id="ghGitHostSrc"></span>
-                <input id="ghGitHost" type="text" autocomplete="off" spellcheck="false"
-                       placeholder="github.com" aria-label="Git 主机">
-            </label>
-            <label class="set-field">归属 owner（可选；留空 = 当前账号可见的全部仓库）
-                <input id="ghOwner" type="text" autocomplete="off" spellcheck="false"
-                       placeholder="gztxt" aria-label="归属 owner">
-            </label>
-            <div class="set-sub">凭据</div>
-            <label class="set-field">Key（<span id="ghTokenState" class="set-src">未设置</span>，留空表示不改动）
-                <input id="ghToken" type="password" autocomplete="off" spellcheck="false"
-                       placeholder="ghp_… / github_pat_…" aria-label="GitHub key">
-            </label>
-            <div class="set-sub">本地</div>
-            <label class="set-field">克隆落点<span class="set-src" id="ghCloneBaseSrc"></span>
-                <input id="ghCloneBase" type="text" autocomplete="off" spellcheck="false"
-                       placeholder="/fs/1000/ftp/技术文档" aria-label="克隆落点">
-            </label>
-            <label class="set-check">
-                <input id="ghWriteFiles" type="checkbox">
-                <span>同时回写到 <code>github.txt</code> 与 <code>.env</code>（默认关；落笔前自动时间戳备份，重启后仍生效）</span>
-            </label>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-                <button class="btn sm" type="button" data-settings-act="gh-test">测试连接</button>
-                <button class="btn sm" type="button" data-settings-act="gh-apply">保存（需口令）</button>
-                <button class="btn ghost sm" type="button" data-settings-act="gh-clear">清除设置</button>
-                <button class="btn ghost sm" type="button" data-settings-act="gh-refresh">刷新清单</button>
-            </div>
-            <div id="ghStatus" class="set-status" style="display:none"></div>
-            <div id="ghDiff" style="display:none"></div>
-            <div class="hint" style="margin-top:8px">只做<b>只读 + 克隆</b>（列仓库、单仓核对、克隆到本地）；
-                地址必须 https，内网/回环地址一律拒绝（防止把 key 明文发到内网）。</div>
-        </section>
-
-        <!-- ③ 终端口令 -->
-        <section id="setPanelToken" role="tabpanel" aria-label="终端口令" style="display:none">
-            <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
-            <div style="display:flex;gap:8px;margin-bottom:8px">
-                <button class="btn sm" id="btnViewToken" onclick="settingsViewToken()">查看终端 TERM_TOKEN</button>
-                <button class="btn ghost sm" onclick="settingsClearPasscode()">清除本机口令</button>
-            </div>
-            <div id="settingsTokenBox" style="display:none">
-                <div class="token-box" id="settingsTokenVal"></div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn sm" onclick="settingsCopyToken()">复制</button>
-                    <button class="btn sm" onclick="settingsApplyToken()">应用到终端（本浏览器不再弹框）</button>
-                    <button class="btn ghost sm" id="settingsToggleShow" onclick="settingsToggleShow()">隐藏</button>
-                </div>
-            </div>
-        </section>
-    </aside>
 
     <!-- 命令面板（⌘K / Ctrl+K） -->
     <div class="modal-mask" id="cmdMask" onclick="if(event.target===this)closeCmd()">
@@ -1842,6 +1857,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=7828117d"></script>
+    <script src="/static/hub.js?v=2f45d584"></script>
 </body>
 </html>

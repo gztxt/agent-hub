@@ -27,7 +27,7 @@ from _hub_extract import extract_function, read_hub   # noqa: E402
 REPO = Path(__file__).resolve().parents[1]
 TPL = REPO / "templates" / "index.html"
 # v0.13.27：+skillDocDrawer（技能正文抽屉）——闸门随浮层清单加严
-DRAWERS = ["detailDrawer", "settingsDrawer", "skillDocDrawer"]
+DRAWERS = ["detailDrawer", "skillDocDrawer"]   # v0.13.43：设置抽屉已拆成手风琴 + 正文页
 
 
 def _html():
@@ -89,9 +89,16 @@ class TestOverlayInvariants(unittest.TestCase):
             if "onclick=" in tag:
                 bad.append(re.sub(r"\s+", " ", tag)[:70])
         self.assertEqual(bad, [], "侧栏按钮用 inline onclick 旁路事件委托: %s" % bad)
-        self.assertIn('id="btnSettings"', self.html)
-        self.assertIn('data-settings="1"', self.html,
-                      "「设置」必须带 data-settings，由委托统一处理（顺带收侧栏）")
+        # v0.13.43：设置不再是侧栏常驻按钮 + 抽屉，而是手风琴第四组的三个子项
+        # （data-sys ⇒ 侧栏委托 ⇒ go(page) ⇒ 正文出页，并顺带"窄屏点完收侧栏"）。
+        # 抽屉形态正是 09-23 事故正身（手机上盖掉 92% 且无逃生路径），此处钉死"回不去"。
+        self.assertNotIn('data-settings="1"', self.html, "「设置」抽屉入口又回来了")
+        self.assertNotIn('id="settingsDrawer"', self.html, "设置抽屉又回来了")
+        self.assertIn("settings: '设置'", self.hub, "侧栏缺「设置」手风琴组")
+        self.assertIn("SET_PAGES", self.hub, "设置子页清单缺失")
+        for sp in ("settings-model", "settings-github", "settings-token"):
+            self.assertIn("'%s'" % sp, self.hub, "设置子页 %s 不在清单里" % sp)
+            self.assertIn('id="page-%s"' % sp, self.html, "#page-%s 缺失" % sp)
 
     # ── ④ 遮罩只有一个计算出口 ────────────────────────────────────
     def test_side_mask_has_single_writer(self):

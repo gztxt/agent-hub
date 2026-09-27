@@ -161,8 +161,6 @@ function initSidebar() {
   sb.addEventListener('click', e => {
     let el = e.target.closest('button[data-page]');
     if (el) { go(el.dataset.page); if (narrow()) apply(true); return; }
-    el = e.target.closest('button[data-settings]');
-    if (el) { openSettings(); return; }   // 「设置」以前走 inline onclick 旁路委托 ⇒ 抽屉永远不收
     el = e.target.closest('button[data-sys]');
     if (el) { go(el.dataset.sys); if (narrow()) apply(true); return; }
     el = e.target.closest('.hh-row');                     // 历史条目：续聊，窄屏顺手收抽屉
@@ -270,7 +268,6 @@ document.addEventListener('keydown', e => {
     // 终端里的 Esc 原样给 pty；只有搜索框自己认领"Esc 清空"
     if (editing && !(e.target && e.target.id === 'navSearch')) return;
     closeDetail();
-    closeSettings();
     const si = $('navSearch');
     if (si && si.value) { si.value = ''; renderNav(); return; }
     return;
