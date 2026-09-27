@@ -1,0 +1,1397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Hub · 本机多 Agent 统一管理中心</title>
+    <!-- v0.10.1：品牌图标换成落盘资产（static/，由 agent 生成并验过尺寸/MIME）。
+         旧的内联 data-URI 方块与顶部 wordmark 不是同一个图形，手机书签/PWA 安装后会更丑，故删除。
+         manifest 用 .json 而非 .webmanifest：FastAPI FileResponse 按扩展名猜 MIME，.webmanifest 会给错。 -->
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#ededed">
+    <link rel="stylesheet" href="/static/vendor/xterm.css?v=949dfd99">
+    <style>
+        /* ── v0.9 配色：标准黑白体系（画布 + 内容面 两层），:root 是唯一色板源，全文引用 var() ──
+           UI 骨架（画布/内容面/边框/文字/按钮/强调色）全部为中性灰阶，层级靠
+           「底色差 + 描边 + 字重 + 留白」区分；色相只允许出现在「语义」上
+           （见 --ok/--warn/--danger/--busy），不用于装饰。
+           ── 本次（v0.9）修复的三处对比度硬伤（均为实测值，非估计）──
+           ① 内容框 vs 页面底：#f7f7f7 / #ffffff 仅 1.07:1 —— 右侧内容框糊在白底上、看不出框。
+              改为 画布 #ededed 承托 内容面 #ffffff，边界由「底色差 + #c9c9c9 描边」双重表达。
+           ② 辅助文字 --muted #8a8a8a on 面板 仅 3.22:1（< WCAG AA 正文 4.5:1），
+              而 .hint / th / .home-sub / .footer / .btn.ghost 等大量真实文本都在用它。
+              提升至 #6b6b6b = 5.33:1（on 白）/ 4.72:1（on 画布），全部达标。
+           ③ 边框 --border #cfcfcf 仅 1.56:1，是框体唯一的分隔手段。提升至 #c9c9c9。 */
+        :root {
+            --canvas: #ededed;               /* 页面底：浅灰画布，承托内容框 */
+            --bg: #ffffff;                   /* 内容面：卡片 / 输入 / 表格 / 代码块 */
+            --surface: #ffffff;              /* 内容框（原 #f7f7f7 —— 与画布同色是本次主要修复点） */
+            --surface-2: #f4f4f5;            /* 框内次级块：助手气泡 / hover / 代码 */
+            --field: #f4f4f5;                /* 输入控件填充：白卡上靠浅灰填充显形，不再只靠描边 */
+            --border: #c9c9c9; --divider: #e5e5e5; --line: #c9c9c9;
+            /* ── hallmark 审计补丁 2026-09-26（M2/M6）：把此前散落在 pi-web 内嵌条里的字面色收进 token。
+               取值与原字面量逐字相同（#e0e0e0 / #eeeeee）⇒ 渲染零变化，只是不再绕过 :root。
+               它们与 --divider(#e5e5e5)/--hover(#eeeeee) 是**不同角色**（内嵌条描边/底色 vs 分隔线/悬停），
+               故新建 token 而非复用，避免为了“少一个变量”把两个语义合并、日后一改全错。
+               --font-display：显式声明本系统的 display 面孔＝mono（.home-kicker 已在用）。
+               CJK-first 控制台不引入 webfont（中文字体动辄数 MB），故 display 与 body 同源是**有意取舍**；
+               真正的 display 配对留待用户视觉签核后再议（见 agent-knowledge/57 M6）。 */
+            --embed-line: #e0e0e0; --embed-bg: #eeeeee;
+            --font-display: var(--font-mono);
+            /* 文字三级：全部达 WCAG AA 正文 4.5:1 以上（对白底） */
+            --text-1: #111111;               /* 18.9:1  标题 / 正文主色 */
+            --text-2: #444444;               /*  9.7:1  次要文字、可点击项 */
+            --muted: #6b6b6b;                /*  5.3:1  辅助说明 / 表头 / 标签（原 #8a8a8a = 3.2:1 ✗） */
+            --accent: #111111; --accent-2: #111111; --info: #222222;
+            --on-accent: #ffffff;            /* 实心块（主按钮 / 用户气泡 / 徽标）上的字色 */
+            --btn: #111111; --btn-hover: #3d3d3d;
+            --hover: #eeeeee; --row-hover: #0000000a;
+            /* ── 选中 / 聚焦：一律半透明，不再用实黑反色块 ──
+               改前选中态是 #111111 实底 + 白字，在 268px 宽的侧栏里就是一整块纯黑，点一下非常扎眼；
+               改为 6% 黑底 + 20% 黑描边：靠「描边 + 字重」表达选中，层次保留但不砸出一团黑。
+               聚焦同理：输入框不再弹出纯黑 1px 描边，键盘焦点环也走半透明。 */
+            --sel-bg: #11111114; --sel-bg-hover: #1111111f;
+            --sel-border: #11111138; --sel-border-hover: #1111115c;
+            --focus-line: #1111118c;   /* 输入框聚焦描边：55% 黑（原 45% 实测仅 3.45:1，偏弱） */
+            --focus-ring: #1111111a;   /* 键盘焦点光环：10% 黑 */
+            --w1: #0000000f; --w2: #0000001a; --w3: #00000029;   /* 黑色透明度分级 */
+            --shadow: #0000001f; --shadow-lg: #00000045; --mask: #00000059;
+            /* ── v0.8.0 语义色：UI 骨架保持灰阶，色相只发给「成功 / 告警 / 危险」三种语义 ──
+               取值约束：低饱和 + 白底对比度 ≥ 5:1（WCAG AA 正文），不在边框/背景/文字上滥用 */
+            --ok: #2f7a4f;    --ok-soft: #2f7a4f14;    --ok-border: #2f7a4f45;      /* 5.2:1 */
+            --warn: #8a5a00;  --warn-soft: #8a5a000f;  --warn-border: #8a5a0040;    /* 5.9:1 */
+            --warn-hi: #f7eed7;                                                     /* mark 高亮底 */
+            --danger: #a3342c; --danger-soft: #a3342c10; --danger-border: #a3342c42; /* 6.8:1 */
+            --busy: #2c5f8a;                                                        /* 进行中（≠健康绿）6.7:1 */
+            /* 旧键兼容：语义色改名后老名字继续指向新值，避免散落引用点漏改 */
+            --success: var(--ok); --success-text: var(--ok);
+            --danger-text: var(--danger); --danger-bg: var(--danger-soft);
+            --warn-bg: var(--warn-soft); --amber: var(--warn); --amber-soft: var(--warn);
+            /* 状态：色相 + 形状 + 明度 三重冗余，色觉障碍下仍可分辨。
+               ⚠ 修改前 --st-running 与 --st-error 同为 #111111，「运行」和「错误」完全无法区分 */
+            --st-running: var(--ok);
+            --st-installed: #666666;
+            --st-stopped: #bdbdbd;
+            --st-error: var(--danger);
+            --st-running-bg: var(--ok-soft); --st-installed-bg: #00000008; --st-error-bg: var(--danger-soft);
+
+            /* ── v0.7.3 字体系统：中文优先字体栈 + 单一字号音阶 ──
+               规则：正文基准 15px，全站最小 13px（不再出现 10/11/12.5/13.5 等孤立值） */
+            --font-sans: 'PingFang SC', 'HarmonyOS Sans SC', 'MiSans', 'Source Han Sans SC',
+                         'Noto Sans SC', 'Noto Sans CJK SC', 'Hiragino Sans GB',
+                         'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, -apple-system,
+                         'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Sarasa Mono SC', ui-monospace, SFMono-Regular,
+                         Menlo, Consolas, 'Liberation Mono', monospace;
+            --fs-xs:   13px;   /* 角标 / 端口 / 状态字 —— 全站最小字号 */
+            --fs-sm:   14px;   /* 辅助说明、次要按钮、表头 */
+            --fs-base: 15px;   /* 正文基准：表格 / 输入 / 导航项 / 气泡 */
+            --fs-md:   16px;   /* 卡片标题、侧栏主导航 */
+            --fs-lg:   18px;   /* 面板 h3、弹窗标题 */
+            --fs-xl:   22px;   /* 页级标题 h2 */
+            --fs-2xl:  28px;   /* 统计数字 */
+            --lh-tight: 1.35; --lh-base: 1.7; --lh-loose: 1.85;   /* 中文行高比西文松 */
+            /* ── 图标系统：单一 SVG sprite（24 网格 / 1.9 描边），四档尺寸 ── */
+            --ico-xs: 14px; --ico-sm: 16px; --ico-md: 18px; --ico-lg: 22px; --ico-xl: 26px;
+            /* ── 侧栏菜单行（v0.12.3）：行内只有「状态方块 + 名称」──
+               状态文字串已从菜单行删除（点进去能否用由工作台判定，行内不预告），
+               在线/离线图形口径统一交给 .s-badge；完整状态串仍在行 title 与工作台卡片 */
+            /* v0.12.5：行内只剩「方块 + 名称」后 292px 是虚宽。实测（canvas measureText / 15px 字号）
+               最长名称 = scan 项 "WorkBuddy Daemon" 常规 154px；加粗只发生在 .on 选中行，而选中态
+               只可能落在 Agent 行（基础设施/服务行走 showDetail 不出 .on），Agent 组最长
+               "Claude Code" 加粗 106px ⇒ 上限由常规最长名决定。
+               行内固定开销 78px（侧栏边框 1 + 内边距 10 + 行边框 2 + 行内边距 20 + 手风琴缩进 18
+               + 方块 11 + 间隙 6）⇒ 78 + 154 = 232，取 240px：名称可用宽 162px，与窄屏抽屉
+               （236px 宽、开销 74px）的名称可用宽完全一致。 */
+            --sb-w: 240px;        /* 侧栏展开宽：最长名称完整显示 + 8px 余量 */
+            /* ── 嵌入式终端：原生黑底白字（2026-09-22 用户裁定，参考 grok TUI 默认观感）。
+               字号 / 字族 / 配色全部走这套 token，hub.js 只读不写死；所有 agent 终端共用本实例。
+               ANSI 16 色 = xterm.js 默认板（与 grok 原生终端同一族），黑底上可读；
+               字族拉丁等宽在前、CJK 等宽在后：xterm 按首个命中字体量 cell 宽，CJK 在前会把 ASCII 撑宽 */
+            --term-bg: #000000; --term-fg: #ffffff; --term-cursor: #ffffff; --term-sel: #b0d0ff40;
+            --term-fs: 14px; --term-lh: 1.5;
+            --term-font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+                         'Liberation Mono', 'Sarasa Mono SC', 'Noto Sans Mono CJK SC', monospace;
+            --term-black: #7f7f7f;  --term-red: #cd3131;    --term-green: #0dbc79;  --term-yellow: #e5e510;
+            --term-blue: #2472c8;   --term-magenta: #bc3fbc; --term-cyan: #3b8ea6;  --term-white: #e5e5e5;
+            --term-bblack: #666666; --term-bred: #f14c4c;    --term-bgreen: #23d18b; --term-byellow: #f1f14c;
+            --term-bblue: #3c85cc;  --term-bmagenta: #d73fd7;--term-bcyan: #49c2d6; --term-bwhite: #ffffff;
+            /* 伪元素场景（details/summary 展开箭头）用 mask 引用同一套图形，保证描边一致 */
+            --m-chev-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+            --m-chev-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { font-size: 16px; -webkit-text-size-adjust: 100%; }
+        body { font-family: var(--font-sans); font-size: var(--fs-base); line-height: var(--lh-base);
+               background: var(--canvas); color: var(--text-1); height: 100vh;
+               display: flex; flex-direction: column; overflow: hidden;
+               /* 中文渲染：关闭次像素平滑，避免宋体化发虚；开启字距/标距调整 */
+               -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+               text-rendering: optimizeLegibility; font-synthesis: none; }
+        a { color: var(--accent-2); }
+        /* hallmark M3（2026-09-26 审计）：数字列一律等宽数字。这些位置显示端口/时间戳/表格数值，
+           mono 字体命中时本就等宽，此处只兜住字体回退路径（ui-monospace/generic）导致的列错位。 */
+        .nav-port, .hh-ts, .hh-cw, .ebar-addr-v, th, td { font-variant-numeric: tabular-nums; }
+        button { cursor: pointer; font-family: inherit; font-size: inherit; }
+        /* ── 统一图标：所有图形走同一 sprite，尺寸只由四档 token 决定 ── */
+        svg.i { flex: none; display: inline-block; width: var(--ico-sm); height: var(--ico-sm);
+                vertical-align: -.15em; color: inherit; fill: none;
+                stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+        svg.i.xs { width: var(--ico-xs); height: var(--ico-xs); }
+        svg.i.md { width: var(--ico-md); height: var(--ico-md); }
+        svg.i.lg { width: var(--ico-lg); height: var(--ico-lg); }
+        svg.i.xl { width: var(--ico-xl); height: var(--ico-xl); }
+        svg.i.fill { fill: currentColor; stroke: none; }   /* 实心类（播放/菱形状态） */
+        .i-gap { display: inline-flex; align-items: center; gap: 6px; }
+        input, textarea, select { font-family: inherit; background: var(--field); border: 1px solid var(--border); color: var(--text-1); border-radius: 8px; padding: 9px 12px; font-size: var(--fs-base); line-height: var(--lh-base); }
+        input::placeholder, textarea::placeholder { color: var(--muted); }
+        input:focus, textarea:focus, select:focus { outline: none; border-color: var(--focus-line);
+                                                    box-shadow: 0 0 0 3px var(--focus-ring); }
+        /* 键盘焦点环（鼠标点击不触发，只服务 Tab 导航）。改前 button 完全没有焦点指示 */
+        button:focus-visible, a:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
+            outline: 2px solid var(--focus-line); outline-offset: 2px; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+               background: var(--btn); border: none; color: var(--on-accent); border-radius: 8px;
+               padding: 9px 16px; font-size: var(--fs-base); line-height: 1.4; transition: .15s; }
+        .btn:hover { background: var(--btn-hover); }
+        .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-2); }
+        .btn.ghost:hover { border-color: var(--accent-2); color: var(--text-1); }
+        .btn.danger { background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger-text); }
+        .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
+        .btn.sm { padding: 6px 11px; font-size: var(--fs-sm); gap: 5px; }
+
+        .header { background: var(--bg); padding: 10px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .header h1 { font-size: var(--fs-xl); font-weight: 700; color: var(--text-1); letter-spacing: .01em; line-height: var(--lh-tight); }
+        /* ── 品牌字标（v0.10.1）：hub-and-spoke 彽标 + 双字重 wordmark ──
+           黑白体系下不用色相做装饰，“美”靠三件事：字重对撞（Agent 800 / Hub 300）、
+           负字距收紧（拉丁文 -0.03em，跟中文的 .01em 走相反方）、彽标与字标的尺寸锚定。
+           对比度：bw-b = --text-2 #444 on 白 9.7:1，达 WCAG AA。 */
+        .brand { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+        .brand-glyph { width: 1.05em; height: 1.05em; flex: none; fill: none; stroke: currentColor;
+                       stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; color: var(--text-1); }
+        .brand-word { display: inline-flex; align-items: baseline; white-space: nowrap;
+                      font-weight: 800; letter-spacing: -.03em; color: var(--text-1); }
+        .brand-word .bw-b { font-weight: 300; letter-spacing: -.015em; color: var(--text-2); }
+        .hstats { display: flex; align-items: center; gap: 14px; font-size: var(--fs-sm); color: var(--text-2); flex-wrap: wrap; }
+        .hstats > span { display: inline-flex; align-items: center; gap: 5px; }
+        /* 顶部健康指示：改用与侧栏 s-badge 同一套「方块 + 明度」语言，全站状态图形只此一族 */
+        .hdot { display: inline-block; width: 9px; height: 9px; flex: none; }
+        .hdot.g { background: var(--st-running); animation: pulse 2s infinite; }
+        .hdot.y { background: var(--st-installed); }
+        .hdot.r { background: var(--st-error); }
+
+        /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
+        .shell { display: flex; flex: 1; overflow: hidden; }
+        .sidebar { flex: 0 0 var(--sb-w); width: var(--sb-w); background: var(--bg); border-right: 1px solid var(--border);
+                   padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
+                   position: relative; align-self: stretch; overflow-y: auto;
+                   /* v0.12.2：菜单不出滚动条（用户 09-22 宽屏要求）。overflow-y:auto 保留 ⇒
+                      条目多于可视高度时滚轮/触摸板仍可滚，只是不占位、不画槽。 */
+                   scrollbar-width: none;
+                   transition: flex-basis .18s ease, width .18s ease; }
+        .sidebar::-webkit-scrollbar { display: none; }
+        .sidebar.collapsed { flex-basis: 48px; width: 48px; padding-left: 4px; padding-right: 4px; }
+        .nav-group { display: flex; flex-direction: column; gap: 2px; }
+        .nav-group-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); letter-spacing: .04em;
+                           color: var(--muted); padding: 0 8px 8px; white-space: nowrap; overflow: hidden; }
+        .nav-group-title::after { content: ''; flex: 1; border-top: 1px dashed var(--divider); margin-left: 2px; }
+        /* v0.10.1：删除上面这组 `.sidebar button[data-page]` 遗留样式（共 6 条，含 :hover/.on/svg/.lbl）。
+           它服务的那批静态常驻按钮早被手风琴推平，全文已无 data-page 元素；而「总览」刚挂 data-page 时
+           正好被它打歪（padding 10px 12px / --fs-md / radius 8 / --muted），实测与菜单项差 4 个属性。
+           常驻项从此只走 .nav-item/.side-item 一条路，不会再长出第二套长相。 */
+        .badge { flex: 0 0 auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+                 background: var(--surface-2); color: var(--text-2); font-size: var(--fs-xs);
+                 display: inline-flex; align-items: center; justify-content: center; }
+        .badge:empty { display: none; }
+        /* ── 搜索 ── */
+        .nav-search { flex: 0 0 auto; }
+        .nav-search input { width: 100%; font-size: var(--fs-base); padding: 9px 11px; background: var(--field); }
+        /* ── 手风琴（单开）── */
+        .nav-acc { display: flex; flex-direction: column; gap: 1px; }
+        .nav-acc-head { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+                        background: transparent; border: 1px solid transparent; color: var(--muted);
+                        padding: 9px 10px; font-size: var(--fs-base); letter-spacing: .02em; line-height: 1.4; border-radius: 8px; transition: .12s; }
+        .nav-acc-head:hover { background: var(--hover); color: var(--text-2); }
+        .nav-acc-head .caret { flex: 0 0 auto; display: inline-flex; width: var(--ico-xs); height: var(--ico-xs); color: var(--muted); }
+        .nav-acc-head svg.i { width: var(--ico-md); height: var(--ico-md); }
+        .nav-item .s-badge { margin: 0 1px; }
+        .nav-acc-head .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-acc-body { display: none; flex-direction: column; gap: 1px; margin: 2px 0 4px 10px;
+                        padding-left: 7px; border-left: 1px solid var(--border); }
+        .nav-acc.open .nav-acc-body { display: flex; }
+        .nav-sub { font-size: var(--fs-xs); color: var(--muted); letter-spacing: .04em; padding: 6px 7px 3px; }
+        /* v0.10.1：设置项从顶栏搬进菜单栏。`.side-item` 直接加入下面这组选择器，
+           与菜单项共用同一套规则（不是拄一份），以后改菜单样式两者一起变，不会再两套长相。 */
+        .nav-item, .side-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+                    background: transparent; border: 1px solid transparent; color: var(--text-2);
+                    padding: 8px 10px; font-size: var(--fs-base); line-height: 1.4; border-radius: 7px; transition: .12s;
+                    /* 实测：带 22×22 图标的行 40px、纯文字行 39px，同一列表里行高不齐；
+                       统一到 40px（与分组标题 .nav-acc-head 同高），触控目标也够 */
+                    min-height: 40px; }
+        .nav-item:hover, .side-item:hover { background: var(--hover); color: var(--text-1); }
+        .nav-item.on, .side-item.on { background: var(--sel-bg); border-color: var(--sel-border); color: var(--text-1); font-weight: 600; }
+        .nav-item.on:hover, .side-item.on:hover { background: var(--sel-bg-hover); border-color: var(--sel-border-hover); }
+        .nav-item.on .nav-port { color: var(--text-2); }
+        .nav-item .lbl, .side-item .lbl { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* v0.12.1：菜单行内间隙收到 6px，把省下的空间让给名称（分组含 3~5 个元素，每行省 6~12px） */
+        .nav-item { gap: 6px; }
+        .nav-item .nav-port { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
+        /* ── v0.12.3 菜单行 = 状态方块 + 名称（用户 09-22）─────────────────────────────
+           行内状态文字整条删除：能否使用要点进去才知道，行内预告一串诊断文字既占宽又常与
+           实际不符。在线/离线改由 .s-badge 方块单独承担（实心=在线 / 空心=可启动 /
+           灰=离线 / 菱形=异常，图例见总览页底部）。端口与行内动作图标（嵌入/终端/▶启动）
+           仍让位——它们把名称挤到截断，且入口不丢：点行进工作台，嵌入 pane 与终端 pane
+           同时在场，启动走终端栏「+ 新会话」。规则限定 :not(.collapsed)：收起态图标条本来
+           就只画方块，两条口径一致。 */
+        .sidebar:not(.collapsed) .nav-item .nav-port,
+        .sidebar:not(.collapsed) .nav-item .nav-acts { display: none; }
+        /* v0.12.2 宽屏纵向密度：行内只剩文字后 40px 行高是纯浪费（文字行 21px + 上下 5px = 34px 够点）。
+           实测 1440x900：AGENTS 组 8 行由 320px 收到 272px（整组不再需要滚动）；
+           基础设施 16 行由 640px 收到 544px，加上侧栏间距 10→6px，可滚距离由 338px 降到 214px。
+           窄屏（<768px）不动：抽屉行 40px 是触控目标，且抽屉本身有独立高度预算。 */
+        @media (min-width: 768px) {
+            .nav-item, .side-item { min-height: 34px; padding: 5px 10px; }
+            .sidebar { gap: 6px; }
+        }
+        /* v0.12.2：滚动只发生在菜单列表内部。搜索框 / 总览 / 设置 / 收起 是常驻控件，
+           不该被 16 项基础设施挤出可视区（整栏滚时它们落在折线以下，而滚动条已隐藏、无从指认）。
+           min-height:0 让 #navTree 在 .sidebar 的 flex 列里可压缩，overflow-y:auto 承接滚动。 */
+        #navTree { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+        #navTree::-webkit-scrollbar { display: none; }
+        /* 操作按钮组 */
+        .nav-acts { display: flex; gap: 1px; flex: none; margin-left: 1px; }
+        /* 行内操作按钮：统一 22×22 图形按钮，图标恒为 16px（14px 会把 monitor 这类多细节图形糊成一格）*/
+        .act-btn { display: inline-flex; align-items: center; justify-content: center; flex: none;
+                   width: 22px; height: 22px; padding: 0; border-radius: 5px; cursor: pointer;
+                   color: var(--text-2); line-height: 1; }
+        .act-btn svg.i { width: var(--ico-sm); height: var(--ico-sm); stroke-width: 2; }
+        .act-btn:hover { background: var(--sel-bg-hover); color: var(--text-1); }
+        /* v0.10.1：启动按钮静置时不再用绿色（--ok #2f7a4f）——它是行内唯一的色相，
+           让「无 Web UI 的 Agent」行跟「有 Web UI」行看起来不是一套图标。
+           色相只留在 hover（语义：这是可执行动作），静置与 monitor/terminal 同色。*/
+        .start-btn { color: var(--text-2); }
+        .start-btn:hover { background: var(--success); color: var(--on-accent); }
+        /* 搜索结果计数 */
+        .search-count { font-size: var(--fs-xs); color: var(--text-2); margin-left: 6px; }
+        /* 搜索高亮 */
+        mark { background: var(--warn-hi); color: var(--warn); border-radius: 2px; padding: 0 1px; }
+        .nav-empty { font-size: var(--fs-sm); color: var(--muted); padding: 8px 10px; }
+        /* ── v0.13.0 左侧历史下拉：agent 行下方展开，点条目 = 终端里续聊该历史 ──
+           行高/字号与 .nav-item 同级；左内缩一个图标位，与名称起点对齐。
+           刻意不加滚动条与边框盒：侧栏 09-22 已定为「不出滚动条」且宽度收到 --sb-w。 */
+        .nav-hist { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 4px;
+                    padding-left: calc(var(--ico-md) + 6px); }
+        .nav-hist .hh-hd { font-size: var(--fs-xs); color: var(--muted); padding: 2px 6px; letter-spacing: .02em; }
+        .nav-hist .hh-row { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; cursor: pointer;
+                            border-radius: 8px; font-size: var(--fs-xs); color: var(--text-2); min-width: 0; }
+        .nav-hist .hh-row:hover { background: var(--surface-2); color: var(--text-1); }
+        .nav-hist .hh-t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-hist .hh-ts { flex: none; color: var(--muted); font-family: var(--font-mono); }
+        .nav-hist .hh-cw { flex: none; color: var(--muted); font-family: var(--font-mono);
+                          opacity: .7; max-width: 6em; overflow: hidden; text-overflow: ellipsis; }
+        .nav-hist .hh-note { padding: 4px 6px; font-size: var(--fs-xs); color: var(--muted); }
+        .sidebar.collapsed .nav-hist { display: none; }   /* 收起态是 48px 图标条，放不下 */
+        /* 顶栏芯片：字母 sid 换成中文标题后需要一个截断窗（max-width 用 em，不写死 px） */
+        .sess-item .s-t { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                          display: inline-block; vertical-align: bottom; }
+        .sidebar.collapsed .nav-search, .sidebar.collapsed .nav-acc-body { display: none; }
+        .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after,
+        .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port { display: none; }
+        .sidebar.collapsed .nav-group-title { justify-content: center; padding: 0 0 6px; font-size: var(--fs-xs); }
+        .sidebar.collapsed button[data-page], .sidebar.collapsed button.side-item, .sidebar.collapsed .nav-acc-head, .sidebar.collapsed .nav-item {
+          justify-content: center;
+          padding: 8px 0;
+          min-height: 34px;
+          display: flex;
+          align-items: center;
+        }
+        .sidebar.collapsed .nav-acc-head .caret { display: none; }
+        .sidebar.collapsed .side-toggle .lbl { display: none; }
+        .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
+        .sidebar.collapsed svg.i { width: var(--ico-md); height: var(--ico-md); }
+        .sidebar.collapsed .nav-item .s-badge { margin: 0; }
+        /* 常驻项成对锺在底部：自由空间由 .side-item 的 margin-top:auto 吃掉，
+           .side-toggle 不再需要自己撑到底部 */
+        /* 底部常驻项（设置）靠 auto 上边距沉底；顶部常驻项用 .side-top 把 auto 抹成 0
+           （两条同特异度，.side-top 在后 → 生效） */
+        .side-item { flex: 0 0 auto; margin-top: auto; }
+        .side-top { margin-top: 0; }
+        .side-toggle { margin-top: 0; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;
+                       background: transparent; border: 1px solid var(--border);
+                       color: var(--text-2); border-radius: 8px; padding: 8px; font-size: var(--fs-sm); width: 100%; }
+        .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
+
+        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 12px 16px; display: flex; flex-direction: column; overflow: hidden; }
+        section.page { display: none; }
+        section.page.on { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+        .hint { color: var(--muted); font-size: var(--fs-base); line-height: var(--lh-base); }
+
+        /* ── 右侧操作区顶栏：面包屑 + 模式 tab（模式 tab 的唯一来源，聊天内嵌的旧栏已停用）── */
+        #opBar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                 margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+        #crumb { font-size: var(--fs-base); color: var(--text-2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        #crumb b { color: var(--text-1); font-weight: 600; }
+        #crumb .sep { color: var(--muted); }
+        #opTabs { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+        #opTabs .btn.on { background: var(--sel-bg); color: var(--text-1); border-color: var(--sel-border); font-weight: 600; }
+        /* 顶栏无内容时整条收起（不占高不留分割线）：聊天页的模式 tab 已停用、实体名改由
+           #chatEntName 显示，syncOpBar() 据此打 .void 标记 */
+        #opBar.void { display: none; }
+        #sideMask { display: none; }
+
+        /* ── 首页：说明区（v0.10.0 起移除指挥官对话区块，回到单列概览页） ── */
+        .home-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; max-width: 1000px; }
+        .home-intro { display: flex; flex-direction: column; gap: 16px; }
+        .home-brand { display: flex; align-items: center; gap: 12px; }
+        .home-mark { width: 54px; height: 54px; flex: none; display: grid; place-items: center; border-radius: 14px; border: 2px solid var(--accent); background: var(--accent); color: var(--on-accent); }
+        .home-mark svg.i { width: var(--ico-xl); height: var(--ico-xl); }
+        .home-brand h2 { font-size: var(--fs-2xl); line-height: var(--lh-tight); }
+        .home-brand .brand-glyph { width: 30px; height: 30px; color: var(--on-accent); }   /* 实心黑块内反白 */
+        .home-brand-txt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        /* 字标上方的一行 mono 大字距 kicker：黑白体系里用“节奏”而不是颜色做装饰 */
+        .home-kicker { margin: 0; font-family: var(--font-display); font-size: var(--fs-xs);
+                       letter-spacing: .24em; text-transform: uppercase; color: var(--muted); }
+        .home-sub { font-size: var(--fs-base); color: var(--muted); margin-top: 4px; }
+        .home-desc { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text-2); border-left: 2px solid var(--border); padding-left: 14px; }
+        .home-desc b { color: var(--text-1); }
+        .home-stat { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .home-stat .hs { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+        .home-stat .hs .n { font-size: var(--fs-2xl); font-weight: 700; line-height: 1.15; }
+        .home-stat .hs .t { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; }
+        .home-stat .hs.alert { border: 2px solid var(--accent); }
+        .home-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: var(--fs-base); color: var(--text-2); }
+        .home-legend .lg { display: inline-flex; align-items: center; gap: 7px; }
+        .home-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+
+        /* 状态：色相 + 形状 + 明度 + 中文标签 四重冗余（左侧手风琴 / 首页图例共用）
+           色相让「在线/异常」一眼可分，形状保证色觉障碍下仍可分辨 */
+        .s-badge { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 0; box-sizing: content-box; }
+        .s-badge.running { background: var(--st-running); }                                                   /* 实心方块 100% */
+        .s-badge.installed { background: transparent; border: 1.5px solid var(--st-installed); opacity: .8; }   /* 空心方块 80% */
+        .s-badge.stopped { background: var(--st-stopped); }                                                   /* 实心方块 30% */
+        .s-badge.error { background: var(--st-error); border: 2px solid var(--st-error); transform: rotate(45deg); }  /* 菱形 100% + 2px */
+        @media (max-width: 1000px) { .home-wrap { grid-template-columns: minmax(0, 1fr); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+        /* ── 聊天 ── */
+        /* 提示栏 110px 太窄：提示文本被挤成每行 3~4 字（v0.9 字号上调后更明显），放到 220px 可正常阅读。
+           宽屏下 .chat-grid 只作用于指挥官页（#page-chat 在 @media(min-width:768px) 里已改为单列） */
+        /* hallmark M4（gate 50）：所有 fr 轨道一律 minmax(0,…)。裸 1fr 的最小值是 auto(=min-content)，
+           轨道内若有 xterm/<pre>/表格这类“固有宽度很大”的内容，会把轨道顶破容器造成溢出；
+           minmax(0,1fr) 把最小值钉到 0，溢出改由子元素自己的 overflow-x:auto 承接。
+           注：本行的 220px 1fr 实测被窄屏媒体查询与 #page-chat 宽屏规则全覆盖（四档渲染均为 1fr）
+           ⇒ 当前是死规则；一并修是为防日后删掉那两条覆盖时把顶破行为一起复活。 */
+        .chat-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; flex: 1; min-height: 420px; }
+        /* Agent 清单不再内嵌进对话页（2026-09-20 用户指令：窄屏也不需要，宽屏本来就藏）：
+           实体选择统一走左侧手风琴 / 窄屏图标条抽屉，同一份清单不散落两处。
+           DOM 里仍保留 #chatAgents 容器 —— hub.js renderChatSide() 拿它当渲染锚点，
+           并在末尾调用 applyChatMode() 切换 嵌入/终端/对话 三个 pane；删掉元素会把对话页打死。 */
+        .chat-side { display: none; }
+        .chips > summary { padding: 9px 11px; font-size: var(--fs-base); color: var(--info); cursor: pointer; list-style: none; user-select: none; border-radius: 8px; }
+        .chips > summary::-webkit-details-marker { display: none; }
+        .only-mob { display: none; }
+        .chat-main { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex: 1; min-height: 0; }
+        /* 当前实体名：原先靠顶栏面包屑带出，顶栏收起后住在对话工具栏首格 */
+        .ent-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); white-space: nowrap; }
+        .msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+        .msg { max-width: 78%; padding: 12px 15px; border-radius: 12px; font-size: var(--fs-base); line-height: var(--lh-loose); white-space: pre-wrap; word-break: break-word; }
+        .msg.user { align-self: flex-end; background: var(--btn); color: var(--on-accent); border-bottom-right-radius: 4px; }
+        .msg.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
+        .msg.err { align-self: flex-start; background: var(--danger-bg); color: var(--danger-text); }
+        /* v0.5.2.3 任务总结卡片：表格化 + 紧凑 */
+        .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+        .composer input { flex: 1; }
+
+        /* ── 表格/卡片通用 ── */
+        .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+        .panel h3 { font-size: var(--fs-lg); line-height: var(--lh-tight); margin-bottom: 12px; color: var(--info); }
+        .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); line-height: var(--lh-base); }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--divider); }
+        th { color: var(--muted); font-weight: 500; font-size: var(--fs-base); white-space: nowrap; }
+        tr:hover td { background: var(--row-hover); }
+        .tag { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: var(--fs-sm); background: var(--surface-2); color: var(--text-2); }
+        /* 分类去色：靠明度 + 边框虚实区分（实线/虚线/反色块） */
+        .tag.fact { background: var(--surface-2); color: var(--text-1); }
+        .tag.decision { background: transparent; border: 1px solid var(--text-2); color: var(--text-1); }
+        .tag.constraint { background: transparent; border: 1px dashed var(--danger-border); color: var(--danger-text); }
+        .tag.preference { background: var(--text-2); color: var(--bg); }
+        .tag.agent { background: var(--btn); color: var(--on-accent); }
+        /* v0.13.28 联邦源徽标三变体：明度区分不彩虹（v0.9 设计系统「色相只在语义上」）。
+           旧写法裸拼 `class="tag turbovec"` 等动态类名——CSS 无定义 ⇒ 静默回退默认灰底，
+           源身份辨识度为零（kb 结果卡实测如此）。缩写恒两位（SRC_ABBR），位宽稳定。 */
+        .tag.src-doc { background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); }
+        .tag.src-session { background: var(--surface-2); color: var(--muted); }
+        .tag.src-index { background: transparent; border: 1px dashed var(--border); color: var(--text-2); }
+
+        .mem-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .9fr) minmax(0, .9fr); gap: 16px; }
+        @media (max-width: 1100px) { .mem-grid { grid-template-columns: minmax(0, 1fr); } }
+        .mem-list { max-height: 420px; overflow-y: auto; }
+        .mem-item { border-bottom: 1px solid var(--divider); padding: 10px 2px; font-size: var(--fs-base); line-height: var(--lh-base); display: flex; justify-content: space-between; gap: 8px; }
+        .mem-item p { flex: 1; word-break: break-word; }
+        textarea.doc { width: 100%; min-height: 130px; font-size: var(--fs-base); line-height: var(--lh-base); }
+        textarea[readonly] { color: var(--text-2); background: var(--surface-2); }
+
+        .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+        .toolbar input { flex: 1; min-width: 180px; }
+        pre.code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: var(--fs-sm); overflow-x: auto; color: var(--text-1); line-height: var(--lh-base); }
+
+        .modal-mask { position: fixed; inset: 0; background: var(--mask); display: none; align-items: center; justify-content: center; z-index: 50; }
+        .modal-mask.on { display: flex; }
+        .modal { width: min(560px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; max-height: 86vh; overflow-y: auto; }
+        .modal h3 { margin-bottom: 14px; font-size: var(--fs-lg); line-height: var(--lh-tight); }
+        .modal .row { display: flex; gap: 8px; margin-bottom: 10px; }
+        .modal .row input { flex: 1; }
+
+        /* ── 实体详情/设置抽屉（右侧滑出）── */
+        #detailDrawer, #settingsDrawer, #skillDocDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
+        #detailDrawer.on, #settingsDrawer.on, #skillDocDrawer.on { right: 0; }
+        .token-box { font-family: var(--font-mono); font-size: var(--fs-sm); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
+
+        /* ── 命令面板（⌘K）── */
+        .cmd-item { padding: 10px 12px; border-radius: 8px; font-size: var(--fs-base); cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .cmd-item:hover, .cmd-item.sel { background: var(--surface-2); }
+
+        #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 99; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+        #toast div { background: var(--bg); border: 1px solid var(--border); padding: 12px 20px; border-radius: 10px; font-size: var(--fs-base); animation: pulse 3s forwards; box-shadow: 0 8px 24px var(--shadow-lg); }
+        #toast div.err { border-color: var(--danger-border); color: var(--danger-text); }
+        #toast div.ok { border-color: var(--text-2); color: var(--text-1); }
+
+        .footer { text-align: center; padding: 12px; color: var(--muted); font-size: var(--fs-sm); background: var(--bg); border-top: 1px solid var(--border); }
+
+        /* .chip 只保留自身样式：dot / b / .kindtag / .btn 四条子规则零引用（首页 4 个 chip 内部
+           只有 svg + 纯文本），状态指示早已迁到 .s-badge，属残留死代码 */
+        .chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+
+        /* ── 会话嵌入 / 终端 ── */
+        .pane { flex: 1; display: none; flex-direction: column; min-height: 0; }
+        .pane.on { display: flex; }
+        .pane .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+        .pane iframe { flex: 1; width: 100%; border: 0; background: var(--surface-2); min-height: 0; }
+        /* ── 原生 UI 外框：跟 pi-web 同参（2026-09-20 实测 pi-web :30141 首页 DOM，非估计值）──
+           pi-web 行1「菜单」：容器 h=36（窄屏 35）、标题 15px/700、菜单块 11px、border-bottom 1px #e0e0e0
+           pi-web 行2「信息」：容器 h=29、bg #eeeeee、11px、border-bottom 1px #e0e0e0（它放工作目录/cwd）
+           → 嵌入视图顶部固定两行：行1 菜单（回总览 / 实体名 / 刷新 / 新窗口），行2 IP 地址；
+             iframe 不再叠任何 hub 装饰（用户口径：内框直接加载 agent 原生界面）*/
+        /* 头部容器：宽屏（≥768）把两栏并成一行；窄屏在下面的媒体查询里退回两行。
+           对齐口径 = 共享基线，不是各自垂直居中：标题 15px/700 与地址 11px 等宽混排时，
+           居中会让两条基线差 2~3px，肉眼看就是"数字和文字没对齐"（用户 09-20 指出）。
+           flex 容器的基线取自它第一个 flex 项的基线，所以 .ebar-menu 与 .ebar-addr 两个
+           分组能跟同一行里的标题文字对到一条基线上。 */
+        .ebar-head { display: flex; align-items: baseline; gap: 10px; flex: none; height: 36px;
+                     padding: 9px 10px 0; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
+        .ebar-head > .ebar-menu { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0; }
+        .ebar-head > .ebar-addr { height: auto; min-width: 0; padding: 0; background: transparent; border-bottom: 0;
+                                  margin-left: auto; gap: 6px; }
+        /* 行内按钮改成贴文字高（原来固定 24px 盒会在基线对齐时把行高顶起来）。
+           只作用于宽屏：窄屏那两行是另一套已验证版式（35 + 29），不能被串改。 */
+        @media (min-width: 768px) {
+          /* 按钮改成 inline-block：inline-flex 容器向父级提交的基线取自第一个子项
+             （SVG 图标的底边），会把整行文字拉高 3.5px；inline-block 的基线由内部
+             文字决定，图标用 vertical-align 自己就位的下沿。 */
+          .ebar-head .ebar-btn { display: inline-block; height: auto; line-height: 18px; padding: 1px 6px; }
+          .ebar-head .ebar-btn > svg.i { vertical-align: -2px; margin-right: 4px; }
+          .ebar-head .ebar-btn-icon { padding: 1px 5px; }
+          .ebar-head .ebar-btn-icon > svg.i { margin-right: 0; }
+          .ebar-head .ebar-k, .ebar-head .ebar-addr-v { line-height: 18px; }
+          /* 摊平两个分组：display:contents 让标题、地址、按钮成为同一个 flex 行的直接
+             子项，align-items:baseline 才能真正贯穿整行（分在两个容器里时，两组各自的
+             基线只能靠容器基线间接对齐，15px 与 11px 混排就会露出 2px 错位）。
+             顺序用 order 重排：标题 → 地址组 → 弹性空隙 → 刷新/新窗口。 */
+          .ebar-head { gap: 6px; }
+          .ebar-head > .ebar-menu, .ebar-head > .ebar-addr { display: contents; }
+          .ebar-head > .ebar-menu > b { order: 1; min-width: 0; flex: 0 1 auto; }
+          .ebar-head > .ebar-addr > .ebar-k { order: 2; margin-left: 8px; }
+          .ebar-head > .ebar-addr > .ebar-addr-v { order: 2; min-width: 0; flex: 0 1 auto; }
+          .ebar-head > .ebar-addr > .ebar-btn { order: 2; }
+          .ebar-head > .ebar-menu > .ebar-sp { order: 3; }
+          .ebar-head > .ebar-menu > .ebar-btn { order: 4; }
+        }
+        .ebar-menu { display: flex; align-items: center; gap: 8px; flex: none; height: 36px;
+                     padding: 0 10px; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
+        .ebar-menu > b { font-size: 15px; font-weight: 700; line-height: 1.2; color: var(--text-1);
+                         min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ebar-sp { flex: 1 1 auto; min-width: 4px; }
+        .ebar-btn { display: inline-flex; align-items: center; gap: 4px; flex: none;
+                    height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px;
+                    background: transparent; color: var(--text-2); font-size: 11px; line-height: 1;
+                    cursor: pointer; transition: .12s; }
+        .ebar-btn:hover { background: var(--hover); color: var(--text-1); border-color: var(--border); }
+        .ebar-addr { display: flex; align-items: center; gap: 8px; flex: none; height: 29px; padding: 0 10px;
+                     background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); }
+        .ebar-k { font-size: 11px; color: var(--muted); letter-spacing: .04em; flex: none; }
+        .ebar-addr-v { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); font-size: 11px;
+                       color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                       user-select: all; -webkit-user-select: all; cursor: text; }
+        .ebar-addr-v:empty::before { content: '—'; color: var(--muted); }
+        /* 终端会话芯片（用户 09-20）：行1 内联，取代旧的「会话」刷新按钮与「暂无活会话」常驻字。
+           新会话建立后由 termNew() 先本地插一个芯片（即时可见），再由 termRefreshList() 以服务端为准重绘。
+           单行不换行：芯片多了就横向滚动，不能撑成第二行（那样就破了“外框只一行”的口径）。
+           点芯片本体 = 回看该会话；点右侧 × = 只销毁这一个。 */
+        .sess-row { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0;
+                    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; height: 100%; }
+        .sess-row::-webkit-scrollbar { display: none; }
+        .sess-item { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 22px;
+                     padding: 0 3px 0 8px; font-size: var(--fs-xs); font-family: var(--font-mono);
+                     background: var(--bg); border: 1px solid var(--border); border-radius: 11px; color: var(--text-2); }
+        .sess-item.cur { border-color: var(--text-1); color: var(--text-1); background: var(--sel-bg); }
+        .sess-item a { color: inherit; text-decoration: none; cursor: pointer; }
+        .sess-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+                  padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+        .sess-x:hover { background: var(--danger-bg); color: var(--danger); }
+        .sess-item .sess-x > svg { width: 10px; height: 10px; }
+        /* 终端 inset：外框统一后 .term-body 与 #termEl 都改零 padding / 零描边（内容区直接是 CLI）。
+           下面这条硬约束仍成立，改样式时别再踩：FitAddon 按 _terminal.element.parentElement(=#termEl)
+           的 height 算行数，而它只减去 xterm 自己的 padding、不减父元素的——一旦给任一层加 inset，
+           算出的行数就会多出一行，屏幕高度超出内容盒被 overflow:hidden 裁掉（底部遵住）。
+           旧实测凭据：父层带 6px padding 时 .xterm 高 468px、#termEl 内容盒仅 459px，底部溢出 9~10px。 */
+        .term-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; position: relative; }
+        #termEl { flex: 1; min-height: 0; padding: 0; background: var(--term-bg); overflow: hidden; }
+        /* 连接中反馈：终端区顶部一条 2px 走马灯（绝对定位，不进内容流，所以不破上面那条
+           FitAddon 高度口径）。刻意不往终端缓冲区写「连接中…」——那行字回放后仍留在画面里。 */
+        .term-body::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+                             background: linear-gradient(90deg, transparent, var(--text-1), transparent);
+                             background-size: 40% 100%; background-repeat: no-repeat;
+                             opacity: 0; pointer-events: none; }
+        #termPane.connecting .term-body::before { opacity: .5; animation: term-connecting 1.1s linear infinite; }
+        @keyframes term-connecting { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+        @media (prefers-reduced-motion: reduce) {
+            #termPane.connecting .term-body::before { animation: none; opacity: .35; }
+        }
+
+        /* ── 移动端自适应（US-001：消除左偏留白/页签换行/两栏错位） ── */
+        @media (max-width: 767px) {
+            /* 顶栏单行（窄屏）：wordmark 降到 fs-md、彽标跟着缩，状态字降一档 + 齿轮图标化 */
+            .header { padding: 6px 10px; gap: 8px; flex-wrap: nowrap; }
+            .header h1 { font-size: var(--fs-base); flex: 0 0 auto; }   /* 字标不收缩、不截断 */
+            .hstats { gap: 6px; font-size: var(--fs-xs); flex-wrap: nowrap; margin-left: auto; min-width: 0;
+                      overflow: hidden; }
+            .hstats > span { white-space: nowrap; flex: 0 0 auto; }
+            /* 收缩压力只由计数文字承担（省略号截断）；字标 / 状态点 / 齿轮一律不收缩 */
+            .hstats > #hAgents { flex: 0 1 auto; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+            /* 齿轮已移入左侧菜单栏，顶部不再需要 #btnSettings 的任何规则 */
+            /* 窄屏：手风琴退化为「图标条 + 浮层抽屉」，复用既有 .collapsed 机制
+               收起 = 52px 图标条（仍在文档流内，不遮挡 header）；展开 = 覆盖式抽屉，点遮罩收起 */
+            .sidebar { flex-basis: 52px; width: 52px; padding: 10px 5px; gap: 8px; }
+            .sidebar:not(.collapsed) { position: fixed; top: 0; left: 0; bottom: 0; z-index: 46; max-height: 100vh;
+                                       width: 236px; flex-basis: 236px; padding: 10px 8px;
+                                       box-shadow: 4px 0 20px var(--shadow-lg); }
+            .sidebar.collapsed .side-toggle .lbl { display: none; }
+            .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
+            /* v0.12.3：抽屉与宽屏共用同一套行内规则（.s-badge + 名称，见基础段），
+               窄屏不再有独立差异项。 */
+            #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
+            main { max-width: 100%; margin: 0; padding: 8px; }
+            .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            select { max-width: 100%; }
+            .toolbar input, .toolbar select { min-width: 0; }
+            .mem-grid { gap: 10px; }
+            .mem-grid > * { min-width: 0; }
+            .only-mob { display: block; }
+            .chips > summary { display: flex; align-items: center; justify-content: space-between; }
+            .chips > summary::after { content: ''; width: var(--ico-sm); height: var(--ico-sm); flex: none;
+                background: currentColor;
+                -webkit-mask: var(--m-chev-down) center / contain no-repeat;
+                mask: var(--m-chev-down) center / contain no-repeat; }
+            .chips:not([open]) > summary::after {
+                -webkit-mask-image: var(--m-chev-right); mask-image: var(--m-chev-right); }
+            /* ── 窄屏纵向预算（2026-09-20）──────────────────────────────────────
+               改前实测 390x844：header 87 / opBar 37 / chatToolbar 145 / composer 71 / footer 73，
+               且 .chat-main 被 62vh 写死（少用 89px）⇒ 消息区仅 306px。
+               以下只改排布密度，不砍功能：工具栏换成单行横向滚动，所有控件仍可点。 */
+            .chat-grid { grid-template-columns: minmax(0, 1fr); min-height: 0; gap: 8px; }
+            .chat-main { min-height: 0; }          /* 取消 62vh 写死，由 grid 行高撑满剩余视口 */
+            #opBar { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+            #chatToolbar { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none;
+                           align-items: center; gap: 6px !important; padding: 5px 8px !important; }
+            #chatToolbar::-webkit-scrollbar { display: none; }
+            #chatToolbar > * { flex: 0 0 auto; }
+            #chatToolbar > span { border-left: 0 !important; padding-left: 0 !important; margin-left: 0 !important; }
+            #chatToolbar select { max-width: 46vw !important; min-width: 0; height: 30px;
+                                  font-size: var(--fs-xs); padding: 0 6px; }
+            #chatToolbar .btn.sm { height: 30px; min-width: 30px; padding: 0 7px; }
+            #chatToolbar svg.i { width: 14px; height: 14px; }
+            /* 三个 pane 自己的顶栏（刷新 / 新窗口 / 会话 / 销毁）同步压平：
+               改前嵌入栏在 390px 下折成 4 行 = 92px（实测 embedTitle 148 + 按钮 71/113 + URL 170）
+               现：标题 + 按钮一行，长 URL 独占一行并截断 */
+            .pane .bar { gap: 6px; padding: 4px 8px; }
+            .pane .bar > b { font-size: var(--fs-sm); max-width: 44vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .pane .bar .btn.sm { height: 28px; padding: 0 8px; }
+            .pane .bar .hint { flex: 1 1 100%; order: 3; font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            /* 窄屏：外框两行仍按 pi-web 同参（行1 35 / 行2 29），只收内边距与间距 */
+            .ebar-menu { height: 35px; gap: 6px; padding: 0 8px; }
+            /* 窄屏：一行放不下地址，退回两行（首行 surface 35px，次行 #eeeeee 29px），
+               与宽屏同源同色带，只是换了排布口径 */
+            #embedPane .ebar-head { display: block; height: auto; padding: 0; background: transparent; border-bottom: 0; }
+            #embedPane .ebar-head > .ebar-menu { height: 35px; padding: 0 8px; background: var(--surface); border-bottom: 1px solid var(--embed-line); }
+            #embedPane .ebar-head > .ebar-addr { height: 29px; padding: 0 8px; background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); justify-self: stretch; }
+            .ebar-menu > b { max-width: 38vw; }
+            .ebar-addr { height: 29px; gap: 6px; padding: 0 8px; }
+            .ebar-btn { padding: 0 6px; }
+            .msgs { padding: 10px; }
+            #chatPane .composer { padding: 8px; }
+            #chatPane .composer input { height: 38px; }
+            .footer { padding: 5px 10px; font-size: var(--fs-xs); }
+            .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
+            .mem-grid { grid-template-columns: minmax(0, 1fr) !important; }
+            .panel { padding: 12px; }
+            .toolbar input { min-width: 140px; }
+        }
+        /* 实体列表的隐藏已上提到 .chat-side 基础规则（宽窄屏一律不内嵌），
+           此处只剩宽屏的单列栅格修正 */
+        @media (min-width: 768px) {
+            #page-chat .chat-grid { grid-template-columns: minmax(0, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <!-- ══ 统一图标 sprite（v0.7.3）：24 网格 · stroke=currentColor · 粗细/圆角由 CSS 统一 ══
+         图形只在此处定义一次；尺寸由 --ico-xs/sm/md/lg/xl 五档决定，禁止再写字号 -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true" focusable="false">
+        <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></symbol>
+        <!-- 品牌彽标：中心 hub 圆角斊形 + 四向 agent 节点（小半径圆靠 stroke 撞成实心点，
+             18px 下仍可读）+ 四条短辐条。尺寸由 .brand-glyph 控制，不进 .i 字号系统。 -->
+        <symbol id="i-hubmark" viewBox="0 0 24 24"><rect x="9.4" y="9.4" width="5.2" height="5.2" rx="1.5"/><circle cx="4.4" cy="4.4" r="1.1"/><circle cx="19.6" cy="4.4" r="1.1"/><circle cx="4.4" cy="19.6" r="1.1"/><circle cx="19.6" cy="19.6" r="1.1"/><path d="M6.2 6.2 9.6 9.6M17.8 6.2 14.4 9.6M6.2 17.8 9.6 14.4M17.8 17.8 14.4 14.4"/></symbol>
+        <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01M6 17.5h.01"/></symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></symbol>
+        <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
+        <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+        <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></symbol>
+        <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.9 3.9Z"/></symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="i-flow" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+        <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+        <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+        <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.52.87l12-7.5a1 1 0 0 0 0-1.74l-12-7.5A1 1 0 0 0 7 4.5Z"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></symbol>
+        <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+        <!-- v0.13.31 GitHub 项目页图标：地球（远端）。24 格 stroke 同族，<circle> 是既有先例（i-radar/i-settings）。 -->
+        <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3Z"/></symbol>
+        <!-- v0.13.32 项目页行内图标：收藏（星）。24 格 stroke 同族。 -->
+        <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.2 1.1 6-5.4-2.9-5.4 2.9 1.1-6L3.2 9.4l6.1-.8Z"/></symbol>
+        <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 11v6M9 14h6"/></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></symbol>
+        <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+        <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+        <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+        <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+        <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></symbol>
+        <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
+        <symbol id="i-radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="m12 12 7-7"/></symbol>
+        <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V12h6v10"/></symbol>
+        <symbol id="i-panel-collapse" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
+        <symbol id="i-panel-expand" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m13 9 3 3-3 3"/></symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+        <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+        <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h8l-1 8 10-12h-8Z"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+        <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+        <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><path d="m10.3 3.9-8.1 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.8-3.1l-8.1-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+        <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+    </svg>
+    <div class="header">
+        <h1 class="brand" title="Agent Hub"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h1>
+        <div class="hstats">
+            <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
+            <span id="hAgents">Agents: -</span>
+            <span id="hErrors"></span>
+        </div>
+    </div>
+
+    <div class="shell">
+    <aside class="sidebar" id="sidebar" role="tablist" aria-label="功能导航">
+        <!-- 搜索框置于最顶部（用户 09-20：搜索框应在总览上面）。收起态 .nav-search 是 display:none，
+             所以图标栏里第一项仍是「总览」，两态各自成立。 -->
+        <div class="nav-search">
+            <input id="navSearch" type="search" placeholder="搜索名称 / id / 端口…" aria-label="搜索实体" autocomplete="off">
+            <span id="navSearchCount" class="search-count"></span>
+        </div>
+        <!-- 常驻项（用户 09-20：把「总览」搬进左侧菜单）。用 data-sys 不用 data-page：
+             侧栏事件委托本来就认 data-sys（点击即 go()，窄屏顺带收抽屉），而 data-page 会被刚删掉的
+             遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
+        <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
+                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
+        <!-- v0.13.30 本机项目：用户要求置于 AGENTS 菜单之上。同「总览」的常驻项形态
+             （data-sys 点击即 go()，选中态由 go() 的 side-item[data-sys] 同步行接管），
+             页面四件套：本按钮 + #page-localprojects + PAGE_LABELS + go() 懒加载钩子。 -->
+        <button class="side-item side-top" id="btnNavProjects" data-sys="localprojects" role="tab" aria-selected="false"
+                aria-label="本机项目" title="本机项目 · 自动检索本机全部项目，点项目选 Agent 直接开会话"><svg class="i" aria-hidden="true"><use href="#i-folder"/></svg><span class="lbl">本机项目</span></button>
+        <!-- v0.13.31 GitHub 项目：本机项目的远端半程（总览→本机项目→GitHub 项目→AGENTS）。 -->
+        <button class="side-item side-top" id="btnNavGithub" data-sys="github" role="tab" aria-selected="false"
+                aria-label="GitHub 项目" title="GitHub 项目 · 远端仓库清单，本地没有的即时克隆后开会话"><svg class="i" aria-hidden="true"><use href="#i-globe"/></svg><span class="lbl">GitHub 项目</span></button>
+        <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
+        <div id="navTree"></div>
+        <button class="side-item" id="btnSettings" aria-label="打开设置" data-settings="1" title="设置：终端 token 查看与应用"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span class="lbl">设置</span></button>
+        <button class="side-toggle" id="btnSideToggle" title="收起 / 展开侧栏"><svg class="i xs" aria-hidden="true"><use href="#i-panel-collapse"/></svg><span class="lbl">收起</span></button>
+    </aside>
+    <div id="sideMask" aria-hidden="true"></div>
+
+    <main>
+        <!-- 右侧操作区顶栏：面包屑 + 按 entries 动态渲染的模式 tab -->
+        <div id="opBar">
+            <nav id="crumb" aria-label="位置"></nav>
+            <div id="opTabs"></div>
+        </div>
+        <!-- 首页：说明区（Agent / 基础设施已全部收拢至左侧手风琴） -->
+        <section class="page on" id="page-classroom">
+            <div class="home-wrap">
+                <div class="home-intro">
+                    <div class="home-brand">
+                        <span class="home-mark"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg></span>
+                        <div class="home-brand-txt">
+                            <p class="home-kicker">Multi-Agent Control Plane</p>
+                            <h2 class="brand"><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h2>
+                            <p class="home-sub">本机多 Agent 统一管理中心</p>
+                        </div>
+                    </div>
+                    <p class="home-desc">左侧手风琴收拢全部 <b id="cntAgent">–</b> 个 Agent 与 <b id="cntInfra">–</b> 项基础设施，点选即在右侧打开对应工作台（终端 / 嵌入 / 对话 / 详情按各自能力动态给出）。顶部搜索框支持按名称、ID、端口筛选。</p>
+                    <div class="home-stat" id="homeStat">
+                        <div class="hs"><div class="n" id="hsAgent">–</div><div class="t">Agent</div></div>
+                        <div class="hs" title="可用 = vitals 实测能服的 Agent（装了≠能用：入口壳假卡、账号额度耗尽均不计入）"><div class="n" id="hsRunning">–</div><div class="t">可用</div></div>
+                        <div class="hs"><div class="n" id="hsInfra">–</div><div class="t">基础设施</div></div>
+                        <div class="hs"><div class="n" id="hsError">–</div><div class="t">异常</div></div>
+                    </div>
+                    <div class="home-legend">
+                        <span class="lg"><span class="s-badge running"></span>在线</span>
+                        <span class="lg"><span class="s-badge installed"></span>可启动</span>
+                        <span class="lg"><span class="s-badge stopped"></span>离线</span>
+                        <span class="lg"><span class="s-badge error"></span>异常</span>
+                    </div>
+                    <div class="home-actions">
+                        <button class="btn ghost" onclick="openRegister()"><svg class="i xs" aria-hidden="true"><use href="#i-folder-plus"/></svg>注册自定义 Agent</button>
+                        <button class="btn ghost" onclick="runScan()"><svg class="i xs" aria-hidden="true"><use href="#i-radar"/></svg>自动扫描</button>
+                        <button class="btn ghost" onclick="go('ports')"><svg class="i xs" aria-hidden="true"><use href="#i-share"/></svg>端口占用</button>
+                        <button class="btn ghost" onclick="go('telemetry')"><svg class="i xs" aria-hidden="true"><use href="#i-activity"/></svg>遥测</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 统一对话（Agent 原生会话嵌入 / 终端 / 对话） -->
+        <section class="page" id="page-chat">
+            <div class="chat-grid">
+                <details class="chat-side chips" open>
+                    <summary class="chips-sum only-mob">Agent 列表</summary>
+                    <div id="chatAgents"></div>
+                </details>
+                <div class="chat-main">
+                    <div class="bar" id="chatModeBar" style="display:none;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)"></div>
+                    <!-- 模式1：Web UI 嵌入 —— 外框宽屏一行（标题 + 地址）、窄屏两行（菜单 / 地址），内框直载宿主界面 -->
+                    <div class="pane" id="embedPane">
+                        <!-- 宽屏一行：.ebar-head 用 flex+baseline 把「菜单栏」与「地址栏」并成
+                             标题左 / 地址右；窄屏退回两行（35 + 29），两条口径各按自己的媒体查询。 -->
+                        <div class="ebar-head">
+                        <div class="ebar-menu">
+                            <b id="embedTitle"></b>
+                            <span class="ebar-sp"></span>
+                            <button class="ebar-btn" onclick="embedRefresh()" title="重新加载内嵌界面"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                            <button class="ebar-btn" onclick="embedNewTab()" title="在新标签页打开"><svg class="i xs" aria-hidden="true"><use href="#i-arrow-up-right"/></svg>新窗口</button>
+                            <!-- 09-25：菜单行内动作图标已 display:none、模式 tab 已停用，embed 与 term
+                                 必须在这里互留出口，否则点进哪个就再也切不到另一个（可见性由 applyChatMode 管） -->
+                            <button class="ebar-btn" id="embedToTerm" onclick="switchMode('term')" title="改用原生终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-terminal"/></svg>终端</button>
+                        </div>
+                        <div class="ebar-addr">
+                            <span class="ebar-k">地址</span>
+                            <span class="ebar-addr-v" id="embedUrlHint" title="已全选样式：长按/双击可直接选中，点右侧图标复制"></span>
+                            <button class="ebar-btn ebar-btn-icon" onclick="embedCopyUrl()" title="复制完整地址" aria-label="复制地址"><svg class="i xs" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                                                    </div>
+                        </div>
+                        <iframe id="embedFrame" src="about:blank"></iframe>
+                    </div>
+                    <!-- 模式2：pty 终端 —— 外框与嵌入视图统一（同一个 .ebar-menu）。
+                         行1 = 实体名 + 会话芯片 + 新会话；不再显“终端界面”字样，也不留「销毁当前」大按钮（用户 09-20） -->
+                    <div class="pane" id="termPane">
+                        <div class="ebar-menu"><b id="termTitle"></b>
+                            <span class="sess-row" id="termSessList"></span>
+                            <span class="ebar-sp"></span>
+                            <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
+                            <button class="ebar-btn" id="termToEmbed" onclick="switchMode('embed')" title="改用内嵌的原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-monitor"/></svg>原生界面</button></div>
+                        <div class="term-body"><div id="termEl"></div></div>
+                    </div>
+                    <!-- 模式3：对话框（有 chat 适配器的实体） -->
+                    <div class="pane on" id="chatPane">
+                        <!-- 对话工具栏（参考 pi/qwenpaw：模型 + 工作目录 + 会话 + 工具） -->
+                        <div class="bar" id="chatToolbar" style="gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+                            <b id="chatEntName" class="ent-name" title="当前实体"></b>
+                            <select id="chatModel" style="max-width:220px" title="对话模型（CCR /v1/models 动态）">
+                                <option value="">加载模型中…</option>
+                            </select>
+                            <button class="btn ghost sm" id="chatModelRefresh" title="重新拉取模型列表" onclick="loadChatModels(true)"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                                <svg class="i xs" aria-hidden="true"><use href="#i-folder"/></svg>
+                                <select id="chatCwd" style="max-width:300px" title="工作目录（作为上下文注入所选 Agent）">
+                                    <option value="">加载中…</option>
+                                </select>
+                                <button class="btn ghost sm" title="自定义路径" onclick="chatCwdCustom()"><svg class="i xs" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                            </span>
+                            <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                                <svg class="i xs" aria-hidden="true"><use href="#i-layers"/></svg>
+                                <select id="chatSessList" style="max-width:180px" title="切换/管理会话">
+                                    <option value="">当前会话</option>
+                                </select>
+                                <button class="btn ghost sm" title="新建会话" onclick="chatSessNew()"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                                <button class="btn ghost sm" title="重命名" onclick="chatSessRename()"><svg class="i xs" aria-hidden="true"><use href="#i-pencil"/></svg></button>
+                                <button class="btn ghost sm" title="删除当前会话" onclick="chatSessDel()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
+                                <button class="btn ghost sm" title="刷新列表" onclick="chatSessLoad()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+                                <button class="btn ghost sm" title="导出本 agent 的会话（JSON，默认脱敏）" data-export="sessions"><svg class="i xs" aria-hidden="true"><use href="#i-share"/></svg></button>
+                            </span>
+                        </div>
+                        <div class="msgs" id="chatMsgs"><div class="hint" style="margin:auto">左侧选择一个 Agent</div></div>
+                        <div class="composer">
+                            <input id="chatInput" placeholder="消息…" onkeydown="if(event.key==='Enter')chatSend()">
+                            <button class="btn" onclick="chatSend()">发送</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 本机项目（v0.13.30）：多根 git 扫描 + cloudcli 合并；点项目 → 选 agent → 新建会话直达终端。
+             v0.13.32：去掉面板大标题（面包屑已示页名，标题+下方留白是重复装饰）；
+             收藏/隐藏为行内图标（localStorage 持久，隐藏项须勾选「显示隐藏」才回列表）。 -->
+        <section class="page" id="page-localprojects">
+            <div class="panel">
+                <div class="toolbar">
+                    <input id="lpQ" type="search" placeholder="按名称 / 路径过滤…" aria-label="过滤项目" autocomplete="off">
+                    <button class="btn sm ghost" onclick="loadLocalProjects(true)" title="重新扫描本机项目"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重扫</button>
+                    <label style="display:inline-flex;align-items:center;gap:4px" title="隐藏的项目默认不显示，勾选后全部回列"><input type="checkbox" id="lpHidden" onchange="lpRenderList()">显示隐藏</label>
+                    <span class="hint" id="lpHint"></span>
+                </div>
+                <!-- 选中动作条：先点列表里的一项，再选 agent，点新建会话即跳终端 -->
+                <div class="toolbar" id="lpActionBar">
+                    <span class="hint"><svg class="i xs" aria-hidden="true"><use href="#i-folder"/></svg> 项目</span>
+                    <b id="lpSelName" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px">（点下方列表选择项目）</b>
+                    <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                        <svg class="i xs" aria-hidden="true"><use href="#i-cpu"/></svg>
+                        <select id="lpAgent" title="选择要开会的 Agent"><option value="">（先选项目）</option></select>
+                    </span>
+                    <button class="btn sm" id="lpStartBtn" disabled onclick="lpStart()" title="在该项目目录拉起所选 Agent 的新终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新建会话</button>
+                </div>
+                <div class="tscroll" id="lpList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+                    <div class="hint" style="padding:10px">加载中…</div>
+                </div>
+                <div class="hint" id="lpMeta" style="margin-top:6px"></div>
+            </div>
+        </section>
+
+        <!-- GitHub 项目（v0.13.31）：远端仓库清单 + strict remote 本地匹配；本地无 → 即时克隆后开会话。
+             v0.13.32：同本机项目页——去大标题；收藏/隐藏行内图标 + 顶部「显示隐藏」开关。 -->
+        <section class="page" id="page-github">
+            <div class="panel">
+                <div class="toolbar">
+                    <input id="ghQ" type="search" placeholder="按名称 / 全名过滤…" aria-label="过滤仓库" autocomplete="off">
+                    <label style="display:inline-flex;align-items:center;gap:4px" title="fork 默认隐藏——34 个 fork 多为别人的仓库">
+                        <input type="checkbox" id="ghForks" onchange="ghRenderList()">显示 fork
+                    </label>
+                    <label style="display:inline-flex;align-items:center;gap:4px" title="隐藏的仓库默认不显示，勾选后全部回列"><input type="checkbox" id="ghHidden" onchange="ghRenderList()">显示隐藏</label>
+                    <button class="btn sm ghost" onclick="loadGithubRepos(true)" title="重新拉取远端清单"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                    <span class="hint" id="ghHint"></span>
+                </div>
+                <!-- 选中动作条：点远端仓库 → 选 agent → 新建会话（本地无则先克隆） -->
+                <div class="toolbar" id="ghActionBar">
+                    <span class="hint"><svg class="i xs" aria-hidden="true"><use href="#i-globe"/></svg> 仓库</span>
+                    <b id="ghSelName" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px">（点下方列表选择仓库）</b>
+                    <span style="display:inline-flex;align-items:center;gap:4px;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
+                        <svg class="i xs" aria-hidden="true"><use href="#i-cpu"/></svg>
+                        <select id="ghAgent" title="选择要开会的 Agent"><option value="">（先选仓库）</option></select>
+                    </span>
+                    <button class="btn sm" id="ghStartBtn" disabled onclick="ghStart()" title="本地没有则先克隆到工作目录，再在该目录拉起所选 Agent 的终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新建会话</button>
+                </div>
+                <div class="tscroll" id="ghList" style="max-height:calc(100vh - 320px);overflow-y:auto">
+                    <div class="hint" style="padding:10px">加载中…</div>
+                </div>
+                <div class="hint" id="ghMeta" style="margin-top:6px"></div>
+            </div>
+        </section>
+
+        <!-- 记忆中心 -->
+        <section class="page" id="page-memory">
+            <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
+                 记忆中心页只有 L1 LIKE。按需触发（进页不自动跑：防埋点污染+防无谓联邦开销）。
+                 v0.13.28：源 6→10（补 claude_projects/grok/hermes/workbuddy 四家）。 -->
+            <div class="panel">
+                <h3>联邦检索（本地 L1 + TDAI 权威库 + 8 路外部源，RRF 融合）</h3>
+                <div class="toolbar">
+                    <input id="memFedQ" placeholder="跨全部记忆源检索（如：端口 / 备份 / CCR）…" style="max-width:280px" onkeydown="if(event.key==='Enter')memFedSearch()">
+                    <button class="btn sm" onclick="memFedSearch()">检索</button>
+                    <select id="memFedSrcs" multiple size="8" title="检索源（多选）" style="min-width:150px">
+                        <option value="local" selected>本地 L1</option>
+                        <option value="tdai" selected>TDAI L1</option>
+                        <option value="claude_mem" selected>claude-mem</option>
+                        <option value="claude_projects" selected>claude 原生记忆</option>
+                        <option value="pi_sessions">pi 会话</option>
+                        <option value="codex_sessions">codex 会话</option>
+                        <option value="grok_memory" selected>grok 记忆</option>
+                        <option value="hermes_memory" selected>hermes 记忆</option>
+                        <option value="workbuddy_memory" selected>workbuddy 记忆</option>
+                        <option value="workspace_files" selected>工作区文件</option>
+                        <option value="archived_sessions" selected>归档会话</option>
+                    </select>
+                    <span class="hint" id="memFedHint"></span>
+                </div>
+                <div id="memFedBadges" class="hint" style="margin:4px 0"></div>
+                <!-- v0.13.28 批3：检索态 header 条——「当前检索 q · N 条 · 清空」，搜完可回退主界面 -->
+                <div id="memFedQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
+                <div id="memFedResults" class="mem-list">输入关键词开始联邦检索</div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>L1 · 本地便签（hub 自有 SQLite——非主记忆源）</h3>
+                    <div class="hint" style="margin:4px 0">⚠ 本表只是 hub 的演示/手写便签（当前 4 行陈旧样例）。
+                    <b>主记忆检索走顶部「联邦检索」</b>（TDAI 权威库 315 条 + 6 路外部源，数据新至昨日）。</div>
+                    <div class="toolbar">
+                        <input id="memQ" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadMemories()">
+                        <select id="memCat" onchange="loadMemories()">
+                            <option value="">全部分类</option><option>fact</option><option>decision</option><option>constraint</option><option>preference</option>
+                        </select>
+                    </div>
+                    <div class="mem-list" id="memList"></div>
+                    <div class="row toolbar" style="margin-top:10px">
+                        <input id="memNew" placeholder="新增一条记忆…">
+                        <button class="btn sm" onclick="addMemory()">添加</button>
+                    </div>
+                    <div class="hint">L2 由 L1 经 LLM 压缩生成；manual 手写区自动流程永不触碰（与上游语义一致）</div>
+                </div>
+                <div class="panel">
+                    <h3>L2 · 近 30 天工作记忆</h3>
+                    <textarea class="doc" id="l2content" readonly placeholder="（尚无生成内容）"></textarea>
+                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                    <textarea class="doc" id="l2manual" style="min-height:80px"></textarea>
+                    <div class="toolbar" style="margin-top:8px">
+                        <button class="btn sm" onclick="saveDoc('l2')">保存</button>
+                        <button class="btn ghost sm" onclick="rebuildL2()"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>用 LLM 重建</button>
+                    </div>
+                </div>
+                <div class="panel">
+                    <h3>L3 · 长期 Profile</h3>
+                    <textarea class="doc" id="l3content" placeholder="人工确认后写入的稳定长期偏好（草稿→确认制）"></textarea>
+                    <div class="hint" style="margin:6px 0">手写补充 manual：</div>
+                    <textarea class="doc" id="l3manual" style="min-height:80px"></textarea>
+                    <div class="toolbar" style="margin-top:8px">
+                        <button class="btn sm" onclick="saveDoc('l3')">保存</button>
+                        <button class="btn ghost sm" onclick="previewCtx()">注入预览</button>
+                    </div>
+                </div>
+            </div>
+            <div class="panel" id="ctxPanel" style="display:none"><h3>注入上下文包（/api/memory/context）</h3><pre class="code" id="ctxBody"></pre></div>
+        </section>
+
+        <!-- 协同 DAG -->
+        <section class="page" id="page-tasks">
+            <div class="panel">
+                <h3>Leader 拆解 · DAG 协同执行（SQLite 状态机，重启可恢复）</h3>
+                <div class="row toolbar"><textarea id="taskGoal" class="doc" style="min-height:60px" placeholder="复杂任务目标，例如：分别介绍 A 与 B（并行），再汇总对比"></textarea></div>
+                <div class="toolbar">
+                    <select id="taskAgent"><option value="">自动选择执行 Agent</option></select>
+                    <button class="btn" id="btnDecompose" onclick="decomposeRun()">拆解并启动</button>
+                    <button class="btn ghost" onclick="loadRuns()">刷新列表</button>
+                </div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>Run</th><th>目标</th><th>状态</th><th>进度</th><th>创建</th><th></th></tr></thead>
+                <tbody id="runsBody"></tbody></table>
+            </div>
+            <div class="panel tscroll" id="runPanel" style="display:none">
+                <h3 id="runTitle"></h3>
+                <div id="dagSvg" style="overflow-x:auto"></div>
+                <table><thead><tr><th>任务</th><th>Agent</th><th>依赖</th><th>状态</th><th>耗时</th><th>输出/错误（点击行展开）</th></tr></thead>
+                <tbody id="taskBody"></tbody></table>
+                <div class="toolbar" style="margin-top:10px">
+                    <button class="btn ghost sm" onclick="startRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-play"/></svg>启动/续跑</button>
+                    <button class="btn ghost sm" onclick="retryRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>重试失败项</button>
+                    <button class="btn danger sm" onclick="delRun(currentRun)"><svg class="i xs" aria-hidden="true"><use href="#i-trash"/></svg>删除</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 定时任务 -->
+        <section class="page" id="page-jobs">
+            <div class="panel">
+                <h3>新建定时任务（本地时区 5 段 cron；shell 类走白名单）</h3>
+                <div class="toolbar">
+                    <input id="jobName" placeholder="任务名" style="max-width:160px">
+                    <input id="jobCron" placeholder="*/5 9-18 * * 1-5" style="max-width:160px">
+                    <select id="jobKind" onchange="jobKindChange()"><option value="shell">shell</option><option value="agent_prompt">agent_prompt</option><option value="http">http</option></select>
+                    <select id="jobAgent" style="max-width:140px"></select>
+                </div>
+                <div class="toolbar"><input id="jobPayload" placeholder="命令 / Prompt 文本 / URL" style="flex:1"></div>
+                <div class="toolbar"><span class="hint" id="jobAllow"></span><button class="btn" onclick="createJob()">创建</button></div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>名称</th><th>cron</th><th>类型</th><th>启用</th><th>最近执行</th><th>状态</th><th>结果</th><th></th></tr></thead>
+                <tbody id="jobsBody"></tbody></table>
+            </div>
+        </section>
+
+        <!-- MCP 工具网关 -->
+        <section class="page" id="page-mcp">
+            <div class="panel">
+                <h3>注册 MCP Server（stdio 命令 / http URL；聚合后供全部 Agent 与指挥官调用）</h3>
+                <div class="toolbar">
+                    <input id="mcName" placeholder="名称" style="max-width:140px">
+                    <select id="mcTransport"><option value="stdio">stdio</option><option value="http">http</option></select>
+                    <input id="mcCmd" placeholder="command，如 /home/gztxt/agent-hub/venv/bin/python3">
+                    <input id="mcArgs" placeholder="args（空格分隔）或 http URL" style="flex:1">
+                </div>
+                <div class="toolbar">
+                    <button class="btn ghost sm" onclick="probeServer()">探测工具（不落库）</button>
+                    <button class="btn sm" onclick="addServer()">注册</button>
+                    <button class="btn ghost sm" onclick="loadMcp()">刷新聚合</button>
+                </div>
+                <pre class="code" id="mcProbe" style="display:none"></pre>
+            </div>
+            <div class="panel">
+                <h3>工具调用 ACL（deny 优先、与插入顺序无关；<code>*</code> 通配行对所有 agent 生效；零规则行才默认放行）</h3>
+                <div class="toolbar">
+                    <input id="aclAgent" placeholder="agent_id（manager / jcode / *）" style="max-width:190px">
+                    <input id="aclPattern" placeholder="工具模式，如 read_* 或 *" style="max-width:170px">
+                    <input id="aclServer" placeholder="server 名/id（可空=任意）" style="max-width:190px">
+                    <select id="aclAllow"><option value="1">allow</option><option value="0">deny</option></select>
+                    <button class="btn sm" onclick="addAcl()">新增规则</button>
+                    <button class="btn ghost sm" onclick="loadAcl()">刷新</button>
+                </div>
+                <div id="aclList" class="hint tscroll">加载中…</div>
+            </div>
+            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)">
+                <div class="panel"><h3>Servers</h3><div id="mcServers" class="hint tscroll">加载中…</div></div>
+                <div class="panel"><h3>聚合工具（60s 缓存）</h3><div id="mcTools" class="hint">加载中…</div>
+                    <div class="toolbar" style="margin-top:10px"><input id="mcCallArgs" placeholder='{"text":"hi"}' style="flex:1"><button class="btn sm" onclick="callToolSel()">测试调用选中工具</button></div>
+                    <pre class="code" id="mcCallOut" style="display:none"></pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- 端口 -->
+        <section class="page" id="page-ports">
+            <div class="toolbar">
+                <input id="portFilter" placeholder="过滤端口/进程/地址…" oninput="renderPorts()">
+                <span class="hint">只读——本机进程由 systemd/守护方管理，不提供 kill（与上游桌面版的有意差异）</span>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>协议</th><th>端口</th><th>地址</th><th>PID</th><th>进程</th><th>Agent</th></tr></thead>
+                <tbody id="portsBody"></tbody></table>
+            </div>
+        </section>
+
+        <!-- 遥测 -->
+        <section class="page" id="page-telemetry">
+            <div class="panel">
+                <h3>接入方式（覆盖式账本：同 source+session 重报取末值，不叠加）</h3>
+                <pre class="code" id="curlExample"></pre>
+                <div class="hint">未设置 HOOK_AUTH_TOKEN 时仅接受回环来源写入；对外接入请在 .env 配置 token</div>
+            </div>
+            <div class="mem-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+                <div class="panel"><h3>Token 用量聚合</h3><div id="usageTable" class="hint tscroll">加载中…</div></div>
+                <div class="panel"><h3>最近事件</h3><div id="eventTable" class="hint tscroll">加载中…</div></div>
+            </div>
+            <div class="panel"><h3>Agent 画像（成功率 / 平均耗时 — S2 profile_events）</h3><div id="profTable" class="hint tscroll">加载中…</div></div>
+        </section>
+
+        <!-- v0.13.27：运行日志页——三中心检索留痕的查询面（读 /api/runlog，按写鉴权）。
+             「为后续迭代提供参考」的落点：谁在调三中心、多快、哪路常降级，一页可翻。 -->
+        <section class="page" id="page-runlog">
+            <div class="panel">
+                <h3>运行日志（三中心调用留痕：来源 / 耗时 / 通道 / 降级路 / 查询词）</h3>
+                <div class="toolbar">
+                    <select id="rlSource" style="max-width:130px"><option value="">全部 source</option></select>
+                    <select id="rlSubject" style="max-width:130px"><option value="">全部 subject</option></select>
+                    <select id="rlStatus" style="max-width:110px"><option value="">全部状态</option><option>success</option><option>fail</option></select>
+                    <select id="rlWindow" style="max-width:130px">
+                        <option value="0">全部时间</option>
+                        <option value="24">近 24 小时</option>
+                        <option value="168">近 7 天</option>
+                        <option value="720">近 30 天</option>
+                    </select>
+                    <button class="btn sm" onclick="loadRunlog(true)">筛选</button>
+                    <span class="hint" id="rlHint"></span>
+                </div>
+                <div class="hint" style="margin:6px 0">读取本页需终端口令（与审计导出同口径：运行日志含查询词，按写端点鉴权）。</div>
+            </div>
+            <div class="panel" style="padding:0;overflow-x:auto">
+                <table><thead><tr><th>时间</th><th>source</th><th>subject</th><th>状态</th><th>耗时</th><th>通道</th><th>降级路</th><th>查询词</th></tr></thead>
+                <tbody id="runlogBody"></tbody></table>
+            </div>
+            <div class="toolbar"><span class="hint" id="rlMore"></span>
+                <button class="btn ghost sm" id="rlMoreBtn" onclick="loadRunlogMore()" style="display:none">下一页</button></div>
+        </section>
+
+        <!-- P4 资产面板：三路只读门面（记忆 / 知识 / 技能）。
+             不新建 @media、不新建浮层、不用 inline onclick（交互全走 data-asset 委托）。
+             列宽靠 .mem-grid 自身响应式（≤1100px 自动单列），窄屏不靠这里写死。 -->
+        <!-- v0.13.26 批4：技能中心 + 知识库中心（与记忆中心同级的三大中心） -->
+        <section class="page" id="page-skills">
+            <div class="panel">
+                <h3>技能中心（7 路发现点 · 只读门面 + 软链安装）</h3>
+                <div class="toolbar">
+                    <input id="skillQ" placeholder="按名称/描述过滤…" oninput="renderSkillList()" style="max-width:220px">
+                    <select id="skillRoute" onchange="renderSkillList()"><option value="">全部发现点</option></select>
+                    <button class="btn sm" onclick="loadSkills()">刷新</button>
+                    <span class="hint" id="skillHint"></span>
+                </div>
+                <div id="skillList" class="mem-list">加载中…</div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>安装到其它发现点（软链，不动本体）</h3>
+                    <div class="hint">把一个技能软链到其它 CLI 的发现点（claude/codex/workbuddy 等），
+                    同源唯一副本、不复制文件。同源重复安装是幂等 no-op。</div>
+                    <div class="row toolbar" style="margin-top:8px">
+                        <select id="instName" style="min-width:180px"></select>
+                        <select id="instFrom" title="源发现点"></select>
+                        <span>→</span>
+                        <select id="instTo" multiple size="4" title="目标发现点（可多选）" style="min-width:150px"></select>
+                        <button class="btn sm" onclick="skillInstall()">安装</button>
+                    </div>
+                    <div class="hint tscroll" id="skillBudgetHint"></div>
+                </div>
+                <div class="panel">
+                    <h3>token 预算化清单（注入通道用）</h3>
+                    <div class="toolbar"><input id="skillTok" type="number" value="800" min="50" max="8000" style="max-width:90px" onchange="loadSkillBudget()">
+                    <span class="hint">max_tokens</span></div>
+                    <div id="skillBudget" class="hint tscroll">加载中…</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page" id="page-kb">
+            <div class="panel">
+                <h3>知识库中心（5 路联邦检索：tdai/turbovec/workspace/archived/local）</h3>
+                <div class="toolbar">
+                    <input id="kbQ" placeholder="检索知识库（如：CCR / 备份 / 端口）…" style="max-width:280px" onkeydown="if(event.key==='Enter')kbSearch()">
+                    <button class="btn sm" onclick="kbSearch()">检索</button>
+                    <select id="kbRoutes" multiple size="5" title="检索路（多选）" style="min-width:130px">
+                        <option value="tdai" selected>TDAI L1</option>
+                        <option value="turbovec" selected>语义索引</option>
+                        <option value="workspace" selected>工作区全文</option>
+                        <option value="archived" selected>归档会话</option>
+                        <option value="local" selected>本地便签</option>
+                    </select>
+                    <span class="hint" id="kbHint"></span>
+                </div>
+                <div id="kbBadges" class="hint" style="margin:4px 0"></div>
+                <!-- v0.13.28 批3：检索态 header 条（与记忆页同构，搜完可回退） -->
+                <div id="kbQueryBar" class="toolbar" style="display:none;margin:2px 0"></div>
+                <div id="kbResults" class="mem-list">输入关键词开始检索</div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel">
+                    <h3>各路健康</h3>
+                    <div id="kbStatus" class="hint tscroll">加载中…</div>
+                    <button class="btn ghost sm" style="margin-top:8px" onclick="loadKbStatus()">刷新</button>
+                </div>
+                <div class="panel">
+                    <h3>文档树（工作区文件 · 点目录下钻一层）</h3>
+                    <div id="kbCrumb" class="toolbar" style="margin-bottom:6px"></div>
+                    <div id="kbBrowse" class="hint tscroll">加载中…</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page" id="page-assets">
+            <div class="panel">
+                <h3>资产门面（记忆 / 知识 / 技能 —— hub 只做门面，不建第二权威副本）</h3>
+                <div id="assetStatus" class="hint">未加载</div>
+                <div class="toolbar">
+                    <input id="assetQ" placeholder="一次问三路门面（如：端口 / 备份 / 技能）" style="max-width:340px">
+                    <button class="btn sm" data-asset="search">检索</button>
+                    <button class="btn sm" data-asset="refresh">重检健康</button>
+                    <span class="hint" id="assetHint"></span>
+                </div>
+            </div>
+            <div class="mem-grid">
+                <div class="panel"><h3>记忆（本地 + TDAI RRF）</h3><div id="assetMemory" class="hint tscroll">未检索</div></div>
+                <div class="panel"><h3>技术文档（turbovec 语义）</h3><div id="assetKb" class="hint tscroll">未检索</div></div>
+                <div class="panel"><h3>技能（磁盘四路）</h3><div id="assetSkill" class="hint tscroll">未检索</div></div>
+            </div>
+            <div class="panel"><h3>四态语义</h3><div class="hint">
+                <b>有结果</b> / <b>确实零命中</b>（后端全绿且 count=0）/
+                <b>部分后端不可用</b>（某一路挂了，清单不完整 —— 不代表没资产）/
+                <b>端点不可用</b>（端口 404，通常是代码比进程新、未重启）。
+                把后两种渲染成「没东西」，就是本机最禁的「静默不可用」在前端层的形态。
+            </div></div>
+        </section>
+    </main>
+    </div>
+
+    <!-- 注册弹窗 -->
+    <div class="modal-mask" id="regMask">
+        <div class="modal">
+            <h3>注册自定义 Agent（自动识别项目类型）</h3>
+            <div class="row"><input id="regDir" placeholder="项目目录绝对路径，如 /home/gztxt/my-agent"><button class="btn ghost sm" onclick="detectDir()">识别</button></div>
+            <pre class="code" id="regDetect" style="display:none"></pre>
+            <div class="row"><input id="regName" placeholder="名称（可空，默认取目录名）"></div>
+            <div class="toolbar" style="justify-content:flex-end">
+                <button class="btn ghost" onclick="closeRegister()">取消</button>
+                <button class="btn" onclick="registerAgent()">注册</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 技能正文抽屉（v0.13.27：技能中心「查看」→ /api/skill/read 全文，409 多路选路） -->
+    <aside id="skillDocDrawer" role="dialog" aria-label="技能正文">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b id="skillDocTitle" style="font-size:var(--fs-lg)"></b>
+            <button class="btn ghost sm" aria-label="关闭技能正文" onclick="closeSkillDoc()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <pre class="code" id="skillDocBody" style="white-space:pre-wrap;word-break:break-word">未加载</pre>
+    </aside>
+
+    <!-- 实体详情抽屉 -->
+    <aside id="detailDrawer" role="dialog" aria-label="实体详情">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b id="detailTitle" style="font-size:var(--fs-lg)"></b>
+            <button class="btn ghost sm" aria-label="关闭详情" onclick="closeDetail()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <div id="detailBody" class="hint"></div>
+    </aside>
+
+    <!-- 设置抽屉 -->
+    <aside id="settingsDrawer" role="dialog" aria-label="设置">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <b style="font-size:var(--fs-lg);display:inline-flex;align-items:center;gap:6px"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg>设置</b>
+            <button class="btn ghost sm" aria-label="关闭设置" onclick="closeSettings()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+            <button class="btn sm" id="btnViewToken" onclick="settingsViewToken()">查看终端 TERM_TOKEN</button>
+            <button class="btn ghost sm" onclick="settingsClearPasscode()">清除本机口令</button>
+        </div>
+        <div id="settingsTokenBox" style="display:none">
+            <div class="token-box" id="settingsTokenVal"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn sm" onclick="settingsCopyToken()">复制</button>
+                <button class="btn sm" onclick="settingsApplyToken()">应用到终端（本浏览器不再弹框）</button>
+                <button class="btn ghost sm" id="settingsToggleShow" onclick="settingsToggleShow()">隐藏</button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 命令面板（⌘K / Ctrl+K） -->
+    <div class="modal-mask" id="cmdMask" onclick="if(event.target===this)closeCmd()">
+        <div class="modal" style="padding:12px">
+            <input id="cmdInput" placeholder="搜索实体直达工作台" style="width:100%" autocomplete="off" aria-label="命令面板搜索">
+            <div id="cmdList" style="margin-top:8px;max-height:50vh;overflow-y:auto"></div>
+        </div>
+    </div>
+
+    <div class="footer">Agent Hub v{{ version }}<span class="foot-long"> · 融合 Agent_Manager (Apache-2.0) 设计理念</span> · <span id="ftTime"></span></div>
+    <div id="toast"></div>
+    <!-- ── 端侧自检面板（仅 `?diag=1` 时可见）─────────────────────────────
+       2026-09-23 事故：同一地址在浏览器正常、在 pi-web 自研 APP 里异常，而本机对手机
+       零探针能力 ⇒ 任何“服务端全绿”都无法判端侧到底卡在哪个环节。本面板只读不写：
+       ① 捕获**资源加载失败**（hub.js / xterm 404、被代理换成 HTML 等）；
+       ② 捕获 JS 异常与 Promise 拒绍；
+       ③ 把“脚本跑到第几步”摊成可复制文本（go 是否存在 / initSidebar 是否跑过 /
+         navTree 子项数 / 当前哪个 section.page 在显示 / 档位与视口 / localStorage 键）。
+       不发任何网络请求、不写 localStorage、不改样式层（z 顶但只占 60vh）。 -->
+    <script>
+    (function () {
+      var L = [], T0 = Date.now();
+      window.addEventListener('error', function (e) {
+        var t = e && e.target;
+        if (t && (t.src || t.href)) { L.push('资源加载失败: ' + (t.src || t.href)); return; }
+        // 必须留 filename:lineno —— 只记 message 会丢掉「抛在哪一行」这个能定罪的量
+        var f = String((e && e.filename) || '?').split('/').pop().split('?')[0];
+        L.push('JS异常 @ ' + f + ':' + (e && e.lineno) + ':' + (e && e.colno) + ' → '
+          + String((e && (e.message || e.type)) || '?').slice(0, 150));
+        var st = (e && e.error && e.error.stack) ? String(e.error.stack).split('\n')[1] : '';
+        if (st) L.push('栈顶: ' + st.trim().slice(0, 150));
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        L.push('Promise拒绍: ' + String(e && e.reason).slice(0, 100));
+      });
+      window.__DIAG_LOG__ = L;
+      function probe() {
+        var nt = document.getElementById('navTree'), sb = document.getElementById('sidebar');
+        var pages = [].slice.call(document.querySelectorAll('section.page.on')).map(function (s) { return s.id; });
+        var tag = document.querySelector('script[src*="hub.js"]');
+        var vis = 0, btns = sb ? sb.querySelectorAll('button') : [];
+        for (var i = 0; i < btns.length; i++) { var b = btns[i].getBoundingClientRect(); if (b.width > 4 && b.height > 4) vis++; }
+        return 'origin=' + location.origin + '\n'
+          + 'UA=' + String(navigator.userAgent).slice(0, 72) + '\n'
+          + '视口=' + innerWidth + 'x' + innerHeight + '\n'
+          + '窄屏档=' + matchMedia('(max-width:767px)').matches + '\n'
+          + 'hub.js标签=' + (tag ? tag.getAttribute('src') : '★无此标签') + '\n'
+          + 'go函数=' + (typeof go) + '\n'
+          + 'initSidebar跑过(遮罩出口)=' + (typeof window.syncOverlayMask) + '\n'
+          + 'navTree子项=' + (nt ? nt.children.length : '无navTree') + '\n'
+          + '侧栏可见按钮=' + vis + '\n'
+          + '侧栏collapsed=' + (sb ? sb.classList.contains('collapsed') : '?') + '\n'
+          + '在显示的页=' + (pages.join(',') || '★无（正文整块空白）') + '\n'
+          + 'localStorage键=' + (function () {
+              // 存储被禁时 `localStorage` 本身会抛 —— 不兜住的话整块 probe() 直接死，
+              // 下面那行“异常计数”就永远打印不出来（恰好在最需要它的环境里）
+              try { return Object.keys(localStorage).join('|') || '(空)'; }
+              catch (e) { return '★读不到:' + String(e && (e.name || e) || '').slice(0, 60); }
+            })() + '\n'
+          + 'localStorage异常=' + (function () {
+              try {
+                var g = window.__lsDiag;
+                if (!g) return '守卫未加载(hub.js未执行)';
+                return (g.fails || 0) + ' 成功读写=' + (g.ok || 0)
+                  + (g.fails ? ' 最后错误=' + String(g.lastErr || '?').slice(0, 80) : '');
+              } catch (e) { return '取不到:' + e; }
+            })() + '\n'
+          + '就绪=' + document.readyState + ' 已运行=' + (Date.now() - T0) + 'ms\n'
+          // 端侧真实拿到的字节：Resource Timing 由浏览器自己填，伪造不了
+          + '脚本实况=' + (function () {
+              var out = [];
+              try {
+                [].slice.call(performance.getEntriesByType('resource')).forEach(function (r) {
+                  if (!/hub\.js|xterm\.js|fit\.js/.test(r.name)) return;
+                  out.push(r.name.split('/').pop().split('?')[0]
+                    + ' enc=' + r.encodedBodySize + ' xfer=' + r.transferSize
+                    + ' dec=' + r.decodedBodySize
+                    + (r.responseStatus !== undefined ? ' code=' + r.responseStatus : '')
+                    + ' ms=' + Math.round(r.duration));
+                });
+              } catch (err) { out.push('取不到:' + err); }
+              return out.join(' | ') || '(无资源计时)';
+            })() + '\n'
+          // 顶层 function 会整体提升，所以「某函数缺失」只有一种解释：响应体在它的声明处被截断
+          + '符号阶梯=' + ['openOverlay', 'go', 'loadAgents', 'navItemHtml', 'histHtml',
+                          'navRow', 'renderNav', 'initSidebar', 'syncOverlayMask',
+                          'setBadge', 'tick']   // 声明行号 102/110/161/1742/1803/1859/1862/1987/~2016/2070/2147
+              .map(function (k) { return k + ':' + (typeof window[k] === 'function' ? 1 : 0); }).join(' ') + '\n'
+          + (L.length ? '异常清单(前8):\n' + L.slice(0, 8).join('\n') : '异常清单: 无');
+      }
+      window.__DIAG_TEXT__ = probe;
+      if (location.search.indexOf('diag') < 0) return;
+      var d = document.createElement('div');
+      d.id = 'diagBox';
+      d.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483000;max-width:96vw;max-height:56vh;'
+        + 'overflow:auto;background:#000;color:#0f0;font:12px/1.5 monospace;padding:8px;'
+        + 'border:2px solid #f00;white-space:pre-wrap';
+      var btn = document.createElement('button');
+      btn.textContent = '复制全部（粘给 AI 即可定位）';
+      btn.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:2147483000;font:13px monospace;padding:8px 12px';
+      btn.onclick = function () {
+        var t = probe();
+        var done = function (m) { btn.textContent = m; };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(function () { done('已复制✅ 去粘贴'); },
+                                                  function () { done('剪贴板被拒：请长按面板文字手工选复制'); });
+          } else { done('本环境无剪贴板 API：长按面板文字手工复制'); }
+        } catch (e) { done('复制异常：' + e.message); }
+      };
+      function render() { d.textContent = probe(); }
+      document.body.appendChild(d); document.body.appendChild(btn);
+      render(); setInterval(render, 1000);
+    })();
+    </script>
+    <script src="/static/vendor/xterm.js?v=046fc128"></script>
+    <script src="/static/vendor/fit.js?v=26a74b2a"></script>
+    <script src="/static/hub.js?v=eefaf3ff"></script>
+</body>
+</html>
