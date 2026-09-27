@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## v0.13.41 — 设置新增「模型」子菜单：选 agent → 选 CCR 模型 → 预览 → 口令落笔
+
+> 施工会话：551f6b59。基线：v0.13.39。改动文件：新增 `src/modelcfg.py`、
+> `tests/test_modelcfg.py`（25 例，L0 hermetic）、`work/probe/e2e_settings_model_menu.py`
+> （真渲染取证）；改 `src/main.py`（挂路由 + VERSION）、`src/term.py`（会话拉起注入
+> `--model`）、`src/writeauth.py`（写闸豁免登记）、`templates/index.html`
+> （设置抽屉加子菜单 + CSS）、`static/hub/01-core-boot.js`（模型子页逻辑）、
+> `static/hub/06-manager-tasks.js`（委托挂在启动尾）、`static/hub.js`（重建）。
+>
+> - **用户诉求**：「设置菜单还是空的，加个模型子菜单 —— 先选 agent，再选 CCR 的模型，
+>   把所有 agent 的模型设置统一在设置里」。
+> - **三条口径（用户 09-27 裁定）**：① **双写**——Hub 侧存 per-agent 模型（拉起终端时
+>   按白名单注入 `--model`）+ 同时写该 agent 自己的配置文件；② **CCR 网关 Router
+>   五场景只读展示、不写**（三方互斥军规保护面，且 ccr 运行中写 config.json 会被运行态
+>   覆盖）；③ 写前预览 + 口令（HUB_PASSCODE）+ 时间戳备份三件套。
+> - **落点（本机实测，非推断）**：claude `~/.claude/settings.json`（model +
+>   env.ANTHROPIC_MODEL / CCR_CLAUDE_CODE_MODEL / CODEXL_CLAUDE_CODE_MODEL）、
+>   jcode `[provider].default_model`、codex CCR 托管块 `model`、pi `defaultModel`
+>   +`defaultProvider`（模型不在清单则补进 `models.json`）、grok `[model.ccr-hub]`
+>   命名块 + `[models].default`、hermes `model.default/provider`。
+>   codebuddy / qwenpaw **不可设置**（前者 `--model` 只认自有清单 hy4-preview 等，
+>   与 CCR 的 provider/model ID 不通用；后者纯 Web 型）⇒ 设置页里置灰并给理由。
+> - **为什么不做通用文件编辑器**：各家字段形状不同，通用写手必然退化成整文件重写
+>   —— 09-07 pi 改 CCR 配置把同文件其它 profile 一起改坏就是那类事故面。这里是
+>   **逐家白名单 + 定点行编辑**：jcode 的 `providers.deepseek-openai.default_model`、
+>   codex 的 `approval_policy` 等无关键实测零改动。
+> - **凭据不硬编码**：grok 新块的 `api_key` 复用文件里已指向 CCR 的那把，回落才读
+>   CCR `config.json` 的 `APIKEY`；pi 新建 provider 同理。
+> - **验证**：L0 676 + L1 44 全绿、prepush 六闸全绿；探针实例（假 HOME + 真 HTTP）
+>   五家 agent 逐个落笔成功且各留一份备份；真渲染探针（1440 / 390 两档）断言浮层唯一、
+>   默认落在「模型」页、选 agent 出 17 个模型、预览出 4 行 diff、遮罩/关闭按钮关得掉。
+
 ## v0.13.39 — 修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」（子进程 PATH 前置 nvm node bin）
 
 > 施工会话：688b689d。基线：v0.13.38。改动文件：`src/term.py`（新增纯函数

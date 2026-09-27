@@ -421,6 +421,7 @@ async function verifyAgent(id) {
 /* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
   openOverlay('settingsDrawer');
+  settingsTab('model');   // 默认落在「模型」子页（不读存档：同一入口每次给同一结果）
 }
 function closeSettings() { closeOverlay('settingsDrawer'); }
 function settingsPasscode() { return lsGet('hub.passcode') || ''; }
@@ -477,6 +478,195 @@ function settingsClearPasscode() {
   $('settingsTokenBox').style.display = 'none';
   toast('已清除本机缓存口令，下次查看需重新输入', 'ok');
 }
+
+/* ── 设置 → 模型子菜单（v0.13.41）──────────────────────────────────────
+   交互两步：先选 agent，再选该 agent 要用的 CCR 模型；保存前给 diff 预览，
+   保存时要口令（HUB_PASSCODE，与「终端口令」子页共用一个本机缓存的口令）。
+   三条纪律：
+     ① **不新增浮层**：两个子页只是 settingsDrawer 内两个 section 的显示切换
+        （09-23 事故正身＝两个浮层叠加把正文压住）；
+     ② **不用 inline onclick**：一切走 #settingsDrawer 上的单一委托
+        （inline 会旁路委托，把"导航即清浮层"那类收场逻辑整段跳过）；
+     ③ **档位判定读当前值、不读存档**：子页选择不写 localStorage，刷新回落到
+        「模型」页是**常量**而非记忆（跨 origin 分叉那条不变量的同款要求）。 */
+let SET_AGENTS = [];          // /api/settings/models 的 agents 段
+let SET_AGENT = '';           // 当前选中的 agent（不落盘）
+let SET_MODELS = null;        // /api/models 缓存（60s）
+let SET_DIFF = null;          // 最近一次预览结果（保存时复用同一个 model 值）
+
+function settingsTab(name) {
+  ['model', 'token'].forEach(n => {
+    const tab = document.querySelector('.set-tab[data-settings-tab="' + n + '"]');
+    const panel = $('setPanel' + (n === 'model' ? 'Model' : 'Token'));
+    const on = (n === name);
+    if (tab) { tab.classList.toggle('on', on); tab.setAttribute('aria-selected', on ? 'true' : 'false'); }
+    if (panel) panel.style.display = on ? '' : 'none';
+  });
+  if (name === 'model') settingsModelsLoad();
+}
+
+async function settingsModelsLoad(force) {
+  const box = $('setAgentList');
+  if (!box) return;
+  if (!SET_AGENTS.length || force) {
+    try {
+      const d = await api('/api/settings/models');
+      SET_AGENTS = d.agents || [];
+      settingsRouterRender(d.ccr || {});
+    } catch (e) {
+      box.innerHTML = '<span class="hint">agent 清单加载失败：' + escapeHtml(e.message) + '</span>';
+      return;
+    }
+  }
+  box.innerHTML = SET_AGENTS.map(a => {
+    const off = !a.writable;
+    const why = a.reason || a.note || '不可设置';
+    const tip = off ? why : ((a.name || a.id) + ' · 当前 ' + (a.current || '未读到') +
+      (a.provider ? ' · provider ' + a.provider : '') + (a.files || []).join(' / '));
+    return '<button class="btn sm' + (a.id === SET_AGENT ? ' on' : '') + '" type="button"' +
+      ' data-settings-agent="' + escapeHtml(a.id) + '"' +
+      (off ? ' aria-disabled="true"' : '') +
+      ' title="' + escapeHtml(tip) + '">' + escapeHtml(a.name || a.id) + '</button>';
+  }).join('') || '<span class="hint">无可用 agent</span>';
+}
+
+function settingsRouterRender(ccr) {
+  const box = $('setCcrRouter');
+  if (!box) return;
+  const r = ccr.router || {};
+  const keys = Object.keys(r);
+  if (!keys.length) { box.textContent = ccr.note || '未读到 CCR 配置'; return; }
+  box.innerHTML = '<div class="set-router">' + keys.map(k =>
+    '<span class="k">' + escapeHtml(k) + '</span><span class="v">' + escapeHtml(r[k]) + '</span>').join('') +
+    '</div><div class="hint" style="margin-top:6px">只读：CCR 属三方互斥保护面，且运行中写 config.json 会被运行态覆盖。</div>';
+}
+
+function settingsPickAgent(id) {
+  const a = SET_AGENTS.find(x => x.id === id);
+  if (!a || !a.writable) return;
+  SET_AGENT = id;
+  SET_DIFF = null;
+  settingsModelsLoad();                       // 重渲染选中态
+  $('setModelStep').style.display = 'block';
+  $('setDiffBox').style.display = 'none';
+  $('setApplyBtn').disabled = true;
+  $('setAgentMeta').textContent = '当前：' + (a.current || '未读到') +
+    '｜hub 侧：' + (a.hub_model || '未设置') + '｜配置文件：' + (a.files || []).join(' / ');
+  settingsModelOptions(a);
+}
+
+async function settingsModelOptions(a) {
+  const sel = $('setModelSel');
+  if (!sel) return;
+  const fresh = !SET_MODELS || (Date.now() - (SET_MODELS._ts || 0) > 60000);
+  if (fresh) {
+    sel.innerHTML = '<option value="">模型清单加载中…</option>';
+    try {
+      const d = await api('/api/models');
+      SET_MODELS = { models: d.models || [], groups: d.groups || {}, _ts: Date.now() };
+    } catch (e) {
+      sel.innerHTML = '<option value="">模型清单加载失败</option>';
+      return;
+    }
+  }
+  // 未设 hub 侧时以 agent 现值预选；两项都没有则「默认（网关路由）」= 空值
+  const cur = a.hub_model || a.current || '';
+  const g = SET_MODELS.groups || {};
+  let html = '<option value="">默认（网关路由）</option>';
+  Object.keys(g).forEach(gk => {
+    html += '<optgroup label="' + escapeHtml(gk) + '">' + g[gk].map(mid => {
+      const m = (SET_MODELS.models || []).find(x => x.id === mid);
+      const label = (m && m.name && m.name !== mid) ? (mid + ' — ' + m.name) : mid;
+      return '<option value="' + escapeHtml(mid) + '"' + (mid === cur ? ' selected' : '') + '>' +
+        escapeHtml(label) + '</option>';
+    }).join('') + '</optgroup>';
+  });
+  const grouped = new Set(Object.keys(g).flatMap(k => g[k]));
+  const rest = (SET_MODELS.models || []).filter(m => !grouped.has(m.id));
+  if (rest.length) {
+    html += '<optgroup label="其他">' + rest.map(m =>
+      '<option value="' + escapeHtml(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' +
+      escapeHtml(m.name || m.id) + '</option>').join('') + '</optgroup>';
+  }
+  sel.innerHTML = html;
+}
+
+function setSelectedModel() { return $('setModelSel') ? $('setModelSel').value : ''; }
+
+async function settingsPreviewModel() {
+  if (!SET_AGENT) return toast('先选一个 agent', 'err');
+  const model = setSelectedModel();
+  if (!model) return toast('先选一个模型', 'err');
+  const box = $('setDiffBox');
+  try {
+    SET_DIFF = await api('/api/settings/model/preview?agent_id=' + encodeURIComponent(SET_AGENT) +
+      '&model=' + encodeURIComponent(model));
+  } catch (e) {
+    SET_DIFF = null; box.style.display = 'none'; $('setApplyBtn').disabled = true;
+    return toast('预览失败：' + e.message, 'err');
+  }
+  const files = SET_DIFF.files || [];
+  box.innerHTML = '<div class="set-diff">' +
+    '<div class="set-diff-hd">将写入 ' + files.length + ' 个文件（保存时自动时间戳备份）</div>' +
+    files.map(f => '<div class="set-diff-row"><div class="k">' + escapeHtml(f.file) + '</div>' +
+      (f.changes || []).map(c => '<div class="v">' + escapeHtml(c.where) + '：' +
+        escapeHtml(c.from || '（空）') + ' → ' + escapeHtml(c.to) + '</div>').join('') + '</div>').join('') +
+    '</div>' + (SET_DIFF.argv && SET_DIFF.argv.length
+      ? '<div class="hint" style="margin-top:6px">hub 拉起终端时追加：' + escapeHtml(SET_DIFF.argv.join(' ')) + '</div>'
+      : '');
+  box.style.display = 'block';
+  $('setApplyBtn').disabled = false;
+}
+
+async function settingsApplyModel() {
+  if (!SET_AGENT || !SET_DIFF) return toast('先预览再保存', 'err');
+  let pc = settingsPasscode();
+  if (!pc) {
+    pc = prompt('保存模型设置需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
+    if (!pc) return;
+  }
+  try {
+    const d = await api('/api/settings/model/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: SET_AGENT, model: SET_DIFF.model, passcode: pc })
+    });
+    lsSet('hub.passcode', pc);                // 通过了才缓存（与口令页同口径）
+    toast(SET_AGENT + ' 模型已设为 ' + SET_DIFF.model + '（备份 ' + (d.applied || []).length + ' 份）', 'ok');
+    SET_AGENTS = [];
+    SET_DIFF = null;
+    $('setDiffBox').style.display = 'none';
+    $('setApplyBtn').disabled = true;
+    settingsModelsLoad(true);
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+
+/* 设置抽屉内的**唯一**委托出口：子页切换 / 选 agent / 预览 / 保存 */
+function settingsDelegates() {
+  const drawer = $('settingsDrawer');
+  if (!drawer) return;
+  drawer.addEventListener('click', e => {
+    const tab = e.target.closest('[data-settings-tab]');
+    if (tab) return settingsTab(tab.dataset.settingsTab);
+    const ag = e.target.closest('[data-settings-agent]');
+    if (ag) {
+      if (ag.getAttribute('aria-disabled') === 'true') {
+        return toast(ag.getAttribute('title') || '该 agent 不支持统一设置模型', 'err');
+      }
+      return settingsPickAgent(ag.dataset.settingsAgent);
+    }
+    const act = e.target.closest('[data-settings-act]');
+    if (act && act.dataset.settingsAct === 'preview') return settingsPreviewModel();
+    if (act && act.dataset.settingsAct === 'apply') return settingsApplyModel();
+  });
+}
+/* 注意：settingsDelegates() 的**调用**放在启动尾（06 分片），不在这里立即执行 ——
+   它会经 api() 一路读到 04 分片声明的 `let term`，而 TDZ 闸门（tests/test_tdz_order.py）
+   判的是"调用点早于声明点"：在 01 分片里直接调用必然踩线。注册动作本身没有时序要求
+   （只是挂监听），放在启动尾零成本。 */
 async function delAgent(id) {
   if (!confirm('删除自定义 Agent: ' + id + '？（仅注销视图，不停止其自身服务）')) return;
   try { await api('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已删除', 'ok'); loadAgents(); }
@@ -2817,6 +3007,9 @@ setInterval(() => {
       && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
+/* v0.13.41：设置抽屉的委托在这里挂（函数定义在 01 分片，调用点必须晚于 04 分片的
+   `let term` —— 见 01 里 settingsDelegates 上方的注释：TDZ 闸门判的是调用点顺序）。 */
+settingsDelegates();
 go(lsGet('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）
 /* ══════════════════ P4 资产面板（只读门面聚合）══════════════════
    契约源：src/memory.py（/api/memory/*）、src/kb.py（/api/kb/*）、src/skill.py（/api/skill/*）。

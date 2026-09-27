@@ -452,6 +452,28 @@
         #detailDrawer, #settingsDrawer, #skillDocDrawer { position: fixed; top: 0; right: -440px; width: min(400px, 92vw); height: 100vh; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px var(--shadow-lg); transition: right .2s; z-index: 60; padding: 18px; overflow-y: auto; }
         #detailDrawer.on, #settingsDrawer.on, #skillDocDrawer.on { right: 0; }
         .token-box { font-family: var(--font-mono); font-size: var(--fs-sm); word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
+        /* ── 设置抽屉子菜单与模型面板（v0.13.41）─────────────────────────────
+           四条约束（与 v0.13.40 系统页骨架同源）：
+             ① 不新增 @media：抽屉宽度由既有 min(400px,92vw) 决定，窄屏靠 flex-wrap 自塌；
+             ② 不新增色 token：只引用 --text-2/--muted/--border/--divider/--surface-2；
+             ③ 不新增浮层：两个子页只是两个 section 的显示切换；
+             ④ 高度由内容决定，写死高度必然在某个视口上把面板挤成 0（09-27 记忆页同款代价）。 */
+        .set-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider); margin-bottom: 8px; }
+        .set-tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+                   padding: 7px 10px; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
+        .set-tab.on { color: var(--text-1); font-weight: 600; border-bottom-color: var(--text-2); }
+        .set-sub { font-size: var(--fs-sm); font-weight: 600; color: var(--text-2); margin: 12px 0 6px; }
+        .set-agents { display: flex; flex-wrap: wrap; gap: 6px; }
+        .set-agents .btn.on { font-weight: 600; }
+        .set-agents .btn[aria-disabled="true"] { opacity: .5; }
+        .set-diff { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .set-diff-hd { background: var(--surface-2); padding: 6px 10px; font-size: var(--fs-sm); color: var(--text-2); }
+        .set-diff-row { padding: 6px 10px; border-top: 1px solid var(--divider); font-size: var(--fs-sm); }
+        .set-diff-row .k { color: var(--muted); }
+        .set-diff-row .v { font-family: var(--font-mono); word-break: break-all; }
+        .set-router { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: var(--fs-sm); }
+        .set-router .k { color: var(--muted); }
+        .set-router .v { font-family: var(--font-mono); word-break: break-all; color: var(--text-2); }
 
         /* ── 命令面板（⌘K）── */
         .cmd-item { padding: 10px 12px; border-radius: 8px; font-size: var(--fs-base); cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -1263,25 +1285,58 @@
         <div id="detailBody" class="hint"></div>
     </aside>
 
-    <!-- 设置抽屉 -->
+    <!-- 设置抽屉（v0.13.41：子菜单 = 模型 / 终端口令）
+         两个子页共用**同一个**浮层（settingsDrawer）——切片只切 section，不再开第二个抽屉：
+         09-23 事故的正身就是"两个浮层叠加 ⇒ 手机上后开的把先开的连同正文一起压住"。
+         子页切换与面板内按钮一律走 data-* 委托（见 01-core-boot.js 的 settingsDelegates），
+         不再加 inline onclick（inline 会旁路委托，"导航即清浮层"那类收场逻辑会被整段跳过）。 -->
     <aside id="settingsDrawer" role="dialog" aria-label="设置">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <b style="font-size:var(--fs-lg);display:inline-flex;align-items:center;gap:6px"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg>设置</b>
             <button class="btn ghost sm" aria-label="关闭设置" onclick="closeSettings()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
-        <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-            <button class="btn sm" id="btnViewToken" onclick="settingsViewToken()">查看终端 TERM_TOKEN</button>
-            <button class="btn ghost sm" onclick="settingsClearPasscode()">清除本机口令</button>
+        <div class="set-tabs" id="settingsTabs" role="tablist" aria-label="设置子菜单">
+            <button class="set-tab on" type="button" role="tab" aria-selected="true" data-settings-tab="model">模型</button>
+            <button class="set-tab" type="button" role="tab" aria-selected="false" data-settings-tab="token">终端口令</button>
         </div>
-        <div id="settingsTokenBox" style="display:none">
-            <div class="token-box" id="settingsTokenVal"></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button class="btn sm" onclick="settingsCopyToken()">复制</button>
-                <button class="btn sm" onclick="settingsApplyToken()">应用到终端（本浏览器不再弹框）</button>
-                <button class="btn ghost sm" id="settingsToggleShow" onclick="settingsToggleShow()">隐藏</button>
+
+        <!-- ① 模型：先选 agent → 再选 CCR 模型 → 预览 → 口令保存 -->
+        <section id="setPanelModel" role="tabpanel" aria-label="模型设置">
+            <div class="hint" style="margin:8px 0 10px">选 agent → 选 CCR 模型。保存同时写入
+                <b>该 agent 自己的配置文件</b>（落笔前自动时间戳备份）与 <b>hub 侧</b>
+                （拉起终端时按白名单注入 <code>--model</code>）。</div>
+            <div class="set-sub">1 · 选择 agent</div>
+            <div id="setAgentList" class="set-agents"><span class="hint">加载中…</span></div>
+            <div id="setModelStep" style="display:none">
+                <div class="set-sub">2 · 选择模型（CCR :3456 清单）</div>
+                <div id="setAgentMeta" class="hint" style="margin-bottom:6px"></div>
+                <select id="setModelSel" aria-label="CCR 模型" style="width:100%"></select>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                    <button class="btn sm" type="button" data-settings-act="preview">预览变更</button>
+                    <button class="btn sm" type="button" id="setApplyBtn" data-settings-act="apply" disabled>保存（需口令）</button>
+                </div>
+                <div id="setDiffBox" style="display:none"></div>
             </div>
-        </div>
+            <div class="set-sub">CCR 网关 Router（只读，不写）</div>
+            <div id="setCcrRouter" class="hint"></div>
+        </section>
+
+        <!-- ② 终端口令 -->
+        <section id="setPanelToken" role="tabpanel" aria-label="终端口令" style="display:none">
+            <div class="hint" style="margin-bottom:12px">查看敏感配置需先输入设置口令（HUB_PASSCODE，向 hub 索要）。口令只存在本浏览器。</div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+                <button class="btn sm" id="btnViewToken" onclick="settingsViewToken()">查看终端 TERM_TOKEN</button>
+                <button class="btn ghost sm" onclick="settingsClearPasscode()">清除本机口令</button>
+            </div>
+            <div id="settingsTokenBox" style="display:none">
+                <div class="token-box" id="settingsTokenVal"></div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn sm" onclick="settingsCopyToken()">复制</button>
+                    <button class="btn sm" onclick="settingsApplyToken()">应用到终端（本浏览器不再弹框）</button>
+                    <button class="btn ghost sm" id="settingsToggleShow" onclick="settingsToggleShow()">隐藏</button>
+                </div>
+            </div>
+        </section>
     </aside>
 
     <!-- 命令面板（⌘K / Ctrl+K） -->
@@ -1400,6 +1455,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=cb30ec50"></script>
+    <script src="/static/hub.js?v=756274f9"></script>
 </body>
 </html>

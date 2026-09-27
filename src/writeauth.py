@@ -29,6 +29,9 @@ EXEMPT_PREFIXES: Dict[str, str] = {
         "它自己校验 HUB_PASSCODE（口令错→401）。若在这里拦掉，用户永远输不进口令＝自锁死。",
     "/telemetry/events/":
         "hook.py 自带方案：设了 HOOK_AUTH_TOKEN 必须 Bearer；未设则只允许回环来源。",
+    "/api/settings/model/apply":
+        "它自己校验 HUB_PASSCODE（错→401、未配→503），与同页的 term-token 同口径；"
+        "再叠一层 token 门 = 用户在设置页永远改不动模型（自锁死）。",
 }
 
 

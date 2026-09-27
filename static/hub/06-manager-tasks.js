@@ -290,4 +290,7 @@ setInterval(() => {
       && document.getElementById('termPane').classList.contains('on')) termRefreshList();
 }, 6000);
 loadAgents();
+/* v0.13.41：设置抽屉的委托在这里挂（函数定义在 01 分片，调用点必须晚于 04 分片的
+   `let term` —— 见 01 里 settingsDelegates 上方的注释：TDZ 闸门判的是调用点顺序）。 */
+settingsDelegates();
 go(lsGet('hub.page') || 'classroom');  // T9：默认落点 = 上次所在页（chatPick/chatMode 已在声明处恢复）
