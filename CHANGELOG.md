@@ -1,5 +1,44 @@
 # CHANGELOG
 
+## v0.13.44 — 设置→模型「保存不生效」：结果常驻回显 + 写前可写性预检 + 页内口令框
+
+> 施工会话：688b689d。基线：v0.13.43。用户诉求原话：「设置菜单 agent模型设置后
+> 保存并不能生效 请修复」。
+>
+> **取证结论（先证后修，不猜）**：保存链路本身是通的 —— 实弹 `POST
+> /api/settings/model/apply` 对 claude / jcode / codex / hermes 都真的落了盘
+> （配置文件与 Hub 侧 `agent_models` 同步变）。「不生效」是**三个可观测缺陷叠加**：
+>   ① **保存成功但页面不回显**：状态行（当前 / hub 侧）、下拉、diff 区全部停在
+>      保存前的样子，唯一反馈是一条 4.2 秒就消失的 toast ⇒ 用户据此判定没生效；
+>   ② **失败同样只用 toast 说**：目标文件不可写（`chattr +i`，本机
+>      `~/.pi/agent/settings.json` 实测就是）时返回 500「写入失败已回滚」，且
+>      **备份已经先落了一堆**，用户目录里留下没用的副本、配置却没改成；
+>   ③ **点保存先弹一个无关的「请输入终端鉴权 TERM_TOKEN」**：这两个设置端点只认
+>      HUB_PASSCODE（已在 `writeauth.EXEMPT_PREFIXES` 登记），索 token 纯属多余弹窗；
+>      而 APP 内嵌 WebView 会**直接吞掉 prompt**（返回 null）⇒ 端侧等于静默失败。
+>
+> **怎么改的**：
+>   - `src/modelcfg.py`：`apply_model` 落备份**之前**先 `os.access(p, os.W_OK)` 预检，
+>     不可写 → 409，错误信息带 `lsattr` / `chattr -i` 解除办法；`preview` 的 files
+>     段新增 `writable`，预览阶段就把「这个文件写不动」摆出来。
+>   - `static/hub/01-core-boot.js`：新增 `settingsRenderApplied` / `settingsRenderError`
+>     —— 成功把「已生效：agent → 模型（含新开终端追加的 argv）+ 每个文件的变更与备份
+>     路径」**常驻**写进 `#setDiffBox`，失败把原因与 HTTP 状态常驻写进同处；
+>     `settingsRefreshMeta()` 用**重载后的真值**刷新状态行（不拿入参糊一个）；
+>     `api()` 支持 `noToken`，模型/GitHub 写端点不再索 TERM_TOKEN；
+>     `settingsPasscode()` 改成三源：页内口令框 → 本机缓存 → prompt（末源保留但不依赖）。
+>   - `templates/index.html`：模型页与 GitHub 页各加一个 `type=password` 的页内口令框
+>     （不是浮层，不违反浮层唯一三条），保存成功后清空，明文不留页面。
+>
+> **闸门**：L0 719 全绿（新增 2 例：`test_apply_refuses_unwritable_file_before_making_backups`
+> 钉死「写不动就不许落备份」、`test_preview_reports_writability`）；L1 44 全绿；
+> 新探针 `work/probe/e2e_settings_model_apply.py`（1440/390 两档）把保存这一步也走完，
+> 断言：零浮层、**零 prompt**、结果块含「已生效」、状态行含新模型、服务端
+> `hub_model` 与配置文件真值一致、口令框已清空。
+>
+> **取证副作用已回滚**：取证过程中改过的 jcode / codex / hermes 配置与 Hub 侧三行
+> 已恢复取证前原值（claude 那行是用户原有的，保留），`*-hub-modelcfg-*` 中间备份已清。
+
 ## v0.13.43 — 设置从「右侧抽屉」改成左侧手风琴第四组：模型 / GitHub / 终端口令
 
 > 施工会话：551f6b59。基线：v0.13.42。用户诉求原话：「设置菜单不是弹页面，

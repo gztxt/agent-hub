@@ -246,6 +246,40 @@ class CApplyWritesWithBackup(_HomeFixture):
             modelcfg.apply_model("hermes", "new/model-z")
         self.assertEqual(cm.exception.status, 404, "文件没了必须拒绝新建，不能凭空造配置")
 
+    @unittest.skipIf(os.geteuid() == 0, "root 下 os.access(W_OK) 恒真，验不出只读位")
+    def test_apply_refuses_unwritable_file_before_making_backups(self):
+        """v0.13.44：09-27 报障「保存不生效」的一面 —— pi 的 settings.json 被设了
+        不可变属性，旧代码先备份再写，于是**备份留了一堆、文件没改、只回一句 500**，
+        用户看到的只有一句 4 秒就消失的 toast。预检必须排在备份之前：既说清原因
+        （409，含解除办法），也不许在写不动的文件旁留垃圾备份。"""
+        p = self.home / ".jcode" / "config.toml"
+        os.chmod(p, 0o444)
+        try:
+            self.assertFalse(os.access(p, os.W_OK), "夹具没造出只读态，用例本身失效")
+            with self.assertRaises(modelcfg.ModelCfgError) as cm:
+                modelcfg.apply_model("jcode", "new/model-z")
+            self.assertEqual(cm.exception.status, 409)
+            self.assertIn("不可写", cm.exception.args[0])
+            self.assertIn("lsattr", cm.exception.args[0], "错误信息要给得出解除办法")
+            self.assertEqual(self._backups(".jcode/config.toml"), [],
+                             "写不动就别落备份，否则用户目录下堆一堆没用的副本")
+        finally:
+            os.chmod(p, 0o644)
+
+    def test_preview_reports_writability(self):
+        """预览就要把「这个文件写不动」摆出来，别等保存时才说。"""
+        p = modelcfg.preview("jcode", "new/model-z")
+        for f in p["files"]:
+            self.assertIn("writable", f)
+        if os.geteuid() != 0:
+            path = self.home / ".jcode" / "config.toml"
+            os.chmod(path, 0o444)
+            try:
+                p = modelcfg.preview("jcode", "new/model-z")
+                self.assertFalse(p["files"][0]["writable"])
+            finally:
+                os.chmod(path, 0o644)
+
 
 class DTerminalArgvWhitelist(unittest.TestCase):
     def test_only_whitelisted_agents_get_flags(self):

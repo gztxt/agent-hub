@@ -119,7 +119,10 @@ const WRITE_METHODS = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
 function isWriteMethod(m) { return !!WRITE_METHODS[String(m || 'GET').toUpperCase()]; }
 async function api(path, opt) {
   const o = opt || {};
-  if (isWriteMethod(o.method)) {
+  /* v0.13.44：noToken 的写端点（设置页几个只认 HUB_PASSCODE 的端点，已登记在
+     writeauth.EXEMPT_PREFIXES）不再向 termToken() 索 TERM_TOKEN —— 那会先弹一个
+     "请输入终端鉴权 TERM_TOKEN" 的窗，跟保存模型毫无关系，用户只会以为保存卡住了。 */
+  if (isWriteMethod(o.method) && !o.noToken) {
     const tk = termToken();
     if (tk) o.headers = Object.assign({}, o.headers, { 'x-hub-token': tk });
   }
@@ -431,7 +434,21 @@ async function verifyAgent(id) {
    v0.13.43：设置不再是抽屉。三个子页（模型 / GitHub / 终端口令）是 main 里的
    section.page，由左侧「设置」手风琴组切换 —— 入口从 btnSettings 的 inline onclick
    变成与系统页同口径的 data-sys ⇒ 委托 ⇒ go(page)，顺带继承"窄屏点完自动收侧栏"。 */
-function settingsPasscode() { return lsGet('hub.passcode') || ''; }
+/* 口令三源：页内输入框 → 本机缓存 → prompt（最后一源保留但不依赖它）。
+   页内框是 v0.13.44 加的：APP 内嵌 WebView 与部分手机浏览器会直接吞掉 prompt()
+   （返回 null 且不弹窗），那种环境里"点保存毫无反应"就是这么来的 —— 凡是靠
+   prompt 收口令的路径，在端侧都等于静默失败。 */
+function passcodeInput() {
+  for (const id of ['setPasscode', 'ghPasscode']) {
+    const el = $(id);
+    if (el && el.value.trim()) return el.value.trim();
+  }
+  return '';
+}
+function clearPasscodeInput() {
+  ['setPasscode', 'ghPasscode'].forEach(id => { const el = $(id); if (el) el.value = ''; });
+}
+function settingsPasscode() { return passcodeInput() || lsGet('hub.passcode') || ''; }
 
 async function settingsViewToken() {
   let pc = settingsPasscode();
@@ -608,7 +625,11 @@ async function settingsPreviewModel() {
     '<div class="set-diff-hd">将写入 ' + files.length + ' 个文件（保存时自动时间戳备份）</div>' +
     files.map(f => '<div class="set-diff-row"><div class="k">' + escapeHtml(f.file) + '</div>' +
       (f.changes || []).map(c => '<div class="v">' + escapeHtml(c.where) + '：' +
-        escapeHtml(c.from || '（空）') + ' → ' + escapeHtml(c.to) + '</div>').join('') + '</div>').join('') +
+        escapeHtml(c.from || '（空）') + ' → ' + escapeHtml(c.to) + '</div>').join('') +
+      /* v0.13.44：预览就把「这个文件现在写不动」摆在明面上（chattr +i / 只读挂载），
+         别等保存时才用一句 4 秒就消失的 toast 告诉用户。 */
+      (f.writable === false ? '<div class="v">注意：该文件当前不可写，直接保存会被拒' +
+        '（常见是被设了不可变属性，需先解除）</div>' : '') + '</div>').join('') +
     '</div>' + (SET_DIFF.argv && SET_DIFF.argv.length
       ? '<div class="hint" style="margin-top:6px">hub 拉起终端时追加：' + escapeHtml(SET_DIFF.argv.join(' ')) + '</div>'
       : '');
@@ -616,30 +637,75 @@ async function settingsPreviewModel() {
   $('setApplyBtn').disabled = false;
 }
 
+/* 保存结果必须**常驻在页内**：09-27 报障「保存并不能生效」的真身是——保存其实成功
+   了，但页面只闪一条 4 秒的 toast，状态行与下拉全都停在保存前的样子，用户据此判定
+   没生效。所以成功要把落盘清单 + 备份路径写出来，失败要把 HTTP 状态与原因写出来，
+   两样都不许只靠 toast。 */
+function settingsRenderApplied(d) {
+  const box = $('setDiffBox');
+  if (!box) return;
+  const applied = d.applied || [];
+  box.innerHTML = '<div class="set-diff"><div class="set-diff-hd">已生效：' +
+    escapeHtml(d.agent_id) + ' → ' + escapeHtml(d.model) +
+    (d.argv && d.argv.length ? '（新开终端追加 ' + escapeHtml(d.argv.join(' ')) + '）' : '') +
+    '</div>' +
+    applied.map(a => '<div class="set-diff-row"><div class="k">' + escapeHtml(a.file) + '</div>' +
+      (a.changes || []).map(c => '<div class="v">' + escapeHtml(c.where) + '：' +
+        escapeHtml(c.from || '（空）') + ' → ' + escapeHtml(c.to) + '</div>').join('') +
+      '<div class="v">备份：' + escapeHtml(a.backup) + '</div></div>').join('') +
+    '<div class="v">已开着的会话不受影响，新开终端才带这个模型。</div></div>';
+  box.style.display = 'block';
+}
+
+function settingsRenderError(prefix, e) {
+  const box = $('setDiffBox');
+  if (!box) return;
+  box.innerHTML = '<div class="set-diff"><div class="set-diff-hd">' + escapeHtml(prefix) + '</div>' +
+    '<div class="set-diff-row"><div class="v">' + escapeHtml(e.message || String(e)) + '</div>' +
+    (e.http ? '<div class="v">HTTP ' + escapeHtml(String(e.http)) + '</div>' : '') +
+    '</div></div>';
+  box.style.display = 'block';
+}
+
 async function settingsApplyModel() {
   if (!SET_AGENT || !SET_DIFF) return toast('先预览再保存', 'err');
   let pc = settingsPasscode();
   if (!pc) {
     pc = prompt('保存模型设置需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
-    if (!pc) return;
+    if (!pc) { settingsRenderError('保存取消', new Error('没填口令')); return; }
   }
+  const model = SET_DIFF.model;
   try {
     const d = await api('/api/settings/model/apply', {
       method: 'POST',
+      noToken: true,                          // 该端点只认 HUB_PASSCODE，别再索 TERM_TOKEN
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: SET_AGENT, model: SET_DIFF.model, passcode: pc })
+      body: JSON.stringify({ agent_id: SET_AGENT, model: model, passcode: pc })
     });
     lsSet('hub.passcode', pc);                // 通过了才缓存（与口令页同口径）
-    toast(SET_AGENT + ' 模型已设为 ' + SET_DIFF.model + '（备份 ' + (d.applied || []).length + ' 份）', 'ok');
+    clearPasscodeInput();
+    toast(SET_AGENT + ' 模型已设为 ' + model + '（备份 ' + (d.applied || []).length + ' 份）', 'ok');
     SET_AGENTS = [];
     SET_DIFF = null;
-    $('setDiffBox').style.display = 'none';
     $('setApplyBtn').disabled = true;
-    settingsModelsLoad(true);
+    await settingsModelsLoad(true);
+    settingsRefreshMeta(model);               // 用重载后的真值刷新状态行（不是拿入参糊一个）
+    settingsRenderApplied(d);
   } catch (e) {
     if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    clearPasscodeInput();
+    settingsRenderError('保存失败', e);
     toast('保存失败：' + e.message, 'err');
   }
+}
+
+function settingsRefreshMeta(model) {
+  const a = SET_AGENTS.find(x => x.id === SET_AGENT);
+  const el = $('setAgentMeta');
+  if (!el) return;
+  if (!a) { el.textContent = '已保存：' + model; return; }
+  el.textContent = '当前：' + (a.current || '（未读到）') + '｜hub 侧：' + (a.hub_model || '未设置') +
+    '｜配置文件：' + (a.files || []).join(' / ');
 }
 
 /* ── 设置 → GitHub 子菜单（v0.13.42）──────────────────────────────────────
@@ -719,7 +785,10 @@ async function ghAskPasscode(what) {
 }
 
 function ghPost(path, body) {
-  return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  /* noToken：GitHub 四个写端点与模型保存同口径，只认 HUB_PASSCODE（已登记在
+     writeauth.EXEMPT_PREFIXES），索 TERM_TOKEN 只会多一个无关弹窗。 */
+  return api(path, { method: 'POST', noToken: true,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body) });
 }
 

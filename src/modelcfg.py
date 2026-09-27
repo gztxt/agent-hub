@@ -556,6 +556,10 @@ def preview(agent_id: str, model: str) -> dict:
     files = []
     for p, _new, changes in writes:
         files.append({"file": str(p), "exists": p.exists(),
+                      # v0.13.44：预览就把"能不能写"摆出来（09-27 报障：pi 的
+                      # settings.json 被 chattr +i 设了不可变，保存一路走到 500，
+                      # 用户只看到一句 4 秒就消失的 toast ⇒ 观感「保存不生效」）。
+                      "writable": os.access(p, os.W_OK),
                       "backup": str(p) + ".bak-<时间戳>-hub-modelcfg-" + agent_id,
                       "changes": [c for c in changes if c.get("op") != "skip"]})
     return {"agent_id": agent_id, "model": model,
@@ -573,6 +577,12 @@ def apply_model(agent_id: str, model: str) -> dict:
     for p, _new, _c in writes:
         if not p.exists():
             raise ModelCfgError(f"配置文件不存在，拒绝新建：{p}", 404)
+        # v0.13.44 预检：先问"能不能写"再落备份。顺序反过来的话（09-27 pi 事故面）
+        # 会在不可写的文件旁留下一堆备份、再抛 500，用户既没改成也多出一堆垃圾。
+        if not os.access(p, os.W_OK):
+            raise ModelCfgError(
+                f"配置文件不可写：{p}（常见原因是被设了不可变属性或只读挂载；"
+                f"`lsattr {p}` 若见 i 标记，需 `chattr -i {p}` 后才能保存）", 409)
     backups = [_backup(p, agent_id) for p, _n, _c in writes]
     applied = []
     try:
