@@ -75,7 +75,7 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.47"   # 系统菜单「运行日志」页删除，内容并入设置→日志（source=rest 视图 + subject 过滤）
+VERSION = "0.13.48"   # 新增 scripts/hublog-cli.py：操作 agent 直查日志（只读，与设置→日志页同口径）
                       #   三个子项与系统页同口径（data-sys ⇒ 委托 ⇒ go(page) ⇒ 正文出页），
                       #   设置抽屉整体拆除 ⇒ 09-23「手机上被浮层糊住」的形态不再存在。
                       #   ↑ v0.13.42：设置→GitHub 子菜单（远程地址/key/归属/克隆落点不再硬编码）

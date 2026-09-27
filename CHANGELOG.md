@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## v0.13.48 — 操作 agent 直查日志：`scripts/hublog-cli.py`
+
+> 施工会话：551f6b59。基线：v0.13.47。用户诉求原话：「以后的操作 agent 是否可以
+> 直接查询日志，查看操作和错误」。
+
+诉求是把日志面从「人看 UI」扩到「agent 自助取证」：`GET /api/hublog` 本就是只读
+端点，但裸 curl 要自己拼口令与端口——口令极易被写进命令历史或子代理回显。
+
+新增 `scripts/hublog-cli.py`（stdlib only，零新增依赖）：自己读 `.env` 取
+`HUB_PASSCODE`/`PORT`，口令**只进 `x-hub-token` 请求头**，任何输出都不回显；参数
+与页面完全一致（source/level/subject/q/window/limit，`--json` 透传原始响应，
+`--list-subjects` 列白名单）。退出码可判别：**2 鉴权 / 3 连不上 / 4 参数非法 /
+5 服务端错**，空结果打印「无匹配条目 + 查询条件」——避免子代理把「没匹配」误判成
+「接口坏了」。关键字只走 `urlencode`，绝不拼进命令行。
+
+闸门：L0 753（新增 `tests/test_hublog_cli.py` 11 例：env 解析、urlencode、
+口令只进头、四种失败码、400 原因透传、HTTPError 响应体可读）/ L1 44 全绿。
+实弹：对生产 :3102 跑默认 / 只看错误 / rest+subject / 错口令(2) / 非法 subject(4) /
+端口错(3) 六路，退出码与正文均如预期。
+
 ## v0.13.47 — 系统菜单「运行日志」页删除，内容并入设置 → 日志
 
 > 施工会话：551f6b59。基线：v0.13.46。用户诉求原话：「把系统菜单里面的运行日志
