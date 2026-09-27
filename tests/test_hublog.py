@@ -179,7 +179,7 @@ class TestEndpoint(unittest.TestCase):
         """直调端点必须把 Query 参数**逐个显式传**：FastAPI 的默认值是 Query 对象
            而不是 "all"/24（只走 HTTP 时才由框架注入）⇒ 省略就会撞 400。"""
         args = {"source": "all", "level": "all", "q": "", "window": 24,
-                "limit": 200, "format": "json"}
+                "limit": 200, "subject": "", "format": "json"}
         args.update(kw)
         return self._run(hublog.hublog_query(req, **args))
 
@@ -229,7 +229,7 @@ class TestEndpoint(unittest.TestCase):
 
     def test_bad_params_are_400(self):
         os.environ["HUB_PASSCODE"] = PASSCODE
-        for kw in ({"source": "evil"}, {"level": "trace"}):
+        for kw in ({"source": "evil"}, {"level": "trace"}, {"subject": "nope"}):
             with self.assertRaises(Exception) as cm:
                 self._call(_Req(_hdr(PASSCODE)), **kw)
             self.assertEqual(getattr(cm.exception, "status_code", None), 400, kw)
@@ -247,6 +247,71 @@ class TestEndpoint(unittest.TestCase):
         r = self._call(_Req(_hdr(PASSCODE)), format="text")
         self.assertIn("agent-hub.log", r.headers.get("content-disposition", ""))
         self.assertIn("boom", r.body.decode("utf-8"))
+
+
+class TestRunlogMerged(unittest.TestCase):
+    """v0.13.47：系统菜单「运行日志」页并入本端点 —— source=rest 视图 + subject 过滤。
+
+    这批用例守的是「合并 ≠ 丢功能」：原页面能按 source=rest 只看三中心留痕、
+    能按 subject 只看某一路检索，新入口必须一样做得到，且非法 subject 仍 400
+    （照抄 /api/runlog 的口径，别因为换了个入口就放宽校验）。
+    """
+
+    def setUp(self):
+        self.tmp = _mktmp("hublog-rest-")
+        db.init_db(self.tmp / "log.db")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        rows = [
+            ("rest", "mem.search", "success", 7, '{"q":"abc","channel":"web"}'),
+            ("rest", "kb.search", "fail", 9, '{"err":"kb 降级","channel":"mcp"}'),
+            ("hub_chat", "chat", "success", 12, '{"q":"你好"}'),
+        ]
+        for src, subj, st, ms, det in rows:
+            db.execute("INSERT INTO profile_events(source,subject,status,duration_ms,detail,created_at)"
+                       " VALUES(?,?,?,?,?,'2026-09-27T05:00:00+00:00')", (src, subj, st, ms, det))
+        os.environ["HUB_PASSCODE"] = PASSCODE
+        self.addCleanup(lambda: os.environ.pop("HUB_PASSCODE", None))
+        self._jl = mock.patch.object(hublog, "_journal_lines", lambda w, n: ([], "L0 夹具不拉 journald"))
+        self._jl.start()
+        self.addCleanup(self._jl.stop)
+
+    def _call(self, **kw):
+        args = {"source": "all", "level": "all", "q": "", "window": 24,
+                "limit": 200, "subject": "", "format": "json"}
+        args.update(kw)
+        return asyncio.run(hublog.hublog_query(_Req(_hdr(PASSCODE)), **args))
+
+    def test_source_rest_is_only_three_center_traces(self):
+        d = self._call(source="rest")
+        self.assertTrue(d["entries"], "选了运行日志来源却空 ⇒ 合并后原内容没了")
+        self.assertTrue(all(e["tag"] == "rest" for e in d["entries"]),
+                        "rest 视图里混进了别的 source ⇒ 过滤没生效")
+        self.assertEqual(d["count"], 2)
+        # 原页面的结构化字段（耗时 / 通道 / 查询词）必须在正文里，否则等于降质
+        joined = " ".join(e["msg"] for e in d["entries"])
+        self.assertIn("7ms", joined)
+        self.assertIn("channel=web", joined)
+        self.assertIn("q=abc", joined)
+
+    def test_subject_filter_narrows_to_one_trace(self):
+        d = self._call(source="rest", subject="kb.search")
+        self.assertEqual(d["count"], 1)
+        self.assertIn("kb 降级", d["entries"][0]["msg"])
+
+    def test_subject_without_rest_still_filters_events(self):
+        d = self._call(subject="mem.search")
+        self.assertEqual(d["count"], 1)
+        self.assertEqual(d["entries"][0]["tag"], "rest")
+
+    def test_bad_subject_is_400(self):
+        with self.assertRaises(Exception) as cm:
+            self._call(subject="rm -rf /")
+        self.assertEqual(getattr(cm.exception, "status_code", None), 400,
+                         "subject 必须按 runlog.SUBJECTS 白名单校验（原 /api/runlog 同口径）")
+
+    def test_subjects_enum_returned_for_dropdown(self):
+        d = self._call()
+        self.assertIn("mem.search", d["subjects"], "前端 subject 下拉靠这份清单填充")
 
 
 class TestFrontendPage(unittest.TestCase):

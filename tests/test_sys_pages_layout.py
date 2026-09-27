@@ -40,10 +40,10 @@ SHARD07 = _REPO / "static" / "hub" / "07-asset-panel.js"
 
 #: 系统菜单（左栏「系统」手风琴）下的全部子菜单页 —— 本次重排的对象
 SYS_PAGES = ("ports", "telemetry", "memory", "skills", "kb",
-             "mcp", "tasks", "jobs", "runlog", "assets")
+             "mcp", "tasks", "jobs", "assets")   # v0.13.47：runlog 页删除，并入设置→日志
 
 #: 单表/单列表页：表格必须在限高盒（.sp-bd.box + .tscroll）里，sticky 表头才有滚动容器
-TABLE_PAGES = ("ports", "runlog", "jobs", "tasks")
+TABLE_PAGES = ("ports", "jobs", "tasks")
 
 #: 既有的断点声明（值原文）。新页面只许复用，不许再开一档 —— 断点多了必然出现
 #: "某个档忘了适配"，而那种漏在宽屏上是看不出来的。

@@ -49,6 +49,8 @@ READ = """() => {
     stats_visible: (document.getElementById('logStats')||{style:{}}).style.display !== 'none',
     stats_text: (document.getElementById('logStats')||{textContent:''}).textContent.slice(0, 400),
     body_text: (document.getElementById('logBody')||{textContent:''}).textContent.slice(0, 300),
+    non_rest_rows: /event:(?!rest)/.test((document.getElementById('logBody')||{textContent:''}).textContent),
+    rest_rows: (/event:rest/.test((document.getElementById('logBody')||{textContent:''}).textContent)),
     toasts: [...document.querySelectorAll('#toast div')].map(t => t.className + '|' + t.textContent),
     pass_value: (document.getElementById('logPasscode')||{}).value,
     focused: document.activeElement ? document.activeElement.id : null,
@@ -109,6 +111,22 @@ def main():
             time.sleep(0.5)
         report["after_event"] = st
 
+        # v0.13.47：系统菜单里不许再有「运行日志」入口（页已删除，能力并到本页）
+        report["nav"] = json.loads(c.eval(
+            "JSON.stringify({items: [...document.querySelectorAll('[data-sys]')]"
+            ".map(b => b.getAttribute('data-sys'))})"))
+
+        # 切「运行日志（三中心检索 · rest）」——原系统菜单那一份，必须只出 rest
+        c.eval("(function(){const s=document.getElementById('logSource');"
+               "s.value='rest';s.dispatchEvent(new Event('change', {bubbles: true}));return s.value;})()")
+        time.sleep(2.5)
+        for _ in range(20):
+            st = json.loads(c.eval("(%s)()" % READ))
+            if st["rows"] > 0 or "没有条目" in st["body_text"]:
+                break
+            time.sleep(0.5)
+        report["after_rest"] = st
+
         # 切「只看错误」
         c.eval("(function(){const s=document.getElementById('logSource');"
                "s.value='error';s.dispatchEvent(new Event('change', {bubbles: true}));return s.value;})()")
@@ -152,9 +170,15 @@ def main():
     assert al["prompt_calls"] == [], f"不该弹任何 prompt：{al['prompt_calls']}"
     assert al["rows"] > 0, f"日志页一行都没渲染：{al['body_text'][:160]}"
     assert al["stats_visible"] and al["stats_text"], "统计行没出 ⇒ 用户分不清是没数据还是挂了"
+    assert "runlog" not in report["nav"]["items"], \
+        f"系统菜单里还留着运行日志入口（页面已删）：{report['nav']['items']}"
     ae = report["after_event"]
     assert "操作事件" in ae["stats_text"], f"切来源后统计没跟着变：{ae['stats_text'][:160]}"
     assert ae["rows"] > 0, "切到操作事件后没条目"
+    ar = report["after_rest"]
+    assert ar["rows"] > 0, f"切到运行日志（rest）来源后没条目：{ar['body_text'][:160]}"
+    assert ar["rest_rows"], "rest 视图里看不到 event:rest 行 ⇒ 来源没生效"
+    assert not ar["non_rest_rows"], "rest 视图里混进了别的 source ⇒ 过滤没接住"
     aerr = report["after_error"]
     assert ("ERR" in aerr["body_text"]) or ("没有条目" in aerr["body_text"]), \
         f"只看错误既没条目也没页内说明（白屏）：{aerr['body_text'][:160]}"

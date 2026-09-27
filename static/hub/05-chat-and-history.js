@@ -158,7 +158,7 @@ const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '�
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],
                    ['skills', '技能中心', 'zap'], ['kb', '知识库', 'book'],
                    ['mcp', '工具', 'wrench'], ['jobs', '定时', 'clock'], ['tasks', '协同', 'flow'],
-                   ['assets', '资产', 'layers'], ['runlog', '运行日志', 'radar']];
+                   ['assets', '资产', 'layers']];   // v0.13.47：运行日志页删除，内容并入设置→日志
 const MODE_LABEL = { embed: '嵌入', term: '终端', chat: '对话', detail: '详情', open: '新窗口' };
 /* v0.13.43 设置子菜单：与系统页同形态（data-sys → go(page) ⇒ 正文出页、窄屏自动收侧栏），
    只是单独成组挂在「系统」之下；这三项此前是右侧抽屉里的三个 tab。 */
@@ -166,7 +166,7 @@ const SET_PAGES = [['settings-model', '模型', 'cpu'], ['settings-github', 'Git
                    ['settings-token', '终端口令', 'terminal'], ['settings-logs', '日志', 'activity']];
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', runlog: '运行日志', localprojects: '本机项目', github: 'GitHub 项目',
+                      assets: '资产', localprojects: '本机项目', github: 'GitHub 项目',
                       'settings-model': '设置 · 模型', 'settings-github': '设置 · GitHub',
                       'settings-token': '设置 · 终端口令', 'settings-logs': '设置 · 日志' };
 const navOpenStored = lsGet('hub.nav.open');
