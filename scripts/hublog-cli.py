@@ -91,7 +91,9 @@ def main(argv=None):
     ap.add_argument("--env", default="", help="覆盖 .env 路径")
     a = ap.parse_args(argv)
 
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # realpath 而不是 abspath：~/bin/hublog 是指向本脚本的软链接，abspath 会停在
+    # 链接那一侧 ⇒ 仓库根算成 /home/gztxt，读不到 agent-hub/.env（实跑踩过）。
+    repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     env = _read_env(a.env or os.path.join(repo, ".env"))
     passcode = env.get("HUB_PASSCODE", "")
     port = a.port or int(env.get("PORT") or 3102)
