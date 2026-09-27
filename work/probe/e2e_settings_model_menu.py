@@ -124,10 +124,13 @@ def main():
             f"{tag}: 不可写 agent 没置灰"
         assert r["after_pick_agent"]["step_visible"] and r["after_pick_agent"]["options"] > 3, \
             f"{tag}: 选 agent 后模型下拉没出来"
-        assert r["after_pick_agent"]["apply_disabled"], f"{tag}: 没预览就能保存（预览门失效）"
+        # v0.13.45：预览门从"置灰保存按钮"改成"保存时自动补预览" —— 置灰按钮不派发
+        # click ⇒ 用户点它连一条请求都发不出（09-27 第二轮报障的正身）。
+        assert not r["after_pick_agent"]["apply_disabled"], \
+            f"{tag}: 保存按钮又被置灰了（点了不派发 click ⇒ 零反馈）"
         assert r["after_preview"]["diff_visible"] and r["after_preview"]["diff_rows"] > 0, \
             f"{tag}: 预览没出 diff"
-        assert not r["after_preview"]["apply_disabled"], f"{tag}: 预览后保存仍禁用"
+        assert not r["after_preview"]["apply_disabled"], f"{tag}: 预览后保存被禁用"
         n = r["after_nav_away"]
         assert not n["page_on"] and n["overlays_on"] == [], f"{tag}: 导航后仍有残留 {n}"
     # 窄屏额外：进页后侧栏必须收起、遮罩必须关（否则正文被压）

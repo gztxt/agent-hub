@@ -102,10 +102,9 @@ def main():
                % json.dumps(MODEL))
         time.sleep(0.4)
         report["before_apply"] = json.loads(c.eval("(%s)()" % READ))
-        # 预览
-        c.eval("document.querySelector('[data-settings-act=\"preview\"]').click()")
-        time.sleep(1.5)
-        report["after_preview"] = json.loads(c.eval("(%s)()" % READ))
+        # **不点预览**（v0.13.45）：09-27 第二轮报障里，用户就是选完模型直接点保存，
+        # 而当时按钮是 disabled ⇒ 一条请求都没发出。这条路径必须能一次点成。
+        report["skipped_preview"] = True
         # 保存：先把 prompt/alert/confirm 钩住（headless 里原生弹窗会阻塞
         # Runtime.evaluate；钩住既能取证「保存是不是靠弹窗要口令」，也不打断流程）
         c.eval("window.__prompt_calls=[];window.__pc=%s;"
@@ -141,6 +140,8 @@ def main():
         time.sleep(1.0)
         report["apply_result"] = json.loads(c.eval("JSON.stringify(window.__applied)") or "null")
         report["prompt_calls"] = json.loads(c.eval("JSON.stringify(window.__prompt_calls||[])") or "[]")
+        # 主场景的状态必须**在场景二之前**抓拍，否则会被"缺口令"那次覆盖掉
+        report["after_apply"] = json.loads(c.eval("(%s)()" % READ))
         # 服务端真值：页面自己读回去，避免只在 DOM 上打转
         c.eval("window.__srv=null;fetch('/api/settings/models').then(r=>r.json())"
                ".then(d=>{window.__srv=(d.agents||[]).find(x=>x.id===%s)||null;})" % json.dumps(AGENT))
@@ -149,7 +150,18 @@ def main():
             if (c.eval("(window.__srv?1:0)") or "0") == "1":
                 break
         report["server_state"] = json.loads(c.eval("JSON.stringify(window.__srv)") or "null")
-        report["after_apply"] = json.loads(c.eval("(%s)()" % READ))
+
+        # 场景二（v0.13.45）：口令留空再点保存 —— 不许弹 prompt（手机/APP 会吞），
+        # 必须给出页内指引，且这条路径同样不许发出 apply 请求。
+        c.eval("localStorage.clear();"
+               "(function(){const i=document.getElementById('setPasscode'); if(i) i.value='';})();"
+               "window.__prompt_calls=[];")
+        c.eval("document.querySelector('[data-settings-act=\"apply\"]').click()")
+        time.sleep(2.0)
+        report["no_passcode"] = {
+            "prompt_calls": json.loads(c.eval("JSON.stringify(window.__prompt_calls||[])") or "[]"),
+            "diff_text": (c.eval("(document.getElementById('setDiffBox')||{textContent:''}).textContent.slice(0,200)") or ""),
+        }
     finally:
         if c:
             try:
@@ -174,6 +186,10 @@ def main():
     assert sv.get("hub_model") == MODEL, f"服务端 hub_model 没落上：{sv}"
     assert sv.get("current") == MODEL, f"agent 配置文件没落上：{sv}"
     assert aa["pass_value"] == "", "口令框用完必须清空，不能把明文口令留在页面上"
+    assert not aa["apply_disabled"], "保存完按钮必须恢复可点，否则第二次就点不动了"
+    np_ = report["no_passcode"]
+    assert np_["prompt_calls"] == [], f"缺口令时不许弹 prompt：{np_['prompt_calls']}"
+    assert "设置口令" in np_["diff_text"], f"缺口令时要给出页内指引：{np_['diff_text'][:120]}"
     print("ALL ASSERTIONS PASS")
 
 

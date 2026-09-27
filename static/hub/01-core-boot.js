@@ -564,7 +564,8 @@ function settingsPickAgent(id) {
   settingsModelsLoad();                       // 重渲染选中态
   $('setModelStep').style.display = 'block';
   $('setDiffBox').style.display = 'none';
-  $('setApplyBtn').disabled = true;
+  /* v0.13.45：不再在这里把保存按钮置灰 —— 置灰的按钮不派发 click，用户点它
+     得不到任何反馈（日志里连请求都没有），正是第二轮报障的形态。 */
   $('setAgentMeta').textContent = '当前：' + (a.current || '未读到') +
     '｜hub 侧：' + (a.hub_model || '未设置') + '｜配置文件：' + (a.files || []).join(' / ');
   settingsModelOptions(a);
@@ -617,7 +618,8 @@ async function settingsPreviewModel() {
     SET_DIFF = await api('/api/settings/model/preview?agent_id=' + encodeURIComponent(SET_AGENT) +
       '&model=' + encodeURIComponent(model));
   } catch (e) {
-    SET_DIFF = null; box.style.display = 'none'; $('setApplyBtn').disabled = true;
+    SET_DIFF = null; box.style.display = 'none';
+    settingsRenderError('预览失败', e);
     return toast('预览失败：' + e.message, 'err');
   }
   const files = SET_DIFF.files || [];
@@ -668,13 +670,36 @@ function settingsRenderError(prefix, e) {
 }
 
 async function settingsApplyModel() {
-  if (!SET_AGENT || !SET_DIFF) return toast('先预览再保存', 'err');
+  /* v0.13.45：保存按钮不再有"未预览就禁用"的状态。09-27 第二轮报障（手机
+     192.168.5.99 来访）日志里只有 GET /api/settings/models 与 /api/models，
+     **连一条 preview/apply 请求都没有** ⇒ 用户是选完模型直接点保存，而 disabled
+     按钮不派发 click ⇒ 委托收不到、toast 也不弹，全程零反馈，"保存不了"就此成立。
+     所以：保存自己负责补齐预览（一次点击走完），按钮只在**保存进行中**才禁用。 */
+  if (!SET_AGENT) {
+    settingsRenderError('保存未执行', new Error('先在上面的列表里选一个 agent'));
+    return toast('先选一个 agent', 'err');
+  }
+  const model = setSelectedModel();
+  if (!model) {
+    settingsRenderError('保存未执行', new Error('先在「选择模型」下拉里选一个 CCR 模型'));
+    return toast('先选一个模型', 'err');
+  }
+  if (!SET_DIFF || SET_DIFF.model !== model) {
+    await settingsPreviewModel();              // 自动补预览；失败时里面已渲染 + toast
+    if (!SET_DIFF || SET_DIFF.model !== model) return;
+  }
   let pc = settingsPasscode();
   if (!pc) {
-    pc = prompt('保存模型设置需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
-    if (!pc) { settingsRenderError('保存取消', new Error('没填口令')); return; }
+    /* 不再用 prompt 收口令：APP 内嵌 WebView 与部分手机浏览器会直接吞掉它
+       （不弹窗、返回 null），那种环境里这一步等于静默失败。改成指路口令框。 */
+    const el = $('setPasscode');
+    if (el) el.focus();
+    settingsRenderError('保存未执行', new Error(
+      '请先在「设置口令」框里填入 HUB_PASSCODE（不再弹窗收集：手机/APP 会吞弹窗）'));
+    return toast('请先填设置口令', 'err');
   }
-  const model = SET_DIFF.model;
+  const btn = $('setApplyBtn');
+  if (btn) btn.disabled = true;                // 只防连点，保存完立刻恢复
   try {
     const d = await api('/api/settings/model/apply', {
       method: 'POST',
@@ -687,7 +712,6 @@ async function settingsApplyModel() {
     toast(SET_AGENT + ' 模型已设为 ' + model + '（备份 ' + (d.applied || []).length + ' 份）', 'ok');
     SET_AGENTS = [];
     SET_DIFF = null;
-    $('setApplyBtn').disabled = true;
     await settingsModelsLoad(true);
     settingsRefreshMeta(model);               // 用重载后的真值刷新状态行（不是拿入参糊一个）
     settingsRenderApplied(d);
@@ -696,6 +720,8 @@ async function settingsApplyModel() {
     clearPasscodeInput();
     settingsRenderError('保存失败', e);
     toast('保存失败：' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;            // 保存完必须恢复可点，否则第二次就"点不动"
   }
 }
 
@@ -775,11 +801,24 @@ function ghPayload(extra) {
   return Object.assign(p, extra || {});
 }
 
+/* 与模型页同口径（v0.13.45）：不向 prompt 要口令 —— 手机/APP WebView 会吞弹窗，
+   那种环境里"点了没反应"就是这么来的。缺口令就指回页面上的口令框并说明原因。 */
+function ghRenderError(prefix, e) {
+  const box = $('ghStatus');
+  if (!box) return;
+  box.innerHTML = '<div class="v">' + escapeHtml(prefix + '：' + (e.message || String(e))) +
+    (e.http ? '（HTTP ' + escapeHtml(String(e.http)) + '）' : '') + '</div>';
+  box.style.display = '';
+}
+
 async function ghAskPasscode(what) {
   let pc = settingsPasscode();
   if (!pc) {
-    pc = prompt('「' + what + '」需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
-    if (!pc) return '';
+    const el = $('ghPasscode');
+    if (el) el.focus();
+    ghRenderError(what + '未执行', new Error(
+      '请先在「设置口令」框里填入 HUB_PASSCODE（不再弹窗收集：手机/APP 会吞弹窗）'));
+    return '';
   }
   return pc;
 }
