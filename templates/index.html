@@ -1716,6 +1716,61 @@
             </div>
         </section>
 
+        <!-- 设置 · 日志（v0.13.46）
+             两路来源合成一个流：① 服务日志 = systemd journald（uvicorn 访问行、print 埋点、
+             Traceback；hub 自己不落文件，不看 journald 就看不到报错）；② 操作事件 =
+             profile_events 全量 source（既有的「运行日志」页只看 rest，这里互补）。
+             形态纪律同另三个设置页：正文出页（无浮层）、按钮一律 data-settings-act 走委托、
+             筛选是页内 select + 关键字框（关键字在服务端 Python 里过滤，绝不进命令行）。 -->
+        <section class="page sys" id="page-settings-logs">
+            <div class="sp">
+                <div class="sp-card">
+                    <div class="sp-hd">
+                        <h3>日志</h3>
+                        <div class="sp-r"><span class="hint">服务日志（journald）+ 操作事件 · 只读</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="hint" style="margin-bottom:10px">两路合并按时间倒序：
+                            <b>服务日志</b>来自 systemd journald（手跑实例不经 systemd ⇒ 这一路为空）；
+                            <b>操作事件</b>来自 profile_events 全量 source（对话 / 任务 / 定时 / MCP / 自建工具）。
+                            日志含 IP 与路径，读取需设置口令。</div>
+                        <div class="set-sub">筛选</div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                            <select id="logSource" aria-label="日志来源">
+                                <option value="all">全部来源</option>
+                                <option value="journal">服务日志（journald）</option>
+                                <option value="event">操作事件</option>
+                                <option value="error">只看错误</option>
+                            </select>
+                            <select id="logLevel" aria-label="级别">
+                                <option value="all">全部级别</option>
+                                <option value="warn">警告及以上</option>
+                                <option value="error">仅错误</option>
+                            </select>
+                            <select id="logWindow" aria-label="时间窗">
+                                <option value="1">最近 1 小时</option>
+                                <option value="6">最近 6 小时</option>
+                                <option value="24" selected>最近 24 小时</option>
+                                <option value="72">最近 3 天</option>
+                                <option value="720">最近 30 天</option>
+                            </select>
+                            <input id="logQ" type="search" autocomplete="off" spellcheck="false"
+                                   placeholder="关键字：路径 / IP / 错误片段" aria-label="关键字" style="max-width:220px">
+                            <input id="logPasscode" type="password" autocomplete="off" spellcheck="false"
+                                   placeholder="设置口令（留空用本机缓存）" aria-label="设置口令" style="max-width:200px">
+                            <button class="btn sm" type="button" data-settings-act="log-refresh">刷新</button>
+                            <button class="btn ghost sm" type="button" data-settings-act="log-copy">复制</button>
+                            <button class="btn ghost sm" type="button" data-settings-act="log-export">导出 .log</button>
+                        </div>
+                        <div id="logStats" class="set-status" style="display:none"></div>
+                        <div id="logBody"></div>
+                    </div>
+                    <div class="sp-note">只读：本页不写配置、不建新表；「只看错误」同时扫 journald 的
+                        Traceback / 5xx 与事件表里的 fail 事件。</div>
+                </div>
+            </div>
+        </section>
+
     </main>
     </div>
 
@@ -1868,6 +1923,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=885228c3"></script>
+    <script src="/static/hub.js?v=50bbc1f7"></script>
 </body>
 </html>

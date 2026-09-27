@@ -1,5 +1,41 @@
 # CHANGELOG
 
+## v0.13.46 — 设置加「日志」子菜单：journald 服务日志 + 操作事件聚合（错误级一键筛选 / 导出）
+
+> 施工会话：551f6b59。基线：v0.13.45。用户诉求原话：「全面收集 agent hub 的
+> 操作日志和错误日志」。
+>
+> **为什么必须两路合起来看**：hub 自己**不落文件**（systemd `StandardOutput=journal`），
+> Traceback / 5xx / `[writegate] 401` 只在 journald 里 —— 不看 journald 就永远看不到
+> "到底报了什么错"；而"操作日志"是 `profile_events` 全量 source（既有的「运行日志」页
+> 只挑 `source='rest'` 的三中心检索留痕，本页与它互补，不是重复造）。
+>
+> **怎么改的**：
+>   - 新增 `src/hublog.py` + `GET /api/hublog`：两路合并成按时间倒序的一条流，
+>     支持 `source/level/q/window/limit` 过滤与 `format=text` 导出；零新表、
+>     journald 现拉只读。
+>   - 鉴权按**写方法判**（照抄 `/api/runlog`、`/api/audit/list`）：日志含 IP/路径/
+>     查询词，未配口令 ⇒ 503（fail-closed）、错 ⇒ 401。
+>   - `templates/index.html` 新增 `#page-settings-logs`（第四个设置子页，正文出页
+>     **无浮层**；复用 `.set-diff` 骨架，不新增 CSS 类与色 token；无 inline onclick）。
+>   - `static/hub/05-chat-and-history.js`：`SET_PAGES` 加 `settings-logs`；
+>     `01-core-boot.js`：懒加载钩子 + 委托 `log-refresh/log-copy/log-export` +
+>     页内口令框（缺口令不弹 prompt，focus 框 + 页内指引）。
+>
+> **两个实测坑（都是"看着有日志其实取错了"）**：
+>   ① `--since` **必须配 `-r`**：带 `--since` 时 journalctl 从窗口起点**正序**读，
+>      此时 `-n` 截的是窗口里**最旧**的 N 条（09-27 实测：拿到的是 24h 前那 50 条，
+>      最新报错全丢）。② `--since` 收的是**本机时间**，拿 UTC 下界喂进去会偏一个时区。
+>
+> **闸门**：L0 738（新增 `tests/test_hublog.py` 19 例：级别判定、续行归并、
+> 命令必须带 `-r`、关键字绝不进命令行、journald 不可用是数据不是异常、鉴权三态、
+> 前端无 inline onclick/无 prompt）；L1 44 全绿；新探针
+> `work/probe/e2e_settings_logs.py` 1440/390 两档断言零浮层、零 prompt、页内真出
+> 日志行、切来源自动重拉、只看错误有 ERR 行或页内说明、缺口令给页内报错且焦点回口令框。
+>
+> **顺带修的**：复制在局域网 http（非安全上下文）下 `navigator.clipboard` 直接抛
+> `Write permission denied` ⇒ 加 `execCommand` 二级兜底，两级都失败才提示改用「导出 .log」。
+
 ## v0.13.45 — 保存按钮不再置灰：一次点击走完「补预览 + 落笔」，口令彻底不走 prompt
 
 > 施工会话：688b689d。基线：v0.13.44。用户第二轮报障原话：「还是无法保存」。

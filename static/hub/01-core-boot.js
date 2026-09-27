@@ -100,6 +100,7 @@ var ghLoaded = false;
    lpLoaded / ghLoaded 同一条纪律；真值在 go() 里首次进页时才置。 */
 var setModelPageLoaded = false;
 var setGithubPageLoaded = false;
+var setLogsPageLoaded = false;   // v0.13.46：日志页（进页才拉，日志量级大不能每次导航都拉）
 /* v0.13.32 TDZ 补丁（真事故驱动的修复）：06 顶层 go(lsGet('hub.page')) 在
    09/10 分片顶层初始化**之前**就能调到 loadLocalProjects()/loadGithubRepos()
    （函数声明提升），而 LP/GH/lpStars… 的 `var X = …` 初始化还没跑 ⇒ 函数里
@@ -252,6 +253,7 @@ function go(page) {
   // v0.13.43 设置三页：与系统页同口径，进页才拉（模型清单 / GitHub 现值）
   if (page === 'settings-model' && !setModelPageLoaded) { setModelPageLoaded = true; settingsModelsLoad(); }
   if (page === 'settings-github' && !setGithubPageLoaded) { setGithubPageLoaded = true; settingsGithubLoad(); }
+  if (page === 'settings-logs' && !setLogsPageLoaded) { setLogsPageLoaded = true; settingsLogsLoad(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
   if (page === 'runlog') loadRunlog(true);   // v0.13.27：每次进页刷新（与 telemetry 同口径，不设 loaded 位）
@@ -518,7 +520,8 @@ let SET_AGENT = '';           // 当前选中的 agent（不落盘）
 let SET_MODELS = null;        // /api/models 缓存（60s）
 let SET_DIFF = null;          // 最近一次预览结果（保存时复用同一个 model 值）
 /* 三个设置页的 id —— 委托与 go() 懒加载共用这一份清单，别再各处写字面量 */
-const SET_PAGE_IDS = ['page-settings-model', 'page-settings-github', 'page-settings-token'];
+const SET_PAGE_IDS = ['page-settings-model', 'page-settings-github', 'page-settings-token',
+                      'page-settings-logs'];
 
 async function settingsModelsLoad(force) {
   const box = $('setAgentList');
@@ -907,7 +910,159 @@ async function settingsGithubRefresh() {
   }
 }
 
-/* 三个设置正文页的**唯一**委托出口：选 agent / 预览 / 保存 / GitHub / 口令 */
+/* ── 设置 → 日志子菜单（v0.13.46）────────────────────────────────────────
+   数据源 GET /api/hublog：journald 服务日志 + profile_events 操作事件，合并按时间倒序。
+   三条纪律与另三个设置页同源：① 无浮层（正文出页，筛选控件全在页内）；
+   ② 按钮一律 data-settings-act 走同一委托，无 inline onclick；
+   ③ **鉴权失败不弹 prompt**（手机/APP WebView 吞弹窗 ⇒ 点了没反应）：原因写进
+      页内 #logStats 并 focus 口令框，与模型/GitHub 页 v0.13.45 的口径一致。
+   后端按写方法鉴权（GET 也要口令），故 token 由本页自己带（api() 只给写方法带）。
+   var 声明而非 let：go()（06 分片顶层就会跑）可能经 settingsLogsLoad 读到它，
+   与 RL_FIRST/setModelPageLoaded 同一条 TDZ 纪律。 */
+var LOG_LAST = null;      // 最近一次结果：复制/导出复用，不再为同一次查看打两次后端
+
+function settingsLogsParams() {
+  const p = new URLSearchParams();
+  const v = id => { const el = $(id); return el && el.value ? el.value : ''; };
+  if (v('logSource')) p.set('source', v('logSource'));
+  if (v('logLevel')) p.set('level', v('logLevel'));
+  if (v('logWindow')) p.set('window', v('logWindow'));
+  if (v('logQ')) p.set('q', v('logQ'));
+  p.set('limit', '200');
+  return p;
+}
+
+async function settingsLogsLoad() {
+  const body = $('logBody');
+  if (!body) return;
+  boxBusy('logBody', '加载中…');
+  const pc = ($('logPasscode') && $('logPasscode').value.trim()) || settingsPasscode();
+  const opt = pc ? { headers: { 'x-hub-token': pc } } : {};
+  try {
+    const d = await api('/api/hublog?' + settingsLogsParams().toString(), opt);
+    LOG_LAST = d;
+    settingsLogsRender(d);
+  } catch (e) {
+    LOG_LAST = null;
+    settingsLogsError(e);
+  }
+}
+
+function settingsLogsRender(d) {
+  const body = $('logBody');
+  if (!body) return;
+  const es = (d && d.entries) || [];
+  if (!es.length) {
+    body.innerHTML = '<div class="hint">该筛选下没有条目 —— 可放宽时间窗、换成「全部来源」，' +
+      '或确认单元名（服务端未走 systemd 时 journald 一路为空）。</div>';
+  } else {
+    /* 复用 .set-diff/.set-diff-row 既有骨架（不新增 CSS 类与色 token）；
+       级别只在行头的 .k 上着色，error=--danger / warn=--warn（:root 既有）。 */
+    body.innerHTML = '<div class="set-diff">' + es.map(e => {
+      const lv = e.level === 'error' ? 'ERR' : e.level === 'warn' ? 'WARN' : 'INFO';
+      const col = e.level === 'error' ? 'var(--danger)' : e.level === 'warn' ? 'var(--warn)' : 'var(--muted)';
+      return '<div class="set-diff-row"><div class="k" style="color:' + col + '">' +
+        escapeHtml((e.ts || '').slice(0, 19) + '  ' + lv + '  ' + e.src + ':' + (e.tag || '')) +
+        '</div><div class="v">' + escapeHtml(e.msg || '') + '</div></div>';
+    }).join('') + '</div>';
+  }
+  settingsLogsStats(d);
+}
+
+function settingsLogsStats(d) {
+  const box = $('logStats');
+  if (!box) return;
+  const s = (d && d.stats) || {};
+  const rows = [
+    ['条数', (d && d.count != null ? d.count : 0) + (d && d.truncated ? '（已到上限，可缩小时间窗或加关键字）' : '')],
+    ['错误 / 警告', (s.error || 0) + ' / ' + (s.warn || 0)],
+    ['来源', ((d && d.sources) || []).map(x => x.label + ' ' + x.count +
+      (x.ok ? '' : '（不可用：' + (x.note || '') + ')')).join('；') || '—'],
+  ];
+  box.innerHTML = rows.map(r => '<div><span class="k">' + escapeHtml(r[0]) + '：</span>' +
+    '<span class="v">' + escapeHtml(String(r[1])) + '</span></div>').join('');
+  box.style.display = '';
+}
+
+function settingsLogsError(e) {
+  const box = $('logStats');
+  const body = $('logBody');
+  const msg = (e && e.message) || String(e);
+  if (/401|口令|缺少凭据/.test(msg)) lsRemove('hub.passcode');   // 存量口令失效：清掉再问，不循环
+  if (body) body.innerHTML = '';
+  if (box) {
+    box.innerHTML = '<div class="v" style="color:var(--danger)">读取失败：' + escapeHtml(msg) +
+      (e && e.http ? '（HTTP ' + escapeHtml(String(e.http)) + '）' : '') + '</div>' +
+      '<div class="hint">在「设置口令」框填 HUB_PASSCODE 再点刷新（不会弹窗）。' +
+      'HTTP 503 表示服务端没配 HUB_PASSCODE，填什么都没用。</div>';
+    box.style.display = '';
+  }
+  const el = $('logPasscode');
+  if (el) el.focus();
+  toast('日志读取失败：' + msg, 'err');
+}
+
+function settingsLogsText() {
+  if (!LOG_LAST || !LOG_LAST.entries || !LOG_LAST.entries.length) return '';
+  return LOG_LAST.entries.map(e => (e.ts || '') + ' [' + String(e.level || '').toUpperCase() + '] ' +
+    e.src + ':' + (e.tag || '') + ' ' + (e.msg || '')).join('\n');
+}
+
+/* 复制的两级兜底（09-27 实测）：navigator.clipboard 只在**安全上下文**可用，
+   而手机走的是 http://192.168.x.x:3102（非 https ⇒ 不是安全上下文）⇒ 直接抛
+   "Write permission denied"。所以先 clipboard、再 execCommand，两级都失败才
+   明确告诉用户改用「导出 .log」，而不是一句"复制失败"让人以为是页面坏了。
+   临时 textarea 挂在视口外 + pointer-events:none，不遮挡、不截点击。 */
+async function settingsLogsCopyText(t) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(t);
+      return true;
+    }
+  } catch (e) { /* 落到 execCommand 兜底 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return !!ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function settingsLogsCopy() {
+  const t = settingsLogsText();
+  if (!t) return toast('先刷新出日志再复制', 'err');
+  if (await settingsLogsCopyText(t)) {
+    toast('已复制 ' + LOG_LAST.entries.length + ' 条', 'ok');
+  } else {
+    toast('复制失败：浏览器不给剪贴板权限（局域网 http 地址常见）——请改用「导出 .log」', 'err');
+  }
+}
+
+function settingsLogsExport() {
+  const t = settingsLogsText();
+  if (!t) return toast('先刷新出日志再导出', 'err');
+  /* 走 Blob 而不是 format=text 端点：已在页里的结果不必再打一次后端，
+     也省得把口令再塞进 URL（?token= 会被 uvicorn 记进访问行）。 */
+  const blob = new Blob([t], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'agent-hub-' + ((LOG_LAST.query && LOG_LAST.query.source) || 'all') + '-' +
+    new Date().toISOString().slice(0, 19).replace(/[:T]/g, '') + '.log';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('已导出 ' + LOG_LAST.entries.length + ' 条', 'ok');
+}
+
+/* 三个设置正文页的**唯一**委托出口：选 agent / 预览 / 保存 / GitHub / 口令 / 日志 */
 function settingsDelegates() {
   SET_PAGE_IDS.forEach(id => {
     const page = document.getElementById(id);
@@ -935,7 +1090,17 @@ function settingsDelegates() {
       if (a === 'token-copy') return settingsCopyToken();
       if (a === 'token-apply') return settingsApplyToken();
       if (a === 'token-toggle') return settingsToggleShow();
+      /* 日志页（v0.13.46）：刷新 / 复制 / 导出 */
+      if (a === 'log-refresh') return settingsLogsLoad();
+      if (a === 'log-copy') return settingsLogsCopy();
+      if (a === 'log-export') return settingsLogsExport();
     }
+    });
+    /* 筛选下拉变了就重拉（关键字框要等敲完 ⇒ 走「刷新」按钮，不逐字符打后端）。
+       change 也挂在同一个委托出口里，不另起监听点。 */
+    page.addEventListener('change', e => {
+      const id = e.target && e.target.id;
+      if (id === 'logSource' || id === 'logLevel' || id === 'logWindow') return settingsLogsLoad();
     });
   });
 }

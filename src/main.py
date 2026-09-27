@@ -70,11 +70,12 @@ import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆�
 import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项目页收藏/隐藏落服务端
 import modelcfg as modelcfg_mod     # 各 Agent 默认模型统一设置（v0.13.41：设置→模型子菜单）
 import ghsettings as ghsettings_mod  # GitHub 地址/key/落点（v0.13.42：设置→GitHub 子菜单）
+import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志子菜单，journald + 操作事件聚合）
 
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.45"   # 设置→模型保存：去掉 disabled 门（点保存自动补预览）+ 口令不再走 prompt
+VERSION = "0.13.46"   # 设置→日志子菜单：journald 服务日志 + profile_events 操作事件聚合（错误级一键筛选/导出）
                       #   三个子项与系统页同口径（data-sys ⇒ 委托 ⇒ go(page) ⇒ 正文出页），
                       #   设置抽屉整体拆除 ⇒ 09-23「手机上被浮层糊住」的形态不再存在。
                       #   ↑ v0.13.42：设置→GitHub 子菜单（远程地址/key/归属/克隆落点不再硬编码）
@@ -276,6 +277,7 @@ app.include_router(github_mod.router)
 app.include_router(prefs_mod.router)
 app.include_router(modelcfg_mod.router)
 app.include_router(ghsettings_mod.router)
+app.include_router(hublog_mod.router)
 
 # D2：Hub MCP Server —— 把本机事实源以 MCP 暴露给 Hermes 等外部 Agent。
 # 端点为 /hub-mcp/mcp（streamable_http_app 自带 /mcp 子路由，故挂在 /hub-mcp 下，避免与 mcpgw 的 /mcp/* REST 冲突）。
