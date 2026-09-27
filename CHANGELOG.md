@@ -1,5 +1,69 @@
 # CHANGELOG
 
+## v0.13.42 — 设置新增「GitHub」子菜单：远程地址 / key / 归属 / 克隆落点不再硬编码
+
+> 施工会话：551f6b59。基线：v0.13.41。改动文件：新增 `src/ghsettings.py`、
+> `tests/test_ghsettings.py`（27 例，L0 hermetic）、`work/probe/e2e_settings_github_menu.py`
+> （真渲染取证）；改 `src/githubprojects.py`（去硬编码）、`src/main.py`（挂路由 + VERSION）、
+> `src/writeauth.py`（写闸豁免登记）、`tests/test_writeauth.py`（豁免基线 4→8 并交代理由）、
+> `templates/index.html`（第三个子页 + CSS）、`static/hub/01-core-boot.js`（子页逻辑）、
+> `static/hub.js`（重建）。
+>
+> - **用户诉求**：「设置里加 GitHub 项目的地址和 key 的设置 —— GitHub 项目就不需要硬编码，
+>   可以灵活设置远程仓库和操作远程仓库」。
+> - **三条口径（用户 09-27 裁定）**：① **Hub 服务端 DB 优先**（`github_settings` 表，
+>   DATA_DIR 内，重启仍在），可选「同时回写 `github.txt` / `.env`」（默认关，落笔前时间戳
+>   备份）；② 操作范围 **只读 + 克隆**（测试连接 / 列仓库 / 单仓核对 / 克隆），不新增远端写；
+>   ③ 地址 **任意 https 主机均可**（含自建 GHES `https://git.example.com/api/v3`），
+>   但**拒绝明文 http、内网/回环/链路本地、URL 内嵌凭据** —— 否则填错一个地址就等于
+>   把 key 明文发到内网任意主机（SSRF + 凭据外泄同案）。
+> - **读取顺序**：DB（本页设置）→ 环境变量（`GITHUB_API_BASE`/`GITHUB_HOST`/`GITHUB_OWNER`/
+>   `GITHUB_CLONE_BASE`/`GITHUB_TOKEN`）→ 内置默认。`githubprojects` 的四个取值函数
+>   （`api_base()/git_host()/clone_base()/owner()`）**每次现读** ⇒ 改完立即生效、不用重启；
+>   模块常量仍保留为兜底与既有 L0 的 patch 接缝。
+> - **key 只写不读**：响应、日志、diff、备份文件名里只有掩码（`ghp_************x8ea`）
+>   与来源（db/env/file）；上游错误正文一律过 `tdai_client.scrub(text, token)`
+>   （`ghp_` 不在 `_KEY_PATTERNS`，只按位置替换才杀得掉）。
+> - **四个写端点**（`test/apply/clear/refresh`）一律自带 HUB_PASSCODE：错→401、未配→503
+>   （fail-closed）；已在 `writeauth.EXEMPT_PREFIXES` 登记理由（不叠 token 门，否则
+>   用户在设置页永远改不动地址与 key＝自锁死）。
+> - **验证**：L0 703 + L1 44 全绿、prepush 六闸全绿；影子实例（假 HOME + 端口 3199）
+>   实弹——试连真 GitHub 拿到 `login=gztxt`、scope `repo,workflow,write:packages`、
+>   配额 5000；apply 改落点 ⇒ `/api/github/repos` 立刻按新落点走；refresh 真拉到 72 个
+>   仓库（本地命中 30）；clear 干净回落；真渲染探针（1440/390 两档）断言全过。
+
+## v0.13.41 — 设置新增「模型」子菜单：选 agent → 选 CCR 模型 → 预览 → 口令落笔
+
+> 施工会话：551f6b59。基线：v0.13.39。改动文件：新增 `src/modelcfg.py`、
+> `tests/test_modelcfg.py`（25 例，L0 hermetic）、`work/probe/e2e_settings_model_menu.py`
+> （真渲染取证）；改 `src/main.py`（挂路由 + VERSION）、`src/term.py`（会话拉起注入
+> `--model`）、`src/writeauth.py`（写闸豁免登记）、`templates/index.html`
+> （设置抽屉加子菜单 + CSS）、`static/hub/01-core-boot.js`（模型子页逻辑）、
+> `static/hub/06-manager-tasks.js`（委托挂在启动尾）、`static/hub.js`（重建）。
+>
+> - **用户诉求**：「设置菜单还是空的，加个模型子菜单 —— 先选 agent，再选 CCR 的模型，
+>   把所有 agent 的模型设置统一在设置里」。
+> - **三条口径（用户 09-27 裁定）**：① **双写**——Hub 侧存 per-agent 模型（拉起终端时
+>   按白名单注入 `--model`）+ 同时写该 agent 自己的配置文件；② **CCR 网关 Router
+>   五场景只读展示、不写**（三方互斥军规保护面，且 ccr 运行中写 config.json 会被运行态
+>   覆盖）；③ 写前预览 + 口令（HUB_PASSCODE）+ 时间戳备份三件套。
+> - **落点（本机实测，非推断）**：claude `~/.claude/settings.json`（model +
+>   env.ANTHROPIC_MODEL / CCR_CLAUDE_CODE_MODEL / CODEXL_CLAUDE_CODE_MODEL）、
+>   jcode `[provider].default_model`、codex CCR 托管块 `model`、pi `defaultModel`
+>   +`defaultProvider`（模型不在清单则补进 `models.json`）、grok `[model.ccr-hub]`
+>   命名块 + `[models].default`、hermes `model.default/provider`。
+>   codebuddy / qwenpaw **不可设置**（前者 `--model` 只认自有清单 hy4-preview 等，
+>   与 CCR 的 provider/model ID 不通用；后者纯 Web 型）⇒ 设置页里置灰并给理由。
+> - **为什么不做通用文件编辑器**：各家字段形状不同，通用写手必然退化成整文件重写
+>   —— 09-07 pi 改 CCR 配置把同文件其它 profile 一起改坏就是那类事故面。这里是
+>   **逐家白名单 + 定点行编辑**：jcode 的 `providers.deepseek-openai.default_model`、
+>   codex 的 `approval_policy` 等无关键实测零改动。
+> - **凭据不硬编码**：grok 新块的 `api_key` 复用文件里已指向 CCR 的那把，回落才读
+>   CCR `config.json` 的 `APIKEY`；pi 新建 provider 同理。
+> - **验证**：L0 676 + L1 44 全绿、prepush 六闸全绿；探针实例（假 HOME + 真 HTTP）
+>   五家 agent 逐个落笔成功且各留一份备份；真渲染探针（1440 / 390 两档）断言浮层唯一、
+>   默认落在「模型」页、选 agent 出 17 个模型、预览出 4 行 diff、遮罩/关闭按钮关得掉。
+
 ## v0.13.40 — 系统子菜单页：删页顶标题/分割线 + 十页统一骨架重排
 
 > 施工会话：add6797a。基线：v0.13.39。改动文件：`templates/index.html`（系统页骨架

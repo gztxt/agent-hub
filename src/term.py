@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+import modelcfg
 import profiles
 import sessions_store
 
@@ -267,6 +268,11 @@ async def create_session(body: CreateIn, request: Request):
     if not resolved:
         raise HTTPException(400, f"命令 {cmd[0]} 未在本机找到")
     cmd[0] = resolved
+    # v0.13.41：设置→模型里给该 agent 存过默认模型 ⇒ 按白名单追加 --model。
+    # 只对**新会话**追加：续聊命令出自 sessions_store.resume_argv 模板，插一个
+    # 它不认识的 flag 会改坏 resume 语义（白名单外的 agent 一律返回 []，绝不猜 flag）。
+    if not body.session_id:
+        cmd += modelcfg.terminal_argv(prof["id"], modelcfg.hub_model(prof["id"]))
     sid = uuid.uuid4().hex[:10]
     sess = Session(sid, prof["id"], cmd, cwd)
     sess.resume_of = body.session_id or ""

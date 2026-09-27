@@ -84,7 +84,13 @@ class BRouteInventory(unittest.TestCase):
         self.assertEqual(sorted(p for _, p, _ in uncovered),
                          sorted(p for _, p, _ in routes if p.startswith(pre)),
                          "未被闸门覆盖的路由与豁免名单不吻合")
-        self.assertLessEqual(len(uncovered), 4,
+        # 豁免基线 4 → 8（v0.13.42）：设置→GitHub 的四个写端点
+        # （/api/settings/github/{test,apply,clear,refresh}）是**同一个功能的一个入口**，
+        # 四条共用同一道 HUB_PASSCODE（错→401、未配→503 fail-closed），与已豁免的
+        # term-token / model/apply 完全同型：它们不碰 agent 配置，只写 hub 自己的
+        # github_settings 表（+ 可选回写文件，落笔前备份）。再叠一层 token 门，
+        # 用户在设置页就永远改不动地址与 key（自锁死）——与既有豁免同理。
+        self.assertLessEqual(len(uncovered), 8,
                              f"豁免口子涨到 {len(uncovered)} 条了，每加一条都要在这里交代清楚")
 
     def test_no_dead_exempt_entry(self):

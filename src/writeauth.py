@@ -29,6 +29,14 @@ EXEMPT_PREFIXES: Dict[str, str] = {
         "它自己校验 HUB_PASSCODE（口令错→401）。若在这里拦掉，用户永远输不进口令＝自锁死。",
     "/telemetry/events/":
         "hook.py 自带方案：设了 HOOK_AUTH_TOKEN 必须 Bearer；未设则只允许回环来源。",
+    "/api/settings/model/apply":
+        "它自己校验 HUB_PASSCODE（错→401、未配→503），与同页的 term-token 同口径；"
+        "再叠一层 token 门 = 用户在设置页永远改不动模型（自锁死）。",
+    "/api/settings/github/":
+        "设置→GitHub 四个写端点（test/apply/clear/refresh）各自校验 HUB_PASSCODE"
+        "（错→401、未配→503）：地址与 key 只能从设置页改，再叠 token 门同样自锁死。"
+        "它们写的是 hub 自己的 github_settings 表（+ 可选回写文件，落笔前备份），"
+        "不碰 agent 配置。",
 }
 
 

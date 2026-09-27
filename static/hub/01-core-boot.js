@@ -421,6 +421,7 @@ async function verifyAgent(id) {
 /* ── 设置（口令保护的 TERM_TOKEN 查看/应用）── */
 function openSettings() {
   openOverlay('settingsDrawer');
+  settingsTab('model');   // 默认落在「模型」子页（不读存档：同一入口每次给同一结果）
 }
 function closeSettings() { closeOverlay('settingsDrawer'); }
 function settingsPasscode() { return lsGet('hub.passcode') || ''; }
@@ -477,6 +478,361 @@ function settingsClearPasscode() {
   $('settingsTokenBox').style.display = 'none';
   toast('已清除本机缓存口令，下次查看需重新输入', 'ok');
 }
+
+/* ── 设置 → 模型子菜单（v0.13.41）──────────────────────────────────────
+   交互两步：先选 agent，再选该 agent 要用的 CCR 模型；保存前给 diff 预览，
+   保存时要口令（HUB_PASSCODE，与「终端口令」子页共用一个本机缓存的口令）。
+   三条纪律：
+     ① **不新增浮层**：两个子页只是 settingsDrawer 内两个 section 的显示切换
+        （09-23 事故正身＝两个浮层叠加把正文压住）；
+     ② **不用 inline onclick**：一切走 #settingsDrawer 上的单一委托
+        （inline 会旁路委托，把"导航即清浮层"那类收场逻辑整段跳过）；
+     ③ **档位判定读当前值、不读存档**：子页选择不写 localStorage，刷新回落到
+        「模型」页是**常量**而非记忆（跨 origin 分叉那条不变量的同款要求）。 */
+let SET_AGENTS = [];          // /api/settings/models 的 agents 段
+let SET_AGENT = '';           // 当前选中的 agent（不落盘）
+let SET_MODELS = null;        // /api/models 缓存（60s）
+let SET_DIFF = null;          // 最近一次预览结果（保存时复用同一个 model 值）
+
+const SET_PANELS = { model: 'Model', github: 'Github', token: 'Token' };
+function settingsTab(name) {
+  Object.keys(SET_PANELS).forEach(n => {
+    const tab = document.querySelector('.set-tab[data-settings-tab="' + n + '"]');
+    const panel = $('setPanel' + SET_PANELS[n]);
+    const on = (n === name);
+    if (tab) { tab.classList.toggle('on', on); tab.setAttribute('aria-selected', on ? 'true' : 'false'); }
+    if (panel) panel.style.display = on ? '' : 'none';
+  });
+  if (name === 'model') settingsModelsLoad();
+  if (name === 'github') settingsGithubLoad();
+}
+
+async function settingsModelsLoad(force) {
+  const box = $('setAgentList');
+  if (!box) return;
+  if (!SET_AGENTS.length || force) {
+    try {
+      const d = await api('/api/settings/models');
+      SET_AGENTS = d.agents || [];
+      settingsRouterRender(d.ccr || {});
+    } catch (e) {
+      box.innerHTML = '<span class="hint">agent 清单加载失败：' + escapeHtml(e.message) + '</span>';
+      return;
+    }
+  }
+  box.innerHTML = SET_AGENTS.map(a => {
+    const off = !a.writable;
+    const why = a.reason || a.note || '不可设置';
+    const tip = off ? why : ((a.name || a.id) + ' · 当前 ' + (a.current || '未读到') +
+      (a.provider ? ' · provider ' + a.provider : '') + (a.files || []).join(' / '));
+    return '<button class="btn sm' + (a.id === SET_AGENT ? ' on' : '') + '" type="button"' +
+      ' data-settings-agent="' + escapeHtml(a.id) + '"' +
+      (off ? ' aria-disabled="true"' : '') +
+      ' title="' + escapeHtml(tip) + '">' + escapeHtml(a.name || a.id) + '</button>';
+  }).join('') || '<span class="hint">无可用 agent</span>';
+}
+
+function settingsRouterRender(ccr) {
+  const box = $('setCcrRouter');
+  if (!box) return;
+  const r = ccr.router || {};
+  const keys = Object.keys(r);
+  if (!keys.length) { box.textContent = ccr.note || '未读到 CCR 配置'; return; }
+  box.innerHTML = '<div class="set-router">' + keys.map(k =>
+    '<span class="k">' + escapeHtml(k) + '</span><span class="v">' + escapeHtml(r[k]) + '</span>').join('') +
+    '</div><div class="hint" style="margin-top:6px">只读：CCR 属三方互斥保护面，且运行中写 config.json 会被运行态覆盖。</div>';
+}
+
+function settingsPickAgent(id) {
+  const a = SET_AGENTS.find(x => x.id === id);
+  if (!a || !a.writable) return;
+  SET_AGENT = id;
+  SET_DIFF = null;
+  settingsModelsLoad();                       // 重渲染选中态
+  $('setModelStep').style.display = 'block';
+  $('setDiffBox').style.display = 'none';
+  $('setApplyBtn').disabled = true;
+  $('setAgentMeta').textContent = '当前：' + (a.current || '未读到') +
+    '｜hub 侧：' + (a.hub_model || '未设置') + '｜配置文件：' + (a.files || []).join(' / ');
+  settingsModelOptions(a);
+}
+
+async function settingsModelOptions(a) {
+  const sel = $('setModelSel');
+  if (!sel) return;
+  const fresh = !SET_MODELS || (Date.now() - (SET_MODELS._ts || 0) > 60000);
+  if (fresh) {
+    sel.innerHTML = '<option value="">模型清单加载中…</option>';
+    try {
+      const d = await api('/api/models');
+      SET_MODELS = { models: d.models || [], groups: d.groups || {}, _ts: Date.now() };
+    } catch (e) {
+      sel.innerHTML = '<option value="">模型清单加载失败</option>';
+      return;
+    }
+  }
+  // 未设 hub 侧时以 agent 现值预选；两项都没有则「默认（网关路由）」= 空值
+  const cur = a.hub_model || a.current || '';
+  const g = SET_MODELS.groups || {};
+  let html = '<option value="">默认（网关路由）</option>';
+  Object.keys(g).forEach(gk => {
+    html += '<optgroup label="' + escapeHtml(gk) + '">' + g[gk].map(mid => {
+      const m = (SET_MODELS.models || []).find(x => x.id === mid);
+      const label = (m && m.name && m.name !== mid) ? (mid + ' — ' + m.name) : mid;
+      return '<option value="' + escapeHtml(mid) + '"' + (mid === cur ? ' selected' : '') + '>' +
+        escapeHtml(label) + '</option>';
+    }).join('') + '</optgroup>';
+  });
+  const grouped = new Set(Object.keys(g).flatMap(k => g[k]));
+  const rest = (SET_MODELS.models || []).filter(m => !grouped.has(m.id));
+  if (rest.length) {
+    html += '<optgroup label="其他">' + rest.map(m =>
+      '<option value="' + escapeHtml(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' +
+      escapeHtml(m.name || m.id) + '</option>').join('') + '</optgroup>';
+  }
+  sel.innerHTML = html;
+}
+
+function setSelectedModel() { return $('setModelSel') ? $('setModelSel').value : ''; }
+
+async function settingsPreviewModel() {
+  if (!SET_AGENT) return toast('先选一个 agent', 'err');
+  const model = setSelectedModel();
+  if (!model) return toast('先选一个模型', 'err');
+  const box = $('setDiffBox');
+  try {
+    SET_DIFF = await api('/api/settings/model/preview?agent_id=' + encodeURIComponent(SET_AGENT) +
+      '&model=' + encodeURIComponent(model));
+  } catch (e) {
+    SET_DIFF = null; box.style.display = 'none'; $('setApplyBtn').disabled = true;
+    return toast('预览失败：' + e.message, 'err');
+  }
+  const files = SET_DIFF.files || [];
+  box.innerHTML = '<div class="set-diff">' +
+    '<div class="set-diff-hd">将写入 ' + files.length + ' 个文件（保存时自动时间戳备份）</div>' +
+    files.map(f => '<div class="set-diff-row"><div class="k">' + escapeHtml(f.file) + '</div>' +
+      (f.changes || []).map(c => '<div class="v">' + escapeHtml(c.where) + '：' +
+        escapeHtml(c.from || '（空）') + ' → ' + escapeHtml(c.to) + '</div>').join('') + '</div>').join('') +
+    '</div>' + (SET_DIFF.argv && SET_DIFF.argv.length
+      ? '<div class="hint" style="margin-top:6px">hub 拉起终端时追加：' + escapeHtml(SET_DIFF.argv.join(' ')) + '</div>'
+      : '');
+  box.style.display = 'block';
+  $('setApplyBtn').disabled = false;
+}
+
+async function settingsApplyModel() {
+  if (!SET_AGENT || !SET_DIFF) return toast('先预览再保存', 'err');
+  let pc = settingsPasscode();
+  if (!pc) {
+    pc = prompt('保存模型设置需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
+    if (!pc) return;
+  }
+  try {
+    const d = await api('/api/settings/model/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: SET_AGENT, model: SET_DIFF.model, passcode: pc })
+    });
+    lsSet('hub.passcode', pc);                // 通过了才缓存（与口令页同口径）
+    toast(SET_AGENT + ' 模型已设为 ' + SET_DIFF.model + '（备份 ' + (d.applied || []).length + ' 份）', 'ok');
+    SET_AGENTS = [];
+    SET_DIFF = null;
+    $('setDiffBox').style.display = 'none';
+    $('setApplyBtn').disabled = true;
+    settingsModelsLoad(true);
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+
+/* ── 设置 → GitHub 子菜单（v0.13.42）──────────────────────────────────────
+   把原来写死在 githubprojects.py 里的三样东西（API 基址 / token 文件 / 克隆落点）
+   变成运行时可配。三条纪律与模型页同源：
+     ① 不新增浮层（只是 settingsDrawer 内第三个 section）；
+     ② 按钮一律 data-settings-act 走同一委托，无 inline onclick；
+     ③ key 是**只写**字段：页面只显示掩码与来源，输入框留空 = 不改动（清除走按钮）。
+   读取顺序 Hub 设置 → 环境变量 → 内置默认，改完即时生效（服务端每次现读）。 */
+let GH_VIEW = null;                 // GET /api/settings/github 的现值
+
+async function settingsGithubLoad(force) {
+  try {
+    GH_VIEW = await api('/api/settings/github');
+  } catch (e) {
+    const st = $('ghStatus');
+    if (st) { st.style.display = ''; st.textContent = 'GitHub 设置加载失败：' + e.message; }
+    return;
+  }
+  const v = GH_VIEW || {};
+  const put = (id, val) => { const el = $(id); if (el && (force || !el.value)) el.value = val || ''; };
+  put('ghApiBase', v.api_base);
+  put('ghGitHost', v.git_host);
+  put('ghOwner', v.owner);
+  put('ghCloneBase', v.clone_base);
+  const src = v.sources || {};
+  const srcLabel = { db: '本页设置', env: '环境变量', default: '内置默认' };
+  const stamp = (id, key) => { const el = $(id); if (el) el.textContent = '（' + (srcLabel[src[key]] || '内置默认') + '）'; };
+  stamp('ghApiBaseSrc', 'api_base');
+  stamp('ghGitHostSrc', 'git_host');
+  stamp('ghCloneBaseSrc', 'clone_base');
+  const t = v.token || {};
+  const ts = $('ghTokenState');
+  if (ts) ts.textContent = t.set ? ('已设置 ' + (t.mask || '') + ' · ' + (t.type || '') + ' · 来源 ' +
+    (srcLabel[t.source] || t.source || '?')) : '未设置';
+  settingsGithubStatus();
+}
+
+function settingsGithubStatus(note) {
+  const box = $('ghStatus');
+  if (!box || !GH_VIEW) return;
+  const v = GH_VIEW;
+  const L = v.list || {};
+  const rows = [
+    ['远程地址', v.api_base],
+    ['Git 主机', v.git_host || '（按地址派生）'],
+    ['归属', v.owner || '（当前账号全部）'],
+    ['克隆落点', v.clone_base + (v.clone_base_exists ? '' : '（尚不存在，首次克隆时创建）')],
+    ['key', (v.token && v.token.set) ? ((v.token.mask || '') + ' · ' + (v.token.type || '') +
+      ' · 来源 ' + (v.token.source || '?')) : '未设置'],
+    ['远端清单', L.count + ' 个仓库' + (L.cached ? '（缓存 ' + L.age_s + 's，点刷新重拉）' : '（未拉取）')],
+    ['口令门', v.writable ? '已启用（HUB_PASSCODE 已配）' : '未启用：服务端没配 HUB_PASSCODE，保存会被拒']
+  ];
+  box.innerHTML = rows.map(r => '<div><span class="k">' + escapeHtml(r[0]) + '：</span>' +
+    '<span class="v">' + escapeHtml(r[1]) + '</span></div>').join('') +
+    (note ? '<div style="margin-top:6px">' + escapeHtml(note) + '</div>' : '');
+  box.style.display = '';
+}
+
+function ghPayload(extra) {
+  const v = (id) => { const el = $(id); return el ? el.value.trim() : ''; };
+  const p = { api_base: v('ghApiBase'), git_host: v('ghGitHost'), owner: v('ghOwner'),
+    clone_base: v('ghCloneBase') };
+  const tok = v('ghToken');
+  if (tok) p.token = tok;                     // 留空 = 不改动
+  if ($('ghWriteFiles') && $('ghWriteFiles').checked) p.write_files = true;
+  return Object.assign(p, extra || {});
+}
+
+async function ghAskPasscode(what) {
+  let pc = settingsPasscode();
+  if (!pc) {
+    pc = prompt('「' + what + '」需输入设置口令（HUB_PASSCODE，向 hub 索要）') || '';
+    if (!pc) return '';
+  }
+  return pc;
+}
+
+function ghPost(path, body) {
+  return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+}
+
+async function settingsGithubTest() {
+  let pc = await ghAskPasscode('测试连接');
+  if (!pc) return;
+  const p = ghPayload({ passcode: pc, api_base: $('ghApiBase').value.trim() || undefined });
+  try {
+    const d = await ghPost('/api/settings/github/test', p);
+    lsSet('hub.passcode', pc);
+    if (!d.ok) return settingsGithubStatus('试连失败：' + (d.error || '未知'));
+    const rate = d.rate || {};
+    settingsGithubStatus('试连成功：' + (d.login || '?') + ' · key ' + (d.token_type || '') +
+      ' ' + (d.token_mask || '') + ' · 配额 ' + (rate.remaining === undefined ? '?' :
+        rate.remaining + '/' + rate.limit) + ' · 列仓库 ' + (d.repo_probe && d.repo_probe.ok ? '可用' : '不可用') +
+      ' · ' + (d.took_ms || 0) + 'ms');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('试连失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubApply() {
+  let pc = await ghAskPasscode('保存 GitHub 设置');
+  if (!pc) return;
+  const p = ghPayload({ passcode: pc });
+  try {
+    const d = await ghPost('/api/settings/github/apply', p);
+    lsSet('hub.passcode', pc);
+    const box = $('ghDiff');
+    if (box) {
+      const ch = d.changes || [], fw = d.files_written || [];
+      box.innerHTML = '<div class="set-diff"><div class="set-diff-hd">已保存 ' + ch.length +
+        ' 项' + (fw.length ? '（回写 ' + fw.length + ' 个文件）' : '（仅 Hub 侧，未落文件）') + '</div>' +
+        ch.map(c => '<div class="set-diff-row"><div class="k">' + escapeHtml(c.key) + '</div>' +
+          '<div class="v">' + escapeHtml(c.from) + ' → ' + escapeHtml(c.to) + '</div></div>').join('') +
+        (d.backups || []).map(b => '<div class="set-diff-row"><div class="v">备份 ' +
+          escapeHtml(b) + '</div></div>').join('') + '</div>';
+      box.style.display = '';
+    }
+    $('ghToken').value = '';
+    await settingsGithubLoad(true);
+    toast('GitHub 设置已保存（' + (d.applied || []).join('、') + '）', 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubClear() {
+  if (!confirm('清除 Hub 侧的 GitHub 设置（地址/key/归属/落点），回落到环境变量与内置默认？')) return;
+  let pc = await ghAskPasscode('清除 GitHub 设置');
+  if (!pc) return;
+  try {
+    const d = await ghPost('/api/settings/github/clear', { passcode: pc });
+    lsSet('hub.passcode', pc);
+    await settingsGithubLoad(true);
+    toast('已清除：' + ((d.cleared || []).join('、') || '（本来就是空的）'), 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('清除失败：' + e.message, 'err');
+  }
+}
+
+async function settingsGithubRefresh() {
+  let pc = await ghAskPasscode('刷新远端清单');
+  if (!pc) return;
+  try {
+    const d = await ghPost('/api/settings/github/refresh', { passcode: pc });
+    lsSet('hub.passcode', pc);
+    await settingsGithubLoad(true);
+    if (d.errors && d.errors.length) toast('重拉完成但有告警：' + d.errors[0], 'err');
+    else toast('已重拉远端清单：' + d.count + ' 个仓库', 'ok');
+  } catch (e) {
+    if (/401|口令/.test(e.message)) lsRemove('hub.passcode');
+    toast('刷新失败：' + e.message, 'err');
+  }
+}
+
+/* 设置抽屉内的**唯一**委托出口：子页切换 / 选 agent / 预览 / 保存 / GitHub */
+function settingsDelegates() {
+  const drawer = $('settingsDrawer');
+  if (!drawer) return;
+  drawer.addEventListener('click', e => {
+    const tab = e.target.closest('[data-settings-tab]');
+    if (tab) return settingsTab(tab.dataset.settingsTab);
+    const ag = e.target.closest('[data-settings-agent]');
+    if (ag) {
+      if (ag.getAttribute('aria-disabled') === 'true') {
+        return toast(ag.getAttribute('title') || '该 agent 不支持统一设置模型', 'err');
+      }
+      return settingsPickAgent(ag.dataset.settingsAgent);
+    }
+    const act = e.target.closest('[data-settings-act]');
+    if (act && act.dataset.settingsAct === 'preview') return settingsPreviewModel();
+    if (act && act.dataset.settingsAct === 'apply') return settingsApplyModel();
+    if (act) {
+      const a = act.dataset.settingsAct;
+      if (a === 'gh-test') return settingsGithubTest();
+      if (a === 'gh-apply') return settingsGithubApply();
+      if (a === 'gh-clear') return settingsGithubClear();
+      if (a === 'gh-refresh') return settingsGithubRefresh();
+    }
+  });
+}
+/* 注意：settingsDelegates() 的**调用**放在启动尾（06 分片），不在这里立即执行 ——
+   它会经 api() 一路读到 04 分片声明的 `let term`，而 TDZ 闸门（tests/test_tdz_order.py）
+   判的是"调用点早于声明点"：在 01 分片里直接调用必然踩线。注册动作本身没有时序要求
+   （只是挂监听），放在启动尾零成本。 */
 async function delAgent(id) {
   if (!confirm('删除自定义 Agent: ' + id + '？（仅注销视图，不停止其自身服务）')) return;
   try { await api('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' }); toast('已删除', 'ok'); loadAgents(); }
