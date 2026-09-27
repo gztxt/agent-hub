@@ -281,9 +281,13 @@
         /* ── v0.13.0 左侧历史下拉：agent 行下方展开，点条目 = 终端里续聊该历史 ──
            行高/字号与 .nav-item 同级；左内缩一个图标位，与名称起点对齐。
            刻意不加滚动条与边框盒：侧栏 09-22 已定为「不出滚动条」且宽度收到 --sb-w。 */
+        /* v0.13.49：左内缩改为「恰好让历史行文本起点落在 .nav-item 的 .s-badge 左边缘上」。
+           原值是 calc(var(--ico-md) + 6px)（实测 24px）⇒ 文本比状态图标右偏 18px
+           （badge_left=40 / title_left=58 @1440 宽）。侧栏只有 240px，18px 就是摘要长度的近一成，
+           而且视觉上历史块像缩进的第二级菜单，白白多一层层级暗示。
+           判据：Δ = title_left − badge_left ≈ 0（work/probe/sidebar_hist_geometry.py 断言 ≤1px）。 */
         .nav-hist { display: flex; flex-direction: column; gap: 1px; margin: 1px 0 4px;
-                    padding-left: calc(var(--ico-md) + 6px); }
-        .nav-hist .hh-hd { font-size: var(--fs-xs); color: var(--muted); padding: 2px 6px; letter-spacing: .02em; }
+                    padding-left: 6px; }
         .nav-hist .hh-row { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; cursor: pointer;
                             border-radius: 8px; font-size: var(--fs-xs); color: var(--text-2); min-width: 0; }
         .nav-hist .hh-row:hover { background: var(--surface-2); color: var(--text-1); }
@@ -1893,6 +1897,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=8a88d52c"></script>
+    <script src="/static/hub.js?v=e8cb906c"></script>
 </body>
 </html>

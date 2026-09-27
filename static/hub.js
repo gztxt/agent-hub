@@ -3040,7 +3040,7 @@ async function startAgent(id) {
 }
 /* ── v0.13.0 左侧历史下拉：同一时刻只展开一个 agent（与 navOpen 手风琴同构，D3）。
    histOpen 进 localStorage；数据缓存在 HIST —— 30s loadAgents 重绘时不闪空白。 ── */
-const HIST_LIMIT = 5;                                   // D6 修订（09-22）：每 agent 5 条，跳目录按时间取最近
+const HIST_LIMIT = 8;                                   // v0.13.49：每 agent 8 条（原 5 条）
 /* ⚠ 声明位置是硬约束，不许往下挪：下面 histBootstrap() 是**顶层 IIFE**，会同步走
 histLoad() → renderNav() → 读本变量。09-23 自研 APP 事故就是顺序被破坏：手机那份
 localStorage 有 hub.term.token ⇒ 早期路径被激活，而 let 声明在 renderNav 之后 ⇒
@@ -3059,10 +3059,13 @@ const TERM_HIST_AGENTS = ['grok', 'claude', 'jcode', 'hermes', 'codex', 'qoder',
 let histOpen = hubNarrow() ? '' : (lsGet('hub.hist') || '');
 const HIST = {};                                        // agent_id -> {items,note,loading,err}
 
-function hhTime(ts) {                                   // 绝对时间：相对时间每轮变化会破 DOM diff
+function hhTime(ts) {                                   // 绝对日期：相对时间每轮变化会破 DOM diff
+  // v0.13.49：**不再带 HH:MM**。侧栏只有 240px 可用宽，时间占的那 5 个字符直接从
+  // 摘要里抢走一小半可视长度（实测标题被挤到 0 宽）；挑哪条续聊也不靠天数内的钟点，
+  // 日期足够定位。精确到分钟的信息没丢——它还在 title 悬停里。
   if (!ts) return '';
   const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
-  return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  return p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
 /* 跳目录之后，同名会话可能来自不同工程：只在「不属于画像目录」时补一个目录尾名，
@@ -3083,11 +3086,14 @@ function histHtml(aid) {
     '<span class="hh-t">' + escapeHtml(it.title) + '</span>' +
     '<span class="hh-cw">' + hhDir(it.cwd, h.home) + '</span>' +
     '<span class="hh-ts">' + hhTime(it.ts) + '</span></div>').join('');
-  const hd = '<div class="hh-hd">历史会话' + (rows ? '（' + h.items.length + '）' : '') + '</div>';
+  /* v0.13.49：删掉「历史会话（N）」标题行。
+     侧栏 240px 里它白白吃掉一行高度，而且它宣告的信息（这是历史、共几条）
+     从「行本身就是会话条目 + 一共就这几行」已经自己说清了；条数还能从行尾日期
+     与滚动位置看出来。留着它只会把 8 条记录往下顶。 */
   // note 在“已经有行”时也要显：截断/降级被吞掉的话，残缺结果看着就像完整清单
   // （09-22 jcode 只显 1 条那次，正是“扫描窗口用尽”的 note 没人看见）。
   const tail = (rows && h.note) ? '<div class="hh-note">' + escapeHtml(h.note) + '</div>' : '';
-  return '<div class="nav-hist">' + hd +
+  return '<div class="nav-hist">' +
          (rows || '<div class="hh-note">' + escapeHtml(h.note || '该目录暂无可续会话') + '</div>') + tail + '</div>';
 }
 
