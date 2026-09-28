@@ -76,7 +76,12 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.50"   # 模型设置成为所有调用通道的默认值 + 配置文件漂移体检
+VERSION = "0.13.51"   # 漂移自动写回（带备份）+ 续聊会话也注入 --model
+                      #   ↑ v0.13.51：① drift 体检从「只报」升级为「按持久化值写回」（落笔前
+                      #     时间戳备份，HUB_MODEL_DRIFT_REPAIR=0 可退回只报）；因 CCR 与 hub
+                      #     开机同秒启动，启动那一次会被 CCR 盖掉 ⇒ 再加 300s 定期巡检。
+                      #     ② 续聊会话（`claude --resume <id>`）也按白名单追加 --model：不带
+                      #     flag 的启动读的是会被 CCR 改写的配置文件。
                       #   ↑ v0.13.50：对话/协同子任务/定时任务以前从不读 hub 侧持久化模型
                       #     （adapter.default_model 是启动时常量 ⇒ 实测仍发 qwen3.8-flash），
                       #     现统一走 modelcfg.chat_model()；并加只读 drift 体检（CCR 重启会
@@ -879,6 +884,44 @@ async def prov_loop():
         await asyncio.sleep(float(os.getenv("HUB_PROV_SEC", "30")))
 
 
+MODEL_DRIFT_SWEEP_SEC = int(os.getenv("HUB_MODEL_DRIFT_SWEEP_SEC", "300"))
+#: 漂移写回开关（用户 09-28 授权默认开；置 0/false/no ⇒ 退回 v0.13.50 的只读告警）
+MODEL_DRIFT_REPAIR = os.getenv("HUB_MODEL_DRIFT_REPAIR", "1") not in ("0", "false", "no")
+
+
+def _drift_tick() -> dict:
+    """一轮「体检 +（授权时）写回」，返回值即证据。纯同步，跑在 to_thread 里。"""
+    out: dict = {"repaired": [], "skipped": [], "drift": modelcfg.drift_report()}
+    if MODEL_DRIFT_REPAIR:
+        out.update(modelcfg.repair_drift())
+    return out
+
+
+def _drift_log(out: dict, where: str) -> None:
+    for _d in out.get("drift") or []:
+        _bad = "，".join(f"{k}={v}" for k, v in (_d.get("owned") or {}).items())
+        print(f"[modelcfg] {where} 配置漂移：{_d['id']} 持久化={_d['hub_model']} 但文件里 {_bad}",
+              flush=True)
+    for _x in out.get("repaired") or []:
+        print(f"[modelcfg] {where} 漂移已写回：{_x['id']} → {_x['model']}"
+              + (f"（备份 {len(_x['backups'])} 份）" if not _x.get("dry_run") else "（dry-run）"),
+              flush=True)
+    for _x in out.get("skipped") or []:
+        print(f"[modelcfg] {where} 漂移未写回：{_x['id']} —— {_x['reason']}", flush=True)
+
+
+async def model_drift_loop():
+    """配置漂移巡检。为什么不能只靠启动那一次：CCR 与 hub 都在开机时起来（今日实测
+    同秒），CCR 落笔改写 claude 的 env 三兄弟可能**晚于** hub 的启动修复 ⇒ 修完又被
+    盖回去。所以按 MODEL_DRIFT_SWEEP_SEC（默认 300s）定期复检并写回。异常不打死循环。"""
+    while True:
+        await asyncio.sleep(MODEL_DRIFT_SWEEP_SEC)
+        try:
+            _drift_log(await asyncio.to_thread(_drift_tick), "巡检")
+        except Exception as e:  # noqa: BLE001
+            print(f"[modelcfg] 巡检异常（下轮重试）{type(e).__name__}: {str(e)[:160]}", flush=True)
+
+
 async def vitals_loop():
     """可用心跳慢周期：首轮延后 2s（先让 hub 开接请求），之后每 VITALS_SWEEP_SEC 一轮。
     只跑 L1/L2（which / 文件头 / --version / --help / 端点探活），不碰模型；
@@ -901,13 +944,12 @@ async def startup():
     db.init_db(config.db_path)
     discovery = AgentDiscovery(config, db=db)
     build_adapters(config)
-    # v0.13.50：启动即把「agent 配置文件现值 ≠ hub 持久化模型」摆出来。
-    # 现状是**只读**，不自动写回（写共享配置须用户授权）；有漂移就一行一条，
-    # 省得下次再以为「设置没保存」。
-    for _d in modelcfg.drift_report():
-        _bad = "，".join(f"{k}={v}" for k, v in (_d.get("owned") or {}).items())
-        print(f"[modelcfg] 配置漂移：{_d['id']} 持久化={_d['hub_model']} 但配置文件里 "
-              f"{_bad}（{'/'.join(_d['files'])}）", flush=True)
+    # v0.13.50 起的漂移体检 + v0.13.51 的授权写回：启动先修一轮（CCR 可能还没改写，
+    # 所以另有定期巡检兜底）。写回属共享配置写入 ⇒ 落笔前时间戳备份，见 repair_drift。
+    try:
+        _drift_log(_drift_tick(), "启动")
+    except Exception as e:  # noqa: BLE001 —— 体检/写回出岔子不许拖垮整个启动
+        print(f"[modelcfg] 启动漂移处理异常：{type(e).__name__}: {str(e)[:160]}", flush=True)
     # 上游网关注入（/health 的 ccr_gateway 情报源）。watch 放两个「写死在配置里的模型 ID」：
     # manager 用的那个 + vitals L4 探针用的那个。上游一旦改名/下架，watch.<id>=false 当天可见，
     # 不必等探活烧一轮 token 才发现（09-23 的 M1 阻塞「拿不到在线清单」就此长期解除）。
@@ -919,6 +961,7 @@ async def startup():
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
     asyncio.create_task(tasks_mod.sweep_stale_tasks())
     asyncio.create_task(vitals_loop())
+    asyncio.create_task(model_drift_loop())   # 配置漂移巡检（CCR 重启会把模型改回旧值）
     asyncio.create_task(prov_loop())   # 代码溯源（工作区脏度）刷新
     # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
     asyncio.create_task(term_mod.reap_loop())

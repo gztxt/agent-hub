@@ -104,6 +104,12 @@ def _backup(p: Path, tag: str) -> str:
     """军规铁律：落笔前先时间戳备份。返回备份路径（相对 HOME 展示）。"""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dst = p.with_name(p.name + f".bak-{stamp}-hub-modelcfg-{tag}")
+    # 同一秒内连续落笔（设置页保存刚过、巡检写回就跟上来）会让时间戳撞车 ⇒
+    # 后一份把前一份拷成同一个文件名覆盖掉，"留了备份"就成了假象。撞车就加序号。
+    n = 1
+    while dst.exists():
+        n += 1
+        dst = p.with_name(p.name + f".bak-{stamp}-{n:02d}-hub-modelcfg-{tag}")
     shutil.copy2(p, dst)
     return str(dst)
 
@@ -541,8 +547,61 @@ def drift_report() -> List[dict]:
     return out
 
 
+def repair_drift(only: Optional[List[str]] = None, dry_run: bool = False) -> dict:
+    """把漂移的 agent 配置文件写回 hub 持久化值（用户 09-28 授权，默认开启）。
+
+    为什么需要它：CCR 每次启动都会重写 ~/.claude/settings.json 的 env 三兄弟
+    （今早 07:06:28 实测把 agnes 改回 qwen），凡是**不带 --model** 的启动就退回旧
+    模型 —— 这就是「设置里是 Agens、重启之后又变 qwen」。终端注入只覆盖 hub 拉起的
+    会话，用户在别处直接敲 claude 覆盖不到，所以要按持久化值把文件修回去。
+
+    三条护栏（共享配置写入铁律）：
+      ① 落笔前 `_backup()` 时间戳备份（apply_model 内自带，无法绕过）；
+      ② 文件不存在 / 不可写 / 模型 ID 形状不合法 ⇒ **跳过并记原因**，绝不硬写；
+      ③ `dry_run=True` 只算不做，给体检与自测用。
+    返回 {"repaired": [...], "skipped": [...]}，每一项都带得出来证据的字段。"""
+    out: dict = {"repaired": [], "skipped": []}
+    for d in drift_report():
+        aid = d["id"]
+        if only is not None and aid not in only:
+            continue
+        want = d["hub_model"]
+        files = d.get("files") or []
+        if not files or not all(Path(f).exists() for f in files):
+            out["skipped"].append({"id": aid, "reason": "配置文件缺失"})
+            continue
+        unwritable = [f for f in files if not os.access(f, os.W_OK)]
+        if unwritable:
+            out["skipped"].append({"id": aid, "reason": "文件不可写（常见 chattr +i）",
+                                   "files": unwritable})
+            continue
+        try:
+            validate_model(want)
+        except ModelCfgError as e:
+            out["skipped"].append({"id": aid, "reason": f"持久化模型 ID 不合法：{e.args[0]}"})
+            continue
+        if dry_run:
+            out["repaired"].append({"id": aid, "model": want, "dry_run": True,
+                                    "owned": d.get("owned") or {}})
+            continue
+        try:
+            res = apply_model(aid, want)
+        except ModelCfgError as e:
+            out["skipped"].append({"id": aid, "reason": f"写回失败：{e.args[0]}"})
+            continue
+        out["repaired"].append({"id": aid, "model": want,
+                                "backups": [a["backup"] for a in res["applied"]],
+                                "owned": d.get("owned") or {}})
+    return out
+
+
 def terminal_argv(agent_id: str, model: str) -> List[str]:
-    """拉起终端时追加的 argv；不在白名单或没设模型则返回 []（绝不猜 flag）。"""
+    """拉起终端时追加的 argv；不在白名单或没设模型则返回 []（绝不猜 flag）。
+
+    调用点两处（v0.13.51）：新会话与**续聊**都要加 —— 续聊命令 `claude --resume <id>`
+    不带 --model 时用 agent 自己的配置文件，而那份文件会被 CCR 启动改写（见
+    drift_report），等于"设置页改了、重启后照样退回旧模型"。追加位置固定在模板
+    末尾，不动 `--resume <id>` 这类位置参数。"""
     flag = MODEL_ARGV.get(agent_id)
     if not flag or not model:
         return []

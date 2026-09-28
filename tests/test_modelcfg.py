@@ -358,6 +358,72 @@ class GDriftReport(_HomeFixture):
                          "体检不许再新增备份（建言误做成重写）")
 
 
+class HRepairDrift(_HomeFixture):
+    """v0.13.51：漂移写回（用户 09-28 授权）。
+
+    体检只报不修的话，"设置里是 Agens、重启后又变 qwen" 治不干净 —— 用户在别处
+    直接敲 claude、以及任何不带 --model 的启动都读配置文件。写回属共享配置写入，
+    所以这里钉的是三条护栏：备份前置、写不动就跳过（不许硬写）、dry_run 零字节。
+    """
+
+    def _env_only_rewrite(self) -> None:
+        """复刻 CCR 重启那一手：只改 env 三兄弟，顶层 model 不动。"""
+        modelcfg.apply_model("claude", "new/model-z")
+        d = json.loads(self._read(".claude/settings.json"))
+        for k in ("ANTHROPIC_MODEL", "CCR_CLAUDE_CODE_MODEL", "CODEXL_CLAUDE_CODE_MODEL"):
+            d["env"][k] = "alibaba/qwen3.8-flash[1m]"
+        (self.home / ".claude" / "settings.json").write_text(
+            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_repair_restores_persisted_value_with_backup(self):
+        self._env_only_rewrite()
+        baks_before = len(self._backups(".claude/settings.json"))
+        out = modelcfg.repair_drift()
+        self.assertEqual([x["id"] for x in out["repaired"]], ["claude"])
+        self.assertEqual(out["skipped"], [])
+        d = json.loads(self._read(".claude/settings.json"))
+        for k in ("ANTHROPIC_MODEL", "CCR_CLAUDE_CODE_MODEL", "CODEXL_CLAUDE_CODE_MODEL"):
+            self.assertEqual(d["env"][k], "new/model-z", f"{k} 没被写回")
+        self.assertEqual(len(self._backups(".claude/settings.json")), baks_before + 1,
+                         "写回必须留一份新备份（共享配置铁律）")
+
+    def test_no_drift_means_no_write(self):
+        modelcfg.apply_model("claude", "new/model-z")
+        before = self._read(".claude/settings.json")
+        out = modelcfg.repair_drift()
+        self.assertEqual(out["repaired"], [], "没漂移就不许动文件")
+        self.assertEqual(self._read(".claude/settings.json"), before)
+
+    def test_dry_run_writes_nothing(self):
+        self._env_only_rewrite()
+        before = self._read(".claude/settings.json")
+        out = modelcfg.repair_drift(dry_run=True)
+        self.assertEqual([x["id"] for x in out["repaired"]], ["claude"])
+        self.assertTrue(out["repaired"][0].get("dry_run"))
+        self.assertEqual(self._read(".claude/settings.json"), before, "dry-run 落笔了")
+
+    def test_invalid_persisted_model_is_skipped_not_written(self):
+        """持久化值形状不合法（CCR 爱给 `[1m]` 后缀）时跳过并记原因，绝不硬写。"""
+        modelcfg.set_hub_model("claude", "bad model[1m]")
+        before = self._read(".claude/settings.json")
+        out = modelcfg.repair_drift()
+        self.assertEqual(out["repaired"], [])
+        self.assertTrue(any("不合法" in x["reason"] for x in out["skipped"]), out)
+        self.assertEqual(self._read(".claude/settings.json"), before)
+
+    @unittest.skipIf(os.geteuid() == 0, "root 下 os.access(W_OK) 恒真，验不出只读位")
+    def test_unwritable_file_is_skipped(self):
+        self._env_only_rewrite()
+        p = self.home / ".claude" / "settings.json"
+        os.chmod(p, 0o444)
+        try:
+            out = modelcfg.repair_drift()
+            self.assertEqual(out["repaired"], [])
+            self.assertTrue(any("不可写" in x["reason"] for x in out["skipped"]), out)
+        finally:
+            os.chmod(p, 0o644)
+
+
 class EPasscodeGate(unittest.TestCase):
     """HTTP 层：口令门必须 fail-closed（复用 writeauth 同款口径）。"""
 

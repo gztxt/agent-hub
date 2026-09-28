@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## v0.13.51 — 漂移按持久化值**写回**（带备份）+ 续聊会话也注入 --model
+
+> 用户 09-28 对 PT-20260928-01 的三项授权全部执行：① 合回主 checkout 上线；
+> ② 漂移自动写回；③ 续聊也注入 `--model`。基线 v0.13.50。
+
+### ① 续聊会话也注入 --model（`src/term.py`）
+
+v0.13.41 起只有**新会话**追加 `--model`，续聊刻意不加（怕改坏 resume 语义）。
+但续聊命令 `claude --resume <id>` 不带 flag 时读 agent 自己的配置文件 —— 而那份
+文件正是被 CCR 改写的那个 ⇒ 「设置里是 Agnes、重启之后又变 qwen」在续聊这条缝上
+照样漏。现两条通道都走 `modelcfg.terminal_argv()`（追加在模板末尾，不动
+`--resume <id>` 这类位置参数；白名单外的 agent 仍返回 `[]`）。
+
+**逐模板实弹**（探针实例 :3199 + 各家真实历史会话 id，连 WS 读首屏）：
+claude / codex / grok / hermes 四条全部 `alive=true` 且首屏是各自的正常 TUI
+（Claude Code banner、Codex、Hermes v0.21.4），无 unknown-option 类报错，
+用完即 DELETE。
+
+### ② 漂移写回（`src/modelcfg.py` `repair_drift()` + `src/main.py` 巡检）
+
+`drift_report()` 只报不修治不干净：用户在别处直接敲 `claude` 不受 hub 注入影响。
+现按持久化值把配置文件写回，**落笔前时间戳备份**（`_backup`），三条护栏：文件
+不可写 / 缺失 / 持久化 ID 形状不合法 ⇒ 跳过并记原因，绝不硬写。开关
+`HUB_MODEL_DRIFT_REPAIR=0` 可退回 v0.13.50 的只报模式。
+
+**为什么还要定期巡检**：CCR 与 hub 都在开机时启动（今日实测同秒），CCR 改写可能
+**晚于** hub 的启动修复 ⇒ 修完又被盖回去。故加 `model_drift_loop()`
+（默认 300s，`HUB_MODEL_DRIFT_SWEEP_SEC` 可调）。
+
+顺带修一处备份撞车：`_backup()` 只到秒，同一秒内连续落笔（设置页保存刚过、巡检
+写回就跟上来）会让后一份覆盖前一份 ⇒ "留了备份"是假象。撞车即加序号。
+
+**实弹**：探针实例对**真实 HOME** 落笔 —— claude 写回 `agnes/agnes-2.5-flash`
+（env 三兄弟 + 顶层 model）、codex 写回 `alibaba/glm-5.3`（CCR 托管块 + 注释行），
+各留 1 份备份；写回后 `GET /api/settings/models` 的 `drift` 为空；巡检轮跑过时
+无漂移 ⇒ 不再重复落笔（无备份洪水）。
+
+### 闸门
+
+L0 hermetic **765 全绿**（v0.13.50 为 760，新增 5 例 `HRepairDrift`：写回+备份、
+无漂移不写、dry-run 零字节、非法 ID 跳过、只读文件跳过）。
+
 ## v0.13.50 — 模型设置成为**所有**调用通道的默认值 + 配置文件漂移体检
 
 > 施工会话：52b51a1a。基线：v0.13.49。用户诉求原话：「模型设置里面 Claude 设置为
