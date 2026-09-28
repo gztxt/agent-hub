@@ -67,6 +67,7 @@ import audit as audit_mod           # 资产变更审计的只读查询门面（
 import runlog as runlog_mod         # 运行日志：三中心检索留痕 + GET /api/runlog 查询门面
 import cloudcli as cloudcli_mod     # CloudCLI 项目直达：项目清单（直读 auth.db）+ 会话启动代理
 import localprojects as localprojects_mod  # 本机项目清单（多根 git 扫描 + cloudcli 合并）
+import resources as resources_mod          # 资源监控：Agent 进程资源列表 + 一键结束
 import githubprojects as github_mod  # GitHub 远端仓库清单 + 即时克隆（本机项目页的远端半程）
 import prefs as prefs_mod           # 应用级偏好 KV（v0.13.36）：两项目页收藏/隐藏落服务端
 import modelcfg as modelcfg_mod     # 各 Agent 默认模型统一设置（v0.13.41：设置→模型子菜单）
@@ -284,6 +285,7 @@ app.include_router(audit_mod.router)
 app.include_router(runlog_mod.router)
 app.include_router(cloudcli_mod.router)
 app.include_router(localprojects_mod.router)
+app.include_router(resources_mod.router)
 app.include_router(github_mod.router)
 app.include_router(prefs_mod.router)
 app.include_router(modelcfg_mod.router)

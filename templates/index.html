@@ -794,6 +794,10 @@
         <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
         <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
         <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></symbol>
+        <!-- v0.13.52 知识库图标：书（封皮 + 书页底沿）。**两笔**，不画书脊/页线——
+             侧栏里它只有 16px（--ico-sm），第三笔必糊成一团；记忆中心用 i-database、
+             资产用 i-layers，本图形与二者轮廓都不撞，16px 下仍可辨认。 -->
+        <symbol id="i-book" viewBox="0 0 24 24"><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></symbol>
         <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9l-3.9 3.9Z"/></symbol>
         <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
         <symbol id="i-flow" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
@@ -864,6 +868,9 @@
         <!-- v0.13.31 GitHub 项目：本机项目的远端半程（总览→本机项目→GitHub 项目→AGENTS）。 -->
         <button class="side-item side-top" id="btnNavGithub" data-sys="github" role="tab" aria-selected="false"
                 aria-label="GitHub 项目" title="GitHub 项目 · 远端仓库清单，本地没有的即时克隆后开会话"><svg class="i" aria-hidden="true"><use href="#i-globe"/></svg><span class="lbl">GitHub 项目</span></button>
+        <!-- v0.13.52 资源监控：系统菜单新增资源子菜单，列出所有 Agent 进程资源占用，支持一键结束。 -->
+        <button class="side-item side-top" id="btnNavResources" data-sys="resources" role="tab" aria-selected="false"
+                aria-label="资源监控" title="资源监控 · 查看所有 Agent 进程 CPU/内存占用，可一键结束占用资源的进程"><svg class="i" aria-hidden="true"><use href="#i-cpu"/></svg><span class="lbl">资源</span></button>
         <!-- AGENTS / 基础设施 / 系统 三组手风琴由 renderNav() 渲染 -->
         <div id="navTree"></div>
         <!-- v0.13.43：设置从「右侧抽屉」改成手风琴第四组（模型 / GitHub / 终端口令），
@@ -1053,6 +1060,24 @@
                     <div class="hint" style="padding:10px">加载中…</div>
                 </div>
                 <div class="hint" id="ghMeta" style="margin-top:6px;flex:none"></div>
+            </div>
+        </section>
+
+        <!-- 资源监控（v0.13.52）：列出所有运行中 Agent 的进程资源占用（CPU%、RSS），
+             点击 Agent 行展开进程详情，每个进程后有 Kill 按钮（SIGTERM/SIGKILL）。
+             页面四件套：侧栏按钮 + #page-resources + PAGE_LABELS + go() 懒加载钩子。 -->
+        <section class="page sys" id="page-resources">
+            <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column;margin-bottom:0">
+                <div class="toolbar">
+                    <button class="btn sm ghost" onclick="loadResources(true)" title="重新采样所有进程资源"><svg class="i xs" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+                    <span class="hint" id="resHint"></span>
+                </div>
+                <div class="toolbar" style="font-size:12px;color:var(--text-2)">
+                    <span id="resSummary">总计：0 个 Agent · CPU 0% · 内存 0 MB</span>
+                </div>
+                <div class="tscroll" id="resList" style="flex:1;min-height:0;overflow-y:auto">
+                    <div class="hint" style="padding:10px">加载中…</div>
+                </div>
             </div>
         </section>
 
@@ -1897,6 +1922,6 @@
     </script>
     <script src="/static/vendor/xterm.js?v=046fc128"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=e8cb906c"></script>
+    <script src="/static/hub.js?v=d5714000"></script>
 </body>
 </html>

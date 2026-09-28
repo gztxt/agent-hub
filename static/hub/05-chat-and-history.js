@@ -166,7 +166,7 @@ const SET_PAGES = [['settings-model', '模型', 'cpu'], ['settings-github', 'Git
                    ['settings-token', '终端口令', 'terminal'], ['settings-logs', '日志', 'activity']];
 const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同', jobs: '定时',
                       memory: '记忆中心', skills: '技能中心', kb: '知识库', mcp: '工具', ports: '端口', telemetry: '遥测',
-                      assets: '资产', localprojects: '本机项目', github: 'GitHub 项目',
+                      assets: '资产', localprojects: '本机项目', github: 'GitHub 项目', resources: '资源监控',
                       'settings-model': '设置 · 模型', 'settings-github': '设置 · GitHub',
                       'settings-token': '设置 · 终端口令', 'settings-logs': '设置 · 日志' };
 const navOpenStored = lsGet('hub.nav.open');

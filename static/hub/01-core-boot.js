@@ -101,6 +101,7 @@ var ghLoaded = false;
 var setModelPageLoaded = false;
 var setGithubPageLoaded = false;
 var setLogsPageLoaded = false;   // v0.13.46：日志页（进页才拉，日志量级大不能每次导航都拉）
+var resLoaded = false;           // v0.13.52：资源监控页懒加载标志（同 lpLoaded/ghLoaded 纪律）
 /* v0.13.32 TDZ 补丁（真事故驱动的修复）：06 顶层 go(lsGet('hub.page')) 在
    09/10 分片顶层初始化**之前**就能调到 loadLocalProjects()/loadGithubRepos()
    （函数声明提升），而 LP/GH/lpStars… 的 `var X = …` 初始化还没跑 ⇒ 函数里
@@ -256,6 +257,7 @@ function go(page) {
   if (page === 'settings-logs' && !setLogsPageLoaded) { setLogsPageLoaded = true; settingsLogsLoad(); }
   if (page === 'ports' && !portsLoaded) { portsLoaded = true; loadPorts(); }
   if (page === 'telemetry') loadTelemetry();
+  if (page === 'resources' && !resLoaded) { resLoaded = true; loadResources(); }
   // v0.13.47：原运行日志页的进页钩子随页面一并删除（内容并入设置→日志）
   if (page === 'chat') renderChatSide();
   if (page === 'tasks') { fillAgentSelect($('taskAgent'), true); loadRuns(); }
