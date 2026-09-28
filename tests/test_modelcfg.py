@@ -289,6 +289,75 @@ class DTerminalArgvWhitelist(unittest.TestCase):
         self.assertEqual(modelcfg.terminal_argv("claude", ""), [], "没设模型就不插 flag")
 
 
+class FChatChannelDefault(_HomeFixture):
+    """v0.13.50：对话 / 协同子任务 / 定时任务的模型必须认「设置 → 模型」的持久化值。
+
+    事故形态（09-28 实弹取证）：POST /api/agents/claude/chat 打给 CCR 的仍是
+    qwen3.8-flash（adapter 启动时算出来的常量），而 agent_models 里存的是
+    agnes/agnes-2.5-flash ⇒ 「设置页改了、新建任务照旧」。终端那条通道早就读
+    DB，唯独 chat 这条没人接 —— 所以这里锁的是**调用侧**的取值顺序。
+    """
+
+    def test_explicit_request_wins(self):
+        modelcfg.set_hub_model("claude", "persist/model-p")
+        self.assertEqual(modelcfg.chat_model("claude", "req/model-r"), "req/model-r")
+
+    def test_falls_back_to_persisted_model(self):
+        modelcfg.set_hub_model("claude", "persist/model-p")
+        self.assertEqual(modelcfg.chat_model("claude", ""), "persist/model-p")
+        self.assertEqual(modelcfg.chat_model("claude", None), "persist/model-p")
+        self.assertEqual(modelcfg.chat_model("claude", "   "), "persist/model-p")
+
+    def test_empty_when_nothing_persisted(self):
+        """没有持久化值时必须返回空串，让 adapter 自兜 —— 不许这里替它猜。"""
+        self.assertEqual(modelcfg.chat_model("claude", ""), "")
+
+
+class GDriftReport(_HomeFixture):
+    """配置文件漂移体检：只读，绝不落笔。
+
+    CCR 每次启动都会重写 ~/.claude/settings.json 的 env.ANTHROPIC_MODEL 三兄弟
+    （09-28 07:06:28 实测把 agnes 改回 alibaba/qwen3.8-flash[1m]，顶层 model 不动）
+    ⇒ 不带 --model 的 claude 启动会退回旧值。体检要能在变更它们的那一刻被抓到。
+    """
+
+    def test_no_drift_when_file_matches_persisted(self):
+        modelcfg.apply_model("claude", "new/model-z")
+        self.assertEqual(modelcfg.drift_report(), [])
+
+    def test_env_only_rewrite_is_caught(self):
+        """只改 env 三兄弟、顶层 model 不动 —— 正是 CCR 重启干的那一手。"""
+        modelcfg.apply_model("claude", "new/model-z")
+        before = self._read(".claude/settings.json")
+        d = json.loads(before)
+        d["env"]["ANTHROPIC_MODEL"] = "alibaba/qwen3.8-flash[1m]"
+        d["env"]["CCR_CLAUDE_CODE_MODEL"] = "alibaba/qwen3.8-flash[1m]"
+        d["env"]["CODEXL_CLAUDE_CODE_MODEL"] = "alibaba/qwen3.8-flash[1m]"
+        (self.home / ".claude" / "settings.json").write_text(
+            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        rep = modelcfg.drift_report()
+        self.assertEqual([x["id"] for x in rep], ["claude"])
+        self.assertEqual(rep[0]["hub_model"], "new/model-z")
+        self.assertIn("qwen3.8-flash[1m]", rep[0]["extra"]["env.CCR_CLAUDE_CODE_MODEL"])
+        # 摆出来的必须是**不一致的那几个落点**：顶层 model 仍对 ⇒ 不该出现在 owned 里；
+        # 被 CCR 改掉的三兄弟必须出现（"还剩一个对得上"不能算没事）。
+        self.assertNotIn("current", rep[0]["owned"])
+        for k in ("env.ANTHROPIC_MODEL", "env.CCR_CLAUDE_CODE_MODEL"):
+            self.assertEqual(rep[0]["owned"][k], "alibaba/qwen3.8-flash[1m]", k)
+
+    def test_report_is_read_only(self):
+        modelcfg.apply_model("claude", "new/model-z")
+        modelcfg.apply_model("hermes", "old/model-a")
+        (self.home / ".hermes" / "config.yaml").write_text(
+            "model:\n  default: somebody/else\n  provider: ccr-free\n", encoding="utf-8")
+        before = self._read(".hermes/config.yaml")
+        baks_before = self._backups(".hermes/config.yaml")   # apply_model 自身的备份不算
+        modelcfg.drift_report()
+        self.assertEqual(self._read(".hermes/config.yaml"), before, "体检不许落笔")
+        self.assertEqual(self._backups(".hermes/config.yaml"), baks_before,
+                         "体检不许再新增备份（建言误做成重写）")
+
+
 class EPasscodeGate(unittest.TestCase):
     """HTTP 层：口令门必须 fail-closed（复用 writeauth 同款口径）。"""
 

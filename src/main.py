@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).parent))
 import db
+import modelcfg
 from config import config
 from discovery import AgentDiscovery, AgentInfo
 from ports import list_listeners, port_in_use
@@ -75,7 +76,12 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.49"   # 侧栏历史会话：条数 8 / 去标题行 / 时间只留日期 / 左边距对齐状态图标
+VERSION = "0.13.50"   # 模型设置成为所有调用通道的默认值 + 配置文件漂移体检
+                      #   ↑ v0.13.50：对话/协同子任务/定时任务以前从不读 hub 侧持久化模型
+                      #     （adapter.default_model 是启动时常量 ⇒ 实测仍发 qwen3.8-flash），
+                      #     现统一走 modelcfg.chat_model()；并加只读 drift 体检（CCR 重启会
+                      #     把 ~/.claude/settings.json 的 env 三兄弟改回旧值）。
+                      #   ↑ v0.13.49：侧栏历史会话：条数 8 / 去标题行 / 时间只留日期 / 左边距对齐状态图标
                       #   三个子项与系统页同口径（data-sys ⇒ 委托 ⇒ go(page) ⇒ 正文出页），
                       #   设置抽屉整体拆除 ⇒ 09-23「手机上被浮层糊住」的形态不再存在。
                       #   ↑ v0.13.42：设置→GitHub 子菜单（远程地址/key/归属/克隆落点不再硬编码）
@@ -494,6 +500,11 @@ async def _chat_dispatch(agent_id: str, message: str,
                          trace_id: Optional[str] = None) -> Dict:
     import time as _time
     t0 = _time.monotonic()
+    # v0.13.50：模型取值的唯一入口 —— 请求显式带了就用请求的，没带就回落「设置 → 模型」
+    # 落库的那个持久化默认值。以前这条通道完全不知道它的存在，adapter 的
+    # default_model 是启动时算出的常量（实测发出去的是 qwen3.8-flash）⇒ 设置页改了
+    # 模型，对话页 / 协同子任务 / 定时任务照旧用旧模型。
+    model = modelcfg.chat_model(agent_id, model)
     adapter = get_adapter(agent_id)
     if adapter is None:
         rows = db.query("SELECT * FROM custom_agents WHERE id=?", (agent_id,))
@@ -563,7 +574,8 @@ async def chat_stream(agent_id: str, request: ChatRequest):
     async def gen():
         yield f"data: {json.dumps({'session_id': session_id})}\n\n"
         async for chunk in adapter.chat_stream(request.message, session_id=session_id,
-                                               model=request.model, cwd=request.cwd):
+                                               model=modelcfg.chat_model(agent_id, request.model),
+                                               cwd=request.cwd):
             yield chunk
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -889,6 +901,13 @@ async def startup():
     db.init_db(config.db_path)
     discovery = AgentDiscovery(config, db=db)
     build_adapters(config)
+    # v0.13.50：启动即把「agent 配置文件现值 ≠ hub 持久化模型」摆出来。
+    # 现状是**只读**，不自动写回（写共享配置须用户授权）；有漂移就一行一条，
+    # 省得下次再以为「设置没保存」。
+    for _d in modelcfg.drift_report():
+        _bad = "，".join(f"{k}={v}" for k, v in (_d.get("owned") or {}).items())
+        print(f"[modelcfg] 配置漂移：{_d['id']} 持久化={_d['hub_model']} 但配置文件里 "
+              f"{_bad}（{'/'.join(_d['files'])}）", flush=True)
     # 上游网关注入（/health 的 ccr_gateway 情报源）。watch 放两个「写死在配置里的模型 ID」：
     # manager 用的那个 + vitals L4 探针用的那个。上游一旦改名/下架，watch.<id>=false 当天可见，
     # 不必等探活烧一轮 token 才发现（09-23 的 M1 阻塞「拿不到在线清单」就此长期解除）。

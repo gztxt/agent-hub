@@ -491,6 +491,56 @@ def set_hub_model(agent_id: str, model: str) -> None:
                (agent_id, model, _now()))
 
 
+def chat_model(agent_id: str, requested: Optional[str] = None) -> str:
+    """对话 / 任务通道（`POST /api/agents/{id}/chat`）的模型取值。
+
+    v0.13.50：这条通道以前**压根不知道 hub 侧的持久化模型** —— adapter 的
+    default_model 是**服务启动时**由 config 算出来的常量（.env 未配 CLAUDE_CHAT_MODEL
+    就写死 "qwen3.8-flash"），于是设置页改了模型，协同子任务 / 定时任务 / 对话页
+    照旧把旧模型发出去（09-28 实弹：POST /api/agents/claude/chat 打给 CCR 的仍是
+    qwen3.8-flash，而 agent_models 里存的是 agnes/agnes-2.5-flash）。
+    取值顺序：请求显式带 > 本 Agent 的持久化默认值 > adapter 自兜。"""
+    req = (requested or "").strip()
+    if req:
+        return req
+    return hub_model(agent_id)
+
+
+def drift_report() -> List[dict]:
+    """只读体检：列出「配置文件现值 ≠ hub 持久化值」的 agent（**不落笔**）。
+
+    为什么要这个（09-28 实取证）：CCR 每次启动都会重写 ~/.claude/settings.json 的
+    env.ANTHROPIC_MODEL / CCR_CLAUDE_CODE_MODEL / CODEXL_CLAUDE_CODE_MODEL 三兄弟
+    （07:06:28 把 agnes 改回 alibaba/qwen3.8-flash[1m]，顶层 `model` 反而不动），
+    ⇒ 凡是**不带 --model** 的 claude 启动（续聊、用户在别处直接敲 claude）重启后
+    就退回旧模型 —— 这就是用户报的「重启之前是对的、重启之后又不对」。写回配置
+    属共享配置写入（受保护面，须用户授权），这里先把漂移摆到明面上。"""
+    out: List[dict] = []
+    for aid in SPECS:
+        want = hub_model(aid)
+        if not want:
+            continue
+        try:
+            st = SPECS[aid]["read"]()
+        except ModelCfgError as e:
+            out.append({"id": aid, "hub_model": want, "current": "",
+                        "extra": {}, "files": [], "note": e.args[0]})
+            continue
+        owned = {"current": str(st.get("current") or "")}
+        for k, v in (st.get("extra") or {}).items():
+            owned[str(k)] = str(v)
+        # 判据是「**任一**落点与持久化值不一致就算漂移」，而不是"还剩下某个落点对得上就算没事"：
+        # CCR 重启只改 env 三兄弟、顶层 `model` 原样留着 —— 而真正决定这次调用用哪个模型的
+        # 恰好是被改掉的 env。所以这里比对的是**全部**落点，并把不一致的那几个摆出来。
+        bad = {k: v for k, v in owned.items() if v and v != want}
+        if bad:
+            out.append({"id": aid, "hub_model": want,
+                        "current": str(st.get("current") or ""),
+                        "extra": st.get("extra") or {}, "owned": bad,
+                        "files": st.get("files") or []})
+    return out
+
+
 def terminal_argv(agent_id: str, model: str) -> List[str]:
     """拉起终端时追加的 argv；不在白名单或没设模型则返回 []（绝不猜 flag）。"""
     flag = MODEL_ARGV.get(agent_id)
@@ -635,8 +685,8 @@ def _guard(e: ModelCfgError) -> HTTPException:
 
 @router.get("/api/settings/models")
 async def settings_models():
-    """设置→模型子菜单的首屏数据：各 agent 现值 + CCR Router 只读视图。"""
-    return {"agents": list_agents(), "ccr": ccr_router_view()}
+    """设置→模型子菜单的首屏数据：各 agent 现值 + CCR Router 只读视图 + 漂移体检。"""
+    return {"agents": list_agents(), "ccr": ccr_router_view(), "drift": drift_report()}
 
 
 @router.get("/api/settings/model/preview")
