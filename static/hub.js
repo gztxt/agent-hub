@@ -3795,10 +3795,11 @@ function _lpSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
-/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：载入后拉一次后端偏好，
-   命中即以后端为准并回写 localStorage（离线兜底）；行内切换后 fire-and-forget
-   PUT（api() 对写方法自动带 x-hub-token）。后端未升级（404）或没配 token 时
-   静默沿用本机存档——降级不报错，本机语义与 v0.13.32 完全一致。 */
+/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：
+   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
+   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
+   - 后端未升级（404）或没配 token 时静默沿用本机存档
+   这样避免"每次进页都用后端覆盖本地"导致多端/刷新丢失收藏。 */
 var lpPrefSynced = false;
 var lpPrefErrShown = false;
 
@@ -3813,11 +3814,19 @@ async function lpSyncPrefs() {
   try {
     const d = await api('/api/prefs/projects.lp');
     if (d && d.value) {
-      lpStars = new Set(d.value.stars || []);
-      lpHiddenSet = new Set(d.value.hidden || []);
-      _lpSave('hub.lp.stars', lpStars);
-      _lpSave('hub.lp.hidden', lpHiddenSet);
-      lpRenderList();
+      const serverStars = new Set(d.value.stars || []);
+      const serverHidden = new Set(d.value.hidden || []);
+      // 仅当本地为空时才从后端接收；本地有数据则以本地为准（多端首次同步由首台设备推送完成）
+      if (lpStars.size === 0 && lpHiddenSet.size === 0) {
+        lpStars = serverStars;
+        lpHiddenSet = serverHidden;
+        _lpSave('hub.lp.stars', lpStars);
+        _lpSave('hub.lp.hidden', lpHiddenSet);
+        lpRenderList();
+      } else {
+        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+        lpPushPref();
+      }
       const hint = $('lpHint');
       if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
     }
@@ -4010,8 +4019,9 @@ function _ghSave(key, set) {
 }
 
 /* v0.13.36 收藏/隐藏落服务端（同 09 分片 lpSyncPrefs/lpPushPref 的 gh 对称版）：
-   载入后拉一次后端偏好为准并回写 localStorage；行内切换后回写服务端。
-   后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变）。 */
+   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
+   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
+   - 后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变） */
 var ghPrefSynced = false;
 var ghPrefErrShown = false;
 
@@ -4026,11 +4036,19 @@ async function ghSyncPrefs() {
   try {
     const d = await api('/api/prefs/projects.gh');
     if (d && d.value) {
-      ghStars = new Set(d.value.stars || []);
-      ghHiddenSet = new Set(d.value.hidden || []);
-      _ghSave('hub.gh.stars', ghStars);
-      _ghSave('hub.gh.hidden', ghHiddenSet);
-      ghRenderList();
+      const serverStars = new Set(d.value.stars || []);
+      const serverHidden = new Set(d.value.hidden || []);
+      // 仅当本地为空时才从后端接收；本地有数据则以本地为准
+      if (ghStars.size === 0 && ghHiddenSet.size === 0) {
+        ghStars = serverStars;
+        ghHiddenSet = serverHidden;
+        _ghSave('hub.gh.stars', ghStars);
+        _ghSave('hub.gh.hidden', ghHiddenSet);
+        ghRenderList();
+      } else {
+        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+        ghPushPref();
+      }
     }
   } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
 }
@@ -4251,11 +4269,21 @@ async function ghStart() {
     if (btn && ghSel != null && GH[ghSel]) btn.disabled = false;
   }
 }
-/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。 */
+/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。
+ *
+ *  v0.13.54（2026-09-29 报障「资源页面还是无法加载」的真身）：删掉原第 5 行
+ *  `if (resLoaded && !force) return;`。go()（01 分片）写的是
+ *  `if (page === 'resources' && !resLoaded) { resLoaded = true; loadResources(); }`
+ *  —— **先置位、后调用**，所以首次进页这道内部闸门必然命中，函数直接空返回：
+ *  既不发请求也不写 hint，页面就永远停在「加载中…」，而且**控制台零报错**
+ *  （没抛异常，什么都没发生）。probe 实测量到的正是：page_on=true、
+ *  resLoaded=true、cards=0、hint=""。
+ *  同型的 lpLoaded / ghLoaded 两个页面没炸，是因为 loadLocalProjects /
+ *  loadGithubRepos 内部**没有**这道闸门 —— 「进页只由 go() 一处把关」
+ *  是本仓既定纪律，资源页是唯一一个在加载函数里又关了一道的。 */
 var resLoaded = false;
 
 async function loadResources(force = false) {
-    if (resLoaded && !force) return;
     const listEl = document.getElementById("resList");
     const hintEl = document.getElementById("resHint");
     const summaryEl = document.getElementById("resSummary");

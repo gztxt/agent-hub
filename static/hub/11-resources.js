@@ -1,8 +1,18 @@
-/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。 */
+/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。
+ *
+ *  v0.13.54（2026-09-29 报障「资源页面还是无法加载」的真身）：删掉原第 5 行
+ *  `if (resLoaded && !force) return;`。go()（01 分片）写的是
+ *  `if (page === 'resources' && !resLoaded) { resLoaded = true; loadResources(); }`
+ *  —— **先置位、后调用**，所以首次进页这道内部闸门必然命中，函数直接空返回：
+ *  既不发请求也不写 hint，页面就永远停在「加载中…」，而且**控制台零报错**
+ *  （没抛异常，什么都没发生）。probe 实测量到的正是：page_on=true、
+ *  resLoaded=true、cards=0、hint=""。
+ *  同型的 lpLoaded / ghLoaded 两个页面没炸，是因为 loadLocalProjects /
+ *  loadGithubRepos 内部**没有**这道闸门 —— 「进页只由 go() 一处把关」
+ *  是本仓既定纪律，资源页是唯一一个在加载函数里又关了一道的。 */
 var resLoaded = false;
 
 async function loadResources(force = false) {
-    if (resLoaded && !force) return;
     const listEl = document.getElementById("resList");
     const hintEl = document.getElementById("resHint");
     const summaryEl = document.getElementById("resSummary");

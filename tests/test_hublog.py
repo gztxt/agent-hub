@@ -25,6 +25,7 @@ import shutil
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +38,17 @@ import hublog                          # noqa: E402
 
 _L0_TMP = pathlib.Path(os.getenv("HUB_L0_TMP",
                                  pathlib.Path.home() / "hub-l0test-fixtures"))
+
+
+def _ago_iso(minutes):
+    """夹具时间戳必须**相对当下**取，不能写死某一天。
+
+    2026-09-29 事故：下面几处原来写死 '2026-09-27T05:00:00+00:00'，而
+    hublog 的查询窗口是 `created_at >= now-24h`（src/hublog.py::_cutoff_iso）
+    ⇒ 过了 09-28 之后夹具全部落在窗外，7 条用例**同一天集体转红**，
+    而且看起来像"接口坏了"（count=0 / entries=[]）。这种红会一直红到
+    有人去翻日历，所以从根上改成相对时间。"""
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
 
 PASSCODE = "hublog-unit-passcode"
 
@@ -159,10 +171,10 @@ class TestEndpoint(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         db.execute("INSERT INTO profile_events(source,subject,status,duration_ms,detail,created_at)"
                    " VALUES('hub_chat','chat','success',12,'{\"q\":\"你好\"}',"
-                   "'2026-09-27T05:00:00+00:00')")
+                   "'" + _ago_iso(30) + "')")
         db.execute("INSERT INTO profile_events(source,subject,status,duration_ms,detail,created_at)"
                    " VALUES('task_exec','run','fail',30,'{\"err\":\"boom\"}',"
-                   "'2026-09-27T05:10:00+00:00')")
+                   "'" + _ago_iso(20) + "')")
         self._env = mock.patch.dict(os.environ, {}, clear=False)
         self._env.start()
         self.addCleanup(self._env.stop)
@@ -268,7 +280,7 @@ class TestRunlogMerged(unittest.TestCase):
         ]
         for src, subj, st, ms, det in rows:
             db.execute("INSERT INTO profile_events(source,subject,status,duration_ms,detail,created_at)"
-                       " VALUES(?,?,?,?,?,'2026-09-27T05:00:00+00:00')", (src, subj, st, ms, det))
+                       " VALUES(?,?,?,?,?,'" + _ago_iso(30) + "')", (src, subj, st, ms, det))
         os.environ["HUB_PASSCODE"] = PASSCODE
         self.addCleanup(lambda: os.environ.pop("HUB_PASSCODE", None))
         self._jl = mock.patch.object(hublog, "_journal_lines", lambda w, n: ([], "L0 夹具不拉 journald"))
