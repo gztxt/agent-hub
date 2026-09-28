@@ -34,10 +34,11 @@ function _lpSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
-/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：载入后拉一次后端偏好，
-   命中即以后端为准并回写 localStorage（离线兜底）；行内切换后 fire-and-forget
-   PUT（api() 对写方法自动带 x-hub-token）。后端未升级（404）或没配 token 时
-   静默沿用本机存档——降级不报错，本机语义与 v0.13.32 完全一致。 */
+/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：
+   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
+   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
+   - 后端未升级（404）或没配 token 时静默沿用本机存档
+   这样避免"每次进页都用后端覆盖本地"导致多端/刷新丢失收藏。 */
 var lpPrefSynced = false;
 var lpPrefErrShown = false;
 
@@ -52,11 +53,19 @@ async function lpSyncPrefs() {
   try {
     const d = await api('/api/prefs/projects.lp');
     if (d && d.value) {
-      lpStars = new Set(d.value.stars || []);
-      lpHiddenSet = new Set(d.value.hidden || []);
-      _lpSave('hub.lp.stars', lpStars);
-      _lpSave('hub.lp.hidden', lpHiddenSet);
-      lpRenderList();
+      const serverStars = new Set(d.value.stars || []);
+      const serverHidden = new Set(d.value.hidden || []);
+      // 仅当本地为空时才从后端接收；本地有数据则以本地为准（多端首次同步由首台设备推送完成）
+      if (lpStars.size === 0 && lpHiddenSet.size === 0) {
+        lpStars = serverStars;
+        lpHiddenSet = serverHidden;
+        _lpSave('hub.lp.stars', lpStars);
+        _lpSave('hub.lp.hidden', lpHiddenSet);
+        lpRenderList();
+      } else {
+        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+        lpPushPref();
+      }
       const hint = $('lpHint');
       if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
     }

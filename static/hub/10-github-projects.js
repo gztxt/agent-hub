@@ -39,8 +39,9 @@ function _ghSave(key, set) {
 }
 
 /* v0.13.36 收藏/隐藏落服务端（同 09 分片 lpSyncPrefs/lpPushPref 的 gh 对称版）：
-   载入后拉一次后端偏好为准并回写 localStorage；行内切换后回写服务端。
-   后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变）。 */
+   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
+   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
+   - 后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变） */
 var ghPrefSynced = false;
 var ghPrefErrShown = false;
 
@@ -55,11 +56,19 @@ async function ghSyncPrefs() {
   try {
     const d = await api('/api/prefs/projects.gh');
     if (d && d.value) {
-      ghStars = new Set(d.value.stars || []);
-      ghHiddenSet = new Set(d.value.hidden || []);
-      _ghSave('hub.gh.stars', ghStars);
-      _ghSave('hub.gh.hidden', ghHiddenSet);
-      ghRenderList();
+      const serverStars = new Set(d.value.stars || []);
+      const serverHidden = new Set(d.value.hidden || []);
+      // 仅当本地为空时才从后端接收；本地有数据则以本地为准
+      if (ghStars.size === 0 && ghHiddenSet.size === 0) {
+        ghStars = serverStars;
+        ghHiddenSet = serverHidden;
+        _ghSave('hub.gh.stars', ghStars);
+        _ghSave('hub.gh.hidden', ghHiddenSet);
+        ghRenderList();
+      } else {
+        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+        ghPushPref();
+      }
     }
   } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
 }
