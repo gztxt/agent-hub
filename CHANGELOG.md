@@ -1,5 +1,88 @@
 # CHANGELOG
 
+## v0.13.51 — 漂移按持久化值**写回**（带备份）+ 续聊会话也注入 --model
+
+> 用户 09-28 对 PT-20260928-01 的三项授权全部执行：① 合回主 checkout 上线；
+> ② 漂移自动写回；③ 续聊也注入 `--model`。基线 v0.13.50。
+
+### ① 续聊会话也注入 --model（`src/term.py`）
+
+v0.13.41 起只有**新会话**追加 `--model`，续聊刻意不加（怕改坏 resume 语义）。
+但续聊命令 `claude --resume <id>` 不带 flag 时读 agent 自己的配置文件 —— 而那份
+文件正是被 CCR 改写的那个 ⇒ 「设置里是 Agnes、重启之后又变 qwen」在续聊这条缝上
+照样漏。现两条通道都走 `modelcfg.terminal_argv()`（追加在模板末尾，不动
+`--resume <id>` 这类位置参数；白名单外的 agent 仍返回 `[]`）。
+
+**逐模板实弹**（探针实例 :3199 + 各家真实历史会话 id，连 WS 读首屏）：
+claude / codex / grok / hermes 四条全部 `alive=true` 且首屏是各自的正常 TUI
+（Claude Code banner、Codex、Hermes v0.21.4），无 unknown-option 类报错，
+用完即 DELETE。
+
+### ② 漂移写回（`src/modelcfg.py` `repair_drift()` + `src/main.py` 巡检）
+
+`drift_report()` 只报不修治不干净：用户在别处直接敲 `claude` 不受 hub 注入影响。
+现按持久化值把配置文件写回，**落笔前时间戳备份**（`_backup`），三条护栏：文件
+不可写 / 缺失 / 持久化 ID 形状不合法 ⇒ 跳过并记原因，绝不硬写。开关
+`HUB_MODEL_DRIFT_REPAIR=0` 可退回 v0.13.50 的只报模式。
+
+**为什么还要定期巡检**：CCR 与 hub 都在开机时启动（今日实测同秒），CCR 改写可能
+**晚于** hub 的启动修复 ⇒ 修完又被盖回去。故加 `model_drift_loop()`
+（默认 300s，`HUB_MODEL_DRIFT_SWEEP_SEC` 可调）。
+
+顺带修一处备份撞车：`_backup()` 只到秒，同一秒内连续落笔（设置页保存刚过、巡检
+写回就跟上来）会让后一份覆盖前一份 ⇒ "留了备份"是假象。撞车即加序号。
+
+**实弹**：探针实例对**真实 HOME** 落笔 —— claude 写回 `agnes/agnes-2.5-flash`
+（env 三兄弟 + 顶层 model）、codex 写回 `alibaba/glm-5.3`（CCR 托管块 + 注释行），
+各留 1 份备份；写回后 `GET /api/settings/models` 的 `drift` 为空；巡检轮跑过时
+无漂移 ⇒ 不再重复落笔（无备份洪水）。
+
+### 闸门
+
+L0 hermetic **765 全绿**（v0.13.50 为 760，新增 5 例 `HRepairDrift`：写回+备份、
+无漂移不写、dry-run 零字节、非法 ID 跳过、只读文件跳过）。
+
+## v0.13.50 — 模型设置成为**所有**调用通道的默认值 + 配置文件漂移体检
+
+> 施工会话：52b51a1a。基线：v0.13.49。用户诉求原话：「模型设置里面 Claude 设置为
+> Agens 模型，但是新建任务后 Claude 还是 qwen……重启之前新建任务模型是对的，重启之后
+> 又不是设置里面设置的模型了，请修复模型配置持久化」。
+
+取证结论：**Hub 侧的持久化没丢，丢的是另外两处**。
+
+- ① **chat 通道从不读那份持久化值**（这是"新建任务还是 qwen"的本体）。
+  协同子任务 / 定时任务 / 对话页都走 `_chat_dispatch` → adapter，而 adapter 的
+  `default_model` 是**服务启动时**由 config 算出来的常量（`.env` 没配
+  `CLAUDE_CHAT_MODEL` ⇒ `registry.py:18` 兜底写死 `"qwen3.8-flash"`）。
+  实测：生产实例 `POST /api/agents/claude/chat`（不带 model）打给 CCR 的是
+  `requested_model=qwen3.8-flash`，而 `agent_models` 表里存的是
+  `agnes/agnes-2.5-flash` —— 设置页改了跟这条链路毫无关系。
+  修法：`modelcfg.chat_model(agent_id, requested)` 作为**唯一取值入口**
+  （显式请求 > 持久化默认值 > adapter 自兜），`_chat_dispatch` 与
+  `/api/agents/{id}/chat/stream` 各接一处（`src/main.py`）。
+- ② **CCR 每次启动会把 `~/.claude/settings.json` 的 env 三兄弟改回旧值**
+  ——这才是"重启之后就不对了"。今天 07:06:22 CCR 起来、07:06:28 落笔：
+  `ANTHROPIC_MODEL / CCR_CLAUDE_CODE_MODEL / CODEXL_CLAUDE_CODE_MODEL` 被写成
+  `alibaba/qwen3.8-flash[1m]`，而顶层 `model` **原样留着**（还是 agnes）。
+  凡是**不带 `--model`** 的 claude 启动（续聊、用户在别处直接敲 `claude`）因此退回 qwen：
+  控制中心由 env 决定，不是由 `model` 决定。
+  修法：`modelcfg.drift_report()` —— **只读**体检，把「任一落点与持久化值不一致」
+  的 agent 列出来（判据刻意做成"任一不一致即漂移"，不能因为顶层 model 还对就放行），
+  经 `GET /api/settings/models` 的 `drift` 字段上屏，并在启动日志里打一行。
+  **不自动写回**：`~/.claude/settings.json` 属共享配置受保护面，要不要落笔由用户裁定。
+
+实测（探针实例 :3199 + production DB 副本，两条真实请求经 CCR 记账）：
+- 补丁前同样的请求 ⇒ `requested_model=qwen3.8-flash`；
+- 补丁后不带 model ⇒ `requested_model=agnes/agnes-2.5-flash`（CCR 请求日志 id 5926）；
+- 显式带 `alibaba/qwen3.8-flash` ⇒ 仍是 qwen（显式值优先，未被改动，id 5927）。
+启动漂移日志：`claude 持久化=agnes/agnes-2.5-flash 但配置文件里 env.ANTHROPIC_MODEL=
+alibaba/qwen3.8-flash[1m]…`；`codex` 也查出一行（持久化 glm-5.3 / 文件现值 qwen3.8-flash）。
+
+闸门：L0 hermetic **760**（零跳过，含新增 6 例）全绿；L1 44 跑出 1 红
+（`test_sessions_store` 的 grok 标题用例），**主 checkout 未改动跑同一例同红** ⇒ 与本改动无关。
+新增用例：`FChatChannelDefault`（取值顺序三条）、`GDriftReport`（只读体检三例，
+含"只改 env、顶层 model 不动"这一 CCR 手法）。
+
 ## v0.13.49 — 侧栏历史会话块：4 项读数/几何调整
 
 > 施工会话：49ece82b。基线：v0.13.48。用户诉求原话：「先做一个界面优化 就是 agents

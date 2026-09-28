@@ -104,6 +104,12 @@ def _backup(p: Path, tag: str) -> str:
     """军规铁律：落笔前先时间戳备份。返回备份路径（相对 HOME 展示）。"""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dst = p.with_name(p.name + f".bak-{stamp}-hub-modelcfg-{tag}")
+    # 同一秒内连续落笔（设置页保存刚过、巡检写回就跟上来）会让时间戳撞车 ⇒
+    # 后一份把前一份拷成同一个文件名覆盖掉，"留了备份"就成了假象。撞车就加序号。
+    n = 1
+    while dst.exists():
+        n += 1
+        dst = p.with_name(p.name + f".bak-{stamp}-{n:02d}-hub-modelcfg-{tag}")
     shutil.copy2(p, dst)
     return str(dst)
 
@@ -491,8 +497,111 @@ def set_hub_model(agent_id: str, model: str) -> None:
                (agent_id, model, _now()))
 
 
+def chat_model(agent_id: str, requested: Optional[str] = None) -> str:
+    """对话 / 任务通道（`POST /api/agents/{id}/chat`）的模型取值。
+
+    v0.13.50：这条通道以前**压根不知道 hub 侧的持久化模型** —— adapter 的
+    default_model 是**服务启动时**由 config 算出来的常量（.env 未配 CLAUDE_CHAT_MODEL
+    就写死 "qwen3.8-flash"），于是设置页改了模型，协同子任务 / 定时任务 / 对话页
+    照旧把旧模型发出去（09-28 实弹：POST /api/agents/claude/chat 打给 CCR 的仍是
+    qwen3.8-flash，而 agent_models 里存的是 agnes/agnes-2.5-flash）。
+    取值顺序：请求显式带 > 本 Agent 的持久化默认值 > adapter 自兜。"""
+    req = (requested or "").strip()
+    if req:
+        return req
+    return hub_model(agent_id)
+
+
+def drift_report() -> List[dict]:
+    """只读体检：列出「配置文件现值 ≠ hub 持久化值」的 agent（**不落笔**）。
+
+    为什么要这个（09-28 实取证）：CCR 每次启动都会重写 ~/.claude/settings.json 的
+    env.ANTHROPIC_MODEL / CCR_CLAUDE_CODE_MODEL / CODEXL_CLAUDE_CODE_MODEL 三兄弟
+    （07:06:28 把 agnes 改回 alibaba/qwen3.8-flash[1m]，顶层 `model` 反而不动），
+    ⇒ 凡是**不带 --model** 的 claude 启动（续聊、用户在别处直接敲 claude）重启后
+    就退回旧模型 —— 这就是用户报的「重启之前是对的、重启之后又不对」。写回配置
+    属共享配置写入（受保护面，须用户授权），这里先把漂移摆到明面上。"""
+    out: List[dict] = []
+    for aid in SPECS:
+        want = hub_model(aid)
+        if not want:
+            continue
+        try:
+            st = SPECS[aid]["read"]()
+        except ModelCfgError as e:
+            out.append({"id": aid, "hub_model": want, "current": "",
+                        "extra": {}, "files": [], "note": e.args[0]})
+            continue
+        owned = {"current": str(st.get("current") or "")}
+        for k, v in (st.get("extra") or {}).items():
+            owned[str(k)] = str(v)
+        # 判据是「**任一**落点与持久化值不一致就算漂移」，而不是"还剩下某个落点对得上就算没事"：
+        # CCR 重启只改 env 三兄弟、顶层 `model` 原样留着 —— 而真正决定这次调用用哪个模型的
+        # 恰好是被改掉的 env。所以这里比对的是**全部**落点，并把不一致的那几个摆出来。
+        bad = {k: v for k, v in owned.items() if v and v != want}
+        if bad:
+            out.append({"id": aid, "hub_model": want,
+                        "current": str(st.get("current") or ""),
+                        "extra": st.get("extra") or {}, "owned": bad,
+                        "files": st.get("files") or []})
+    return out
+
+
+def repair_drift(only: Optional[List[str]] = None, dry_run: bool = False) -> dict:
+    """把漂移的 agent 配置文件写回 hub 持久化值（用户 09-28 授权，默认开启）。
+
+    为什么需要它：CCR 每次启动都会重写 ~/.claude/settings.json 的 env 三兄弟
+    （今早 07:06:28 实测把 agnes 改回 qwen），凡是**不带 --model** 的启动就退回旧
+    模型 —— 这就是「设置里是 Agens、重启之后又变 qwen」。终端注入只覆盖 hub 拉起的
+    会话，用户在别处直接敲 claude 覆盖不到，所以要按持久化值把文件修回去。
+
+    三条护栏（共享配置写入铁律）：
+      ① 落笔前 `_backup()` 时间戳备份（apply_model 内自带，无法绕过）；
+      ② 文件不存在 / 不可写 / 模型 ID 形状不合法 ⇒ **跳过并记原因**，绝不硬写；
+      ③ `dry_run=True` 只算不做，给体检与自测用。
+    返回 {"repaired": [...], "skipped": [...]}，每一项都带得出来证据的字段。"""
+    out: dict = {"repaired": [], "skipped": []}
+    for d in drift_report():
+        aid = d["id"]
+        if only is not None and aid not in only:
+            continue
+        want = d["hub_model"]
+        files = d.get("files") or []
+        if not files or not all(Path(f).exists() for f in files):
+            out["skipped"].append({"id": aid, "reason": "配置文件缺失"})
+            continue
+        unwritable = [f for f in files if not os.access(f, os.W_OK)]
+        if unwritable:
+            out["skipped"].append({"id": aid, "reason": "文件不可写（常见 chattr +i）",
+                                   "files": unwritable})
+            continue
+        try:
+            validate_model(want)
+        except ModelCfgError as e:
+            out["skipped"].append({"id": aid, "reason": f"持久化模型 ID 不合法：{e.args[0]}"})
+            continue
+        if dry_run:
+            out["repaired"].append({"id": aid, "model": want, "dry_run": True,
+                                    "owned": d.get("owned") or {}})
+            continue
+        try:
+            res = apply_model(aid, want)
+        except ModelCfgError as e:
+            out["skipped"].append({"id": aid, "reason": f"写回失败：{e.args[0]}"})
+            continue
+        out["repaired"].append({"id": aid, "model": want,
+                                "backups": [a["backup"] for a in res["applied"]],
+                                "owned": d.get("owned") or {}})
+    return out
+
+
 def terminal_argv(agent_id: str, model: str) -> List[str]:
-    """拉起终端时追加的 argv；不在白名单或没设模型则返回 []（绝不猜 flag）。"""
+    """拉起终端时追加的 argv；不在白名单或没设模型则返回 []（绝不猜 flag）。
+
+    调用点两处（v0.13.51）：新会话与**续聊**都要加 —— 续聊命令 `claude --resume <id>`
+    不带 --model 时用 agent 自己的配置文件，而那份文件会被 CCR 启动改写（见
+    drift_report），等于"设置页改了、重启后照样退回旧模型"。追加位置固定在模板
+    末尾，不动 `--resume <id>` 这类位置参数。"""
     flag = MODEL_ARGV.get(agent_id)
     if not flag or not model:
         return []
@@ -635,8 +744,8 @@ def _guard(e: ModelCfgError) -> HTTPException:
 
 @router.get("/api/settings/models")
 async def settings_models():
-    """设置→模型子菜单的首屏数据：各 agent 现值 + CCR Router 只读视图。"""
-    return {"agents": list_agents(), "ccr": ccr_router_view()}
+    """设置→模型子菜单的首屏数据：各 agent 现值 + CCR Router 只读视图 + 漂移体检。"""
+    return {"agents": list_agents(), "ccr": ccr_router_view(), "drift": drift_report()}
 
 
 @router.get("/api/settings/model/preview")

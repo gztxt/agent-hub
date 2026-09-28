@@ -269,10 +269,12 @@ async def create_session(body: CreateIn, request: Request):
         raise HTTPException(400, f"命令 {cmd[0]} 未在本机找到")
     cmd[0] = resolved
     # v0.13.41：设置→模型里给该 agent 存过默认模型 ⇒ 按白名单追加 --model。
-    # 只对**新会话**追加：续聊命令出自 sessions_store.resume_argv 模板，插一个
-    # 它不认识的 flag 会改坏 resume 语义（白名单外的 agent 一律返回 []，绝不猜 flag）。
-    if not body.session_id:
-        cmd += modelcfg.terminal_argv(prof["id"], modelcfg.hub_model(prof["id"]))
+    # v0.13.51：续聊**同样**追加（此前只对的新会话追加）。原因见 modelcfg.terminal_argv：
+    # 不带 --model 的启动走的是 agent 配置文件，而 CCR 每次启动会把 claude 的
+    # env 三兄弟改回旧模型 ⇒ 续聊"重启后退回 qwen"正是这条缝。逐家 `--help` 实测
+    # --model/-m 都在（codex 的 `resume` 子命令 help 里也有 -m），追加在模板末尾
+    # 不动 resume 的位置参数；白名单外的 agent 一律返回 []，绝不猜 flag。
+    cmd += modelcfg.terminal_argv(prof["id"], modelcfg.hub_model(prof["id"]))
     sid = uuid.uuid4().hex[:10]
     sess = Session(sid, prof["id"], cmd, cwd)
     sess.resume_of = body.session_id or ""
