@@ -122,6 +122,13 @@ async function killProc(agentId, pid, signal) {
     try {
         const resp = await api("/api/resources/kill", {
             method: "POST",
+            /* v0.13.55：必须显式带 Content-Type —— fetch 传字符串 body 时默认发
+               text/plain，FastAPI 解析不出 body ⇒ 三个 Body(...) 字段全 missing
+               ⇒ **422**，而写闸门在它前面且已放行，所以日志里只见
+               `POST /api/resources/kill 422`、不见任何 401。这就是「结束/强杀
+               点了就弹操作失败、进程一个没死」的本体。
+               仓库其余 10 处 JSON POST 一律是这个写法（见 01 分片 api() 旁注释）。 */
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent_id: agentId, pid: pid, signal_name: signal })
         });
         if (!resp.ok) throw new Error(resp.error || "Kill 失败");
