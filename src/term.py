@@ -129,6 +129,9 @@ class Session:
         # ⇒ 两台设各（桌面 + 手机）同时看同一会话时，两个消费者会**互相偷字节**，
         #   各自只拿到一半输出（流被劈成两半，不是「少看到一些」而是内容永久错乱）。
         self.viewers: Dict[str, asyncio.Queue] = {}
+        # 每个观看者一个输出合并器（B1）：与 viewers 同生共死，键同为 vid。
+        # 放在「读一块就发一帧」之前，PTY 突发输出才不会被原样放大成 WS 帧洪水。
+        self.coalescers: Dict[str, "_OutputCoalescer"] = {}
         self.dropped: Dict[str, int] = {}   # 观看者 -> 累计丢弃字节（慢消费者必须可见）
         self.ring = bytearray()  # 输出环形缓冲：重连回放，避免"重挂后白屏"
         self._cleaned = False    # 资源回收幂等守卫
@@ -206,6 +209,62 @@ class Session:
 
 
 _sessions: Dict[str, Session] = {}
+
+
+# 输出合并窗口（毫秒）。5ms 是 paseo 实测值（docs/terminal-performance.md:5-16），
+# 不是随手取的：再大就会让按键回显可见地发黏，再小则合并不住 npm run build 这种
+# 持续高频吐字节的场景。
+TERM_COALESCE_MS = 5.0
+
+
+class _OutputCoalescer:
+    """前后沿节流的输出合并器（思路取自 paseo TerminalOutputCoalescer，按 Hub 形态重写）。
+
+    为什么不能只用后沿（普通 debounce）：那样**每次**按键回显都会被平白加一个窗口的
+    延迟（paseo 文档原话：reverting to trailing-only adds a full window to every
+    keystroke echo）。前沿规则是：距上次刷出已超过 delay ⇒ 立刻发，交互延迟不升反降。
+
+    部署位置：挂在「PTY 读回调 → 每观看者队列」之间，即离 PTY 最近的那一层。
+    挪到更下游（比如 WS 发送前）只是换了个挨打的地方——主循环照样被高频唤醒。
+    """
+
+    def __init__(self, on_flush, delay_ms: float = TERM_COALESCE_MS):
+        self._on_flush = on_flush
+        self._delay = delay_ms / 1000.0
+        self._buf = bytearray()
+        self._timer = None          # asyncio TimerHandle；非 None = 正在攒一趟
+        self._last = None           # 上次刷出的时刻（前沿判定用）
+
+    def handle(self, data: bytes) -> None:
+        if not data:
+            return
+        self._buf += data
+        if self._timer is not None:
+            return                  # 已在攒，等那个定时器统一刷
+        now = time.monotonic()
+        if self._last is None or now - self._last >= self._delay:
+            self.flush()            # 前沿：空闲后的第一块立刻发（保按键回显）
+            return
+        self._timer = asyncio.get_event_loop().call_later(self._delay, self.flush)
+
+    def flush(self) -> None:
+        """立刻刷出缓冲。带外消息（退出提示等）发送前必须调它，否则会插到输出前面。"""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        if not self._buf:
+            return
+        payload = bytes(self._buf)
+        self._buf.clear()
+        self._last = time.monotonic()
+        self._on_flush(payload)
+
+    def close(self) -> None:
+        """观看者离开时收尸：定时器不取消的话会一直攥着 loop 的引用。"""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._buf.clear()
 
 
 class CreateIn(BaseModel):
@@ -388,12 +447,10 @@ def _attach_reader(sess: Session):
                 sess.ring.extend(data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]
-                for vid, q in list(sess.viewers.items()):
-                    try:
-                        q.put_nowait(data)
-                    except asyncio.QueueFull:
-                        # 不静默丢：丢多少字节记账，由该观看者的 pump 把提示发回终端
-                        sess.dropped[vid] = sess.dropped.get(vid, 0) + len(data)
+                # 不再「读一块发一块」：交给各自的合并器攒一趟（前沿立刻刷 / 后沿攒 5ms）。
+                # 合并器内部才 put 进队列 —— 队列帧数下降与 WS 帧数下降是同一件事。
+                for co in list(sess.coalescers.values()):
+                    co.handle(data)
         except (OSError, BlockingIOError) as e:
             if isinstance(e, OSError) and e.errno in (errno.EIO, errno.EBADF):
                 sess.alive = False
@@ -402,6 +459,11 @@ def _attach_reader(sess: Session):
                 # 原样只有一句「[会话结束]」，用户看到的就是"点一下闪退、什么都不告诉我"。
                 reason = describe_exit(sess.exit_status, sess.hub_killed)
                 tail = f"\r\n\x1b[90m[进程 {reason}]\x1b[0m" if reason else ""
+                # 保序（P1-1）：[会话结束] 是带外消息，必须先让合并器把攒着的输出落进
+                # 队列，才能排到它后面。不 flush 的话退出提示会插在最后一段输出**之前**，
+                # 表现为「屏幕上一半输出提示在前、内容在后」这类极难复现的错乱。
+                for co in list(sess.coalescers.values()):
+                    co.flush()
                 try:
                     for q in list(sess.viewers.values()):
                         q.put_nowait(("\x1b[?25h\r\n[会话结束]" + tail).encode())
@@ -444,6 +506,15 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
     vid = uuid.uuid4().hex[:8]
     vq: asyncio.Queue = asyncio.Queue(maxsize=2000)
     sess.viewers[vid] = vq
+
+    def _enqueue(payload: bytes) -> None:
+        """合并器的出口：入本观看者的队列。慢消费者照旧记账，绝不静默吞字节。"""
+        try:
+            vq.put_nowait(payload)
+        except asyncio.QueueFull:
+            sess.dropped[vid] = sess.dropped.get(vid, 0) + len(payload)
+
+    sess.coalescers[vid] = _OutputCoalescer(_enqueue)
     # 回放最近输出（重连不白屏）
     if sess.ring:
         try:
@@ -479,6 +550,29 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         # 与 on_readable 的 EIO 分支同理：有面因就一并说出来，别让「为什么没了」变成哑谜。
         # 走到这里必然 alive=False，而 alive 只由 _cleanup() 置（全仓两处，另一处紧随其后调它）
         # ⇒ exit_status 已记录，直接读即可，不必补调 _cleanup()。
+        # 保序（P1-1）：[process exited] 是带外消息，必须排在最后一段输出**之后**。
+        # 两步都不能省：① flush —— 把合并器里攒着的落进队列；
+        #              ② 排空 —— pump 循环已退出，队列里剩下的帧没人再发了，
+        #                 不排空的话退出提示会抢在刚 flush 出来的输出前面。
+        co = sess.coalescers.get(vid)
+        if co is not None:
+            co.flush()
+        lost = sess.dropped.pop(vid, 0)
+        if lost:
+            try:
+                await ws.send_bytes(("\r\n\x1b[90m[hub: 输出过快，已丢弃 %d 字节]\x1b[0m\r\n"
+                                      % lost).encode())
+            except Exception:  # noqa: BLE001
+                pass
+        while True:
+            try:
+                pending = vq.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                await ws.send_bytes(pending)
+            except Exception:  # noqa: BLE001
+                break
         reason = describe_exit(sess.exit_status, sess.hub_killed)
         tail = f" ({reason})" if reason else ""
         try:
@@ -526,6 +620,9 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         pump_task.cancel()
         sess.viewers.pop(vid, None)
         sess.dropped.pop(vid, None)
+        co = sess.coalescers.pop(vid, None)
+        if co is not None:
+            co.close()   # 定时器不收会让 loop 一直攥着一个已离开的观看者
 
 
 def kill_all():
