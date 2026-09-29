@@ -112,8 +112,28 @@
                字族拉丁等宽在前、CJK 等宽在后：xterm 按首个命中字体量 cell 宽，CJK 在前会把 ASCII 撑宽 */
             --term-bg: #000000; --term-fg: #ffffff; --term-cursor: #ffffff; --term-sel: #b0d0ff40;
             --term-fs: 14px; --term-lh: 1.5;
+            /* 2026-09-29 修正：CJK 原来只列了 Sarasa / Noto Sans Mono CJK 两族 —— 都是 Linux
+               发行版或手工安装的字体，**macOS / Windows 上一个都不存在**，汉字只能靠 generic
+               monospace 兜底。DOM 渲染器时代这没问题（浏览器原生字体回退链很完整）；换成
+               WebGL/Canvas 渲染器就不行了：它们把字形光栅化进纹理图集，对「靠 generic
+               fallback 兜到的 CJK」处理很差 —— 汉字画成白色方块，而同一行的拉丁字母完全正常
+               （xterm 社区同款：siteboon/claudecodeui#822「CJK as black boxes，
+               WebGL renderer + Latin-only fontFamily」）。
+               故此处把三平台的中文字体全部点名：
+                 · 先真等宽 CJK（Sarasa Mono / Noto Sans Mono CJK / Source Han Mono）——
+                   宽度严格 2:1，落在 2 cell 里像素级对齐，有则最优；
+                 · 再系统中文（PingFang SC / 微软雅黑 / Noto Sans CJK SC / 文泉驿）——
+                   汉字是比例字形，画进 2 cell 会略窄留缝，但保证「看得见」。
+               可见性优先于像素级对齐：留缝能忍，方块不能忍。
+               顺序铁律不变：拉丁等宽必须排在中文之前，否则 ASCII 会被中文字体的拉丁字形撑宽。 */
             --term-font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
-                         'Liberation Mono', 'Sarasa Mono SC', 'Noto Sans Mono CJK SC', monospace;
+                         'Liberation Mono',
+                         'Sarasa Mono SC', 'Sarasa Fixed SC', 'Noto Sans Mono CJK SC', 'Source Han Mono SC',
+                         'PingFang SC', 'Hiragino Sans GB',
+                         'Microsoft YaHei', 'Microsoft YaHei UI',
+                         'Noto Sans CJK SC', 'Source Han Sans SC',
+                         'WenQuanYi Zen Hei Mono', 'WenQuanYi Zen Hei', 'Droid Sans Fallback',
+                         'SimSun', 'SimHei', monospace;
             --term-black: #7f7f7f;  --term-red: #cd3131;    --term-green: #0dbc79;  --term-yellow: #e5e510;
             --term-blue: #2472c8;   --term-magenta: #bc3fbc; --term-cyan: #3b8ea6;  --term-white: #e5e5e5;
             --term-bblack: #666666; --term-bred: #f14c4c;    --term-bgreen: #23d18b; --term-byellow: #f1f14c;
@@ -1955,6 +1975,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
     <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=1cd46109"></script>
+    <script src="/static/hub.js?v=4004ac26"></script>
 </body>
 </html>

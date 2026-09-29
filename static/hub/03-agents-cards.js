@@ -204,11 +204,85 @@ function termHealNow() {
    本机无物理 GPU（远程桌面 / 无头 / 部分移动端 WebGL 拿不到上下文），
    所以 Canvas 回落不是理论分支，是实际会走到的主力路径之一。
    必须在 term.open() **之后**挂：渲染器要拿真实 DOM 容器。 */
+
+/* 渲染器偏好：URL `?term=webgl|canvas|dom` 优先（并记进 localStorage），其次 localStorage，
+   `?term=auto` 清除记忆回到默认。留这个后门是因为「哪个渲染器能用」取决于客户端字体与
+   GPU，服务端看不见也测不到 —— 出事时用户能自己一键切，不用等我。 */
+function termRendererPref() {
+  try {
+    const q = new URLSearchParams(location.search).get('term');
+    if (q === 'auto') { lsRemove('hubTermRenderer'); return ''; }
+    if (/^(webgl|canvas|dom)$/.test(q || '')) {
+      lsSet('hubTermRenderer', q);
+      return q;
+    }
+    // 走 01 分片的 lsGet 守卫（隐私模式/配额满时不抛，见 tests/test_ls_guard.py）
+    const s = lsGet('hubTermRenderer', '');
+    return /^(webgl|canvas|dom)$/.test(s || '') ? s : '';
+  } catch (e) { return ''; }
+}
+
+/* CJK 字形可用性探测 —— 决定敢不敢用 GPU/Canvas 渲染器。
+   为什么需要这道闸：GPU/Canvas 渲染器把每个字形光栅化进一张纹理图集，对「不是来自字体栈
+   里点名的那几个字体、而是靠 generic monospace 兜回来的 CJK」处理很差 —— 汉字被画成白色
+   方块/空白，同一行的拉丁字母却完全正常（siteboon/claudecodeui#822 同款）。
+   DOM 渲染器走浏览器原生文本渲染，字体回退链是完整的，永远不会出这个问题（代价是慢）。
+   探测法：用**同一个字体栈**在 canvas 2d 上画「中」，再画一个私用区码点（正常字体必然缺
+   该字形，会画成缺字方块）；两者墨迹量接近 ⇒ 「中」画出来的也是缺字方块而不是汉字。
+   探测本身失败时返回 true（不阻断，维持原行为）—— 闸门只该在确证有问题时落下。 */
+function termCjkUsable() {
+  try {
+    const cv = document.createElement('canvas');
+    cv.width = 48; cv.height = 48;
+    const cx = cv.getContext('2d');
+    if (!cx) return true;
+    // 字体栈里带换行缩进，先压成单行空白再交给 canvas font 解析
+    const stack = cssToken('--term-font', 'monospace').replace(/\s+/g, ' ');
+    const ink = ch => {
+      cx.clearRect(0, 0, 48, 48);
+      cx.font = '28px ' + stack;
+      cx.fillStyle = '#ffffff';
+      cx.fillText(ch, 4, 34);
+      const d = cx.getImageData(0, 0, 48, 48).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 40) n++;
+      return n;
+    };
+    const zh = ink('\u4e2d');       // 中
+    if (zh <= 0) return false;       // 汉字一个像素都没画出来
+    const tofu = ink('\ue000');      // 私用区：正常字体必然缺字形
+    return Math.abs(zh - tofu) > 10;
+  } catch (e) { return true; }
+}
+
+/* 诊断出口：控制台里 `hubTermDiag()` 可查渲染器/CJK/字体栈，排障不用猜。 */
+window.hubTermDiag = function () {
+  return {
+    renderer: termRendererName,
+    pref: termRendererPref(),
+    cjkUsable: termCjkUsable(),
+    font: cssToken('--term-font', '')
+  };
+};
+
 function termLoadRenderer() {
-  const tries = [
+  const pref = termRendererPref();
+  if (pref === 'dom') {
+    termRendererName = 'dom';
+    console.info('[term] 渲染器：dom（按 ?term=dom / localStorage 指定）');
+    return;
+  }
+  if (!termCjkUsable()) {
+    /* 中文是硬需求，性能是软需求：宁可慢，不能看不见字。 */
+    termRendererName = 'dom';
+    console.warn('[term] 字体栈取不到 CJK 字形（汉字会画成方块）→ 放弃 GPU/Canvas，改走 DOM 渲染');
+    return;
+  }
+  let tries = [
     ['webgl', window.WebglAddon && window.WebglAddon.WebglAddon],
     ['canvas', window.CanvasAddon && window.CanvasAddon.CanvasAddon]
   ];
+  if (pref === 'webgl' || pref === 'canvas') tries = tries.filter(t => t[0] === pref);
   for (let i = 0; i < tries.length; i++) {
     const name = tries[i][0], Ctor = tries[i][1];
     if (typeof Ctor !== 'function') continue;
