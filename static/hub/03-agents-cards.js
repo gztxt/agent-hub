@@ -162,6 +162,47 @@ function termHealNow() {
   }, 120);
 }
 
+/* ── 渲染器选择 ────────────────────────────────────────────────────────────────
+   实测（@xterm/xterm 5.5.0，grep vendor/xterm.js）：核心只内置 DomRenderer，
+   `_createRenderer()` 直接 `createInstance(DomRenderer, ...)` —— 每个字符格子是一个
+   DOM <span>，80×24 就 1920 个节点，scrollback 5000 行上限下最多约 40 万节点在 DOM 里。
+   原生终端是 GPU 画的位图，这是「跟系统终端差很远」的首要技术原因。
+   Canvas/WebGL 渲染器是**独立包**，必须自己挂：WebGL 优先，不可用回落 Canvas，
+   都失败才留 DOM（慢，但不白屏）。
+   本机无物理 GPU（远程桌面 / 无头 / 部分移动端 WebGL 拿不到上下文），
+   所以 Canvas 回落不是理论分支，是实际会走到的主力路径之一。
+   必须在 term.open() **之后**挂：渲染器要拿真实 DOM 容器。 */
+function termLoadRenderer() {
+  const tries = [
+    ['webgl', window.WebglAddon && window.WebglAddon.WebglAddon],
+    ['canvas', window.CanvasAddon && window.CanvasAddon.CanvasAddon]
+  ];
+  for (let i = 0; i < tries.length; i++) {
+    const name = tries[i][0], Ctor = tries[i][1];
+    if (typeof Ctor !== 'function') continue;
+    try {
+      const addon = new Ctor();
+      term.loadAddon(addon);
+      /* WebGL 上下文会被系统回收（GPU 进程崩溃 / 驱动重置 / 标签页后台久了被丢弃）。
+         xterm 会自己摘掉渲染器退回 DOM，这里补一条可见日志 + 强制重画把画面补回来。 */
+      if (name === 'webgl' && addon.onContextLoss) {
+        addon.onContextLoss(() => {
+          termRendererName = 'dom';
+          console.warn('[term] WebGL 上下文丢失，已回落 DOM 渲染');
+          try { term.refresh(0, term.rows - 1); } catch (e) {}
+        });
+      }
+      termRendererName = name;
+      console.info('[term] 渲染器：' + name);
+      return;
+    } catch (e) {
+      console.warn('[term] ' + name + ' 渲染器不可用：' + ((e && e.message) || e));
+    }
+  }
+  termRendererName = 'dom';
+  console.warn('[term] 未挂上 GPU/Canvas 渲染器，停留在 DOM 渲染（可用但会卡）');
+}
+
 function ensureTerm() {
   if (term) return;
   // 字号 / 字族 / 配色全部取自 index.html 的 --term-* token（唯一真值源）。
@@ -169,6 +210,11 @@ function ensureTerm() {
   // 缺 CJK 等宽导致中文掉字体、16 色全是灰阶导致 ls/git diff 的着色输出完全看不出区别。
   const T = (k, fb) => cssToken('--term-' + k, fb);
   term = new window.Terminal({
+    /* allowProposedApi 必须开：term.unicode（Unicode11 宽字符）是 proposed API，
+       不开的话写 `term.unicode.activeVersion='11'` 会抛
+       "You must set the allowProposedApi option to true" —— 实测踩到（09-29 CDP 取证）。
+       它只解锁 proposed 接口访问，不改变已有行为。 */
+    allowProposedApi: true,
     fontSize: cssNum('--term-fs', 14),
     lineHeight: cssNum('--term-lh', 1.5),
     fontFamily: T('font', 'monospace'),
@@ -184,16 +230,148 @@ function ensureTerm() {
       brightBlue: T('bblue', '#3c85cc'), brightMagenta: T('bmagenta', '#d73fd7'), brightCyan: T('bcyan', '#49c2d6'), brightWhite: T('bwhite', '#ffffff')
     }
   });
+  /* Unicode11 必须在 open **之前**挂并激活：CJK / emoji 的 cell 宽度判定在渲染器初始化时
+     就固化进 cell 尺寸表，之后再改 activeVersion 不会重算已布局的行 ⇒ 中文整体错位。 */
+  try {
+    if (window.Unicode11Addon && typeof window.Unicode11Addon.Unicode11Addon === 'function') {
+      term.loadAddon(new window.Unicode11Addon.Unicode11Addon());
+      term.unicode.activeVersion = '11';
+    }
+  } catch (e) { console.warn('[term] Unicode11 不可用：' + ((e && e.message) || e)); }
+
   termFit = new window.FitAddon.FitAddon();
   term.loadAddon(termFit);
   term.open($('termEl'));
+  /* 渲染器必须紧跟 open()：它要拿真实容器量 cell 尺寸。挂晚了会先以 DOM 渲染一阵子再切换。 */
+  termLoadRenderer();
+
+  /* 其余插件统一在这里挂，单个失败不影响别的（vendor 文件缺失 / 版本错都不会拖垮终端）。 */
+  try {
+    if (window.SearchAddon && typeof window.SearchAddon.SearchAddon === 'function') {
+      termSearch = new window.SearchAddon.SearchAddon();
+      term.loadAddon(termSearch);
+    }
+  } catch (e) { console.warn('[term] SearchAddon 挂载失败：' + ((e && e.message) || e)); }
+  try {
+    if (window.ClipboardAddon && typeof window.ClipboardAddon.ClipboardAddon === 'function')
+      term.loadAddon(new window.ClipboardAddon.ClipboardAddon());
+  } catch (e) { console.warn('[term] ClipboardAddon 挂载失败：' + ((e && e.message) || e)); }
+  try {
+    if (window.WebLinksAddon && typeof window.WebLinksAddon.WebLinksAddon === 'function')
+      term.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+  } catch (e) { console.warn('[term] WebLinksAddon 挂载失败：' + ((e && e.message) || e)); }
+
   term.onData(termSend);
   /* 回调一律包一层：termRepaint(force) 的形参不能接 addEventListener/ResizeObserver 的事件对象 */
   window.addEventListener('resize', () => termRepaint());
   new ResizeObserver(() => termRepaint()).observe($('termEl'));
   requestAnimationFrame(() => termRepaint());
   setTimeout(() => termRepaint(), 150);
+  termFindBind();
+  termPasteBind();
 }
+
+/* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
+   接 xterm 自己的 textarea paste（用户 Ctrl/Cmd+V、右键粘贴都走这条路），但**抢在它前面**：
+   捕获阶段接下 → 自己做安全处理 → 再交给 term.paste()（term.paste 会按 2004 状态包装）。
+   两件 xterm 不做、我们必须做的事：
+     ① 内嵌终止序列降级：粘贴内容里若含 ESC[201~，原样包进 bracketed 段会让对端**提前**
+        结束粘贴模式，其后字节降级为普通按键被逐条执行（这就是注入面）。
+        paseo 同款处理见 terminal-paste.ts:27（replaceAll(BRACKETED_PASTE_END, "[201~")）。
+     ② 换行归一：\r\n / \n 统一成 \r（终端的"回车"语义），否则 readline 会把 CRLF 里的
+        LF 再解释一次，多出一个空行。
+   termBracketed 为 false（对端没声明支持）时**不自己发明包装**：发出去的 ESC[200~ 会被
+   当成字面量糊在屏幕上，比不包更糟。此时只做换行归一，行为与改前一致。 */
+function termPasteText(txt) {
+  if (!term || !txt) return;
+  let s = String(txt).replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+  if (termBracketed && s.indexOf(TERM_PASTE_END) >= 0) s = s.split(TERM_PASTE_END).join('[201~');
+  try { term.paste(s); } catch (e) { /* paste 不可用就退回 input，至少别把内容丢了 */
+    try { term.input(s, true); } catch (e2) {}
+  }
+}
+function termPasteBind() {
+  const ta = term && term.textarea;
+  if (!ta || ta.dataset.pasteBound) return;
+  ta.dataset.pasteBound = '1';
+  ta.addEventListener('paste', e => {
+    const cd = e.clipboardData || window.clipboardData;
+    const txt = cd ? cd.getData('text') : '';
+    if (!txt) return;
+    e.preventDefault();
+    e.stopPropagation();   // 别让 xterm 的原生 paste 再处理一遍（那遍不转义内嵌终止序列）
+    termPasteText(txt);
+  }, true);
+}
+
+/* ── 终端内查找（Ctrl/Cmd + F）─────────────────────────────────────────────────
+   SearchAddon 挂上之后必须给它一个入口，否则只是「插件挂了但用户够不着」。
+   keydown 走**捕获阶段**：xterm 会吞掉大部分按键，只有捕获阶段能抢在它前面拦下。
+   搜索条是 absolute 浮层，不占 flex 空间 ⇒ 不影响 #termEl 的内容盒（FitAddon 算行数靠它）。 */
+let termFindTimer = null;
+function termFindNote(s) { const el = $('termFindNote'); if (el) el.textContent = s || ''; }
+function termFindOpen() {
+  if (!term) return;
+  const box = $('termFind');
+  if (!box) return;
+  box.classList.add('on');
+  const inp = $('termFindInput');
+  if (inp) { try { inp.focus(); inp.select(); } catch (e) {} }
+  termFindRun(1);
+}
+function termFindClose() {
+  const box = $('termFind');
+  if (box) box.classList.remove('on');
+  try { if (termSearch) termSearch.clearDecorations(); } catch (e) {}
+  termFindNote('');
+  /* 回焦必须走同一谓词（L0 护栏 test_only_guarded_term_focus 盯的就是这一条）：
+     关闭查找框是**用户**动作（Ctrl+F 是他自己按的），不是自动挂载/重连那类会偷偷弹软键盘
+     的路径 ⇒ 传 user:true 如实表达「这是用户主动」，而不是绕过守卫写裸 focus。 */
+  if (term && termFocusWanted({ user: true })) term.focus();
+}
+function termFindRun(dir) {
+  if (!term || !termSearch) { termFindNote('查找不可用'); return; }
+  const inp = $('termFindInput');
+  const q = inp ? inp.value : '';
+  if (!q) { try { termSearch.clearDecorations(); } catch (e) {} termFindNote(''); return; }
+  /* incremental:true —— 边输边跳到当前匹配，不等回车；否则用户看不到自己打到哪了 */
+  const opt = { caseSensitive: false, wholeWord: false, regex: false, incremental: true };
+  try {
+    const hit = dir < 0 ? termSearch.findPrevious(q, opt) : termSearch.findNext(q, opt);
+    termFindNote(hit ? '有匹配' : '无匹配');
+  } catch (e) { termFindNote('查找失败'); }
+}
+function termFindBind() {
+  const inp = $('termFindInput');
+  if (inp && !inp.dataset.bound) {
+    inp.dataset.bound = '1';
+    inp.addEventListener('input', () => {
+      if (termFindTimer) clearTimeout(termFindTimer);
+      termFindTimer = setTimeout(() => termFindRun(1), 120);   // 节流：别每敲一键扫一遍全部缓冲区
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); termFindRun(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); termFindClose(); }
+      e.stopPropagation();      // 查找框里的按键绝不能漏进 pty
+    });
+  }
+  const bind = (id, fn) => {
+    const el = $(id);
+    if (el && !el.dataset.bound) { el.dataset.bound = '1'; el.addEventListener('click', fn); }
+  };
+  bind('termFindPrev', () => termFindRun(-1));
+  bind('termFindNext', () => termFindRun(1));
+  bind('termFindClose', termFindClose);
+}
+/* 终端没在显示时不抢 Ctrl+F —— 那时浏览器自己的页内查找才是用户想要的 */
+document.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  if (e.key !== 'f' && e.key !== 'F') return;
+  if (!termVisible()) return;
+  e.preventDefault(); e.stopPropagation();
+  termFindBind();
+  termFindOpen();
+}, true);
 
 function termDetach() {
   termRcCancel();          // 用户显式离开 ⇒ 任何在排的重连一律作废，不许把会话拖回来
@@ -250,6 +428,7 @@ function termConnect(sid, agent, opts) {
   const row = $('termSessList');
   if (row) row.querySelectorAll('.sess-item').forEach(x => x.classList.toggle('cur', x.dataset.sid === sid));
   termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
+  termBracketed = false;   // 粘贴模式同理：新会话的 2004 要等它自己实时发来才算数
   termHealPending = false; // 上一条会话攒下的补画请求作废，新连接的回放自己会再挂
   if (!o.reconnect) termToastClear();   // 用户主动接的线：收掉「正在重连」提示；自动重连则留到 hb 往返成功才结案
   /* 保留画面时别清屏：清屏 = 先给用户一屏白底，而服务端只回放 ring 里最近 64KB

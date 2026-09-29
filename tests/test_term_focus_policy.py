@@ -35,8 +35,11 @@ class TestFocusPolicy(unittest.TestCase):
         self.assertGreaterEqual(len(hits), 1, "一个 term.focus() 都没有＝功能被删了")
         for n, line in hits:
             with self.subTest(line=n):
-                self.assertIn("termFocusWanted(opts)", line,
-                              f"第 {n} 行有无守卫的 term.focus()：{line[:80]}")
+                # 认谓词本身，不认入参写法：查找框关闭后的回焦是「用户按了 Ctrl+F」这条
+                # 主动路径，写成 termFocusWanted({ user: true }) 才是如实表达，
+                # 硬要求 `termFocusWanted(opts)` 只会逼人去造一个没用的 opts 变量。
+                self.assertRegex(line, r"termFocusWanted\(",
+                                 f"第 {n} 行有无守卫的 term.focus()：{line[:80]}")
 
     def test_predicate_semantics(self):
         """termFocusWanted 只认 opts.user，别的入参（含 reconnect）一律不抢焦点。"""
@@ -74,13 +77,21 @@ class TestFocusPolicy(unittest.TestCase):
 
 class TestKeyGuard(unittest.TestCase):
     def setUp(self):
-        i = SRC.find("document.addEventListener('keydown'")
-        self.assertGreater(i, 0, "全局 keydown 处理器找不到了")
-        # 只取这个监听器自己的函数体（到下一个顶层 `});` 为止）
-        tail = SRC[i:]
-        end = tail.find("\n});")
-        self.assertGreater(end, 0, "监听器收尾形状变了，请同步本护栏")
-        self.body = tail[:end]
+        # 不能取「第一个」keydown 监听器：全仓已有多个（v0.13.5x 起终端内查找 Ctrl+F
+        # 也注册了一个，且它所在的分片排序在前 ⇒ `SRC.find` 会先命中它，
+        # 拿到的 body 里自然没有 `if (editing) return`，护栏就假红了 —— 实测踩到）。
+        # 判据改成**身份**：认那个调用 keyTargetIsEditing 的焦点策略监听器。
+        self.body = ""
+        for m in re.finditer(r"document\.addEventListener\('keydown'", SRC):
+            tail = SRC[m.start():]
+            end = tail.find("\n});")
+            if end <= 0:
+                continue                      # 收尾形状不匹配：不是我们要的那个，继续找
+            body = tail[:end]
+            if "keyTargetIsEditing" in body:
+                self.body = body
+                break
+        self.assertNotEqual(self.body, "", "带 keyTargetIsEditing 的全局 keydown 处理器找不到了")
 
     def test_predicate_defined(self):
         self.assertIn("function keyTargetIsEditing(e)", SRC, "守卫谓词被删")

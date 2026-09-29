@@ -179,6 +179,10 @@ function embedCopyUrl() {
 /* ── pty 终端（xterm.js + WebSocket）── 修复：会话按实体隔离，切换即换绑 ── */
 
 let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = null;
+/* 渲染器与搜索插件的实际挂载结果（v0.13.3x：xterm 默认 DomRenderer 是每字符一个 DOM span，
+   大输出/滚屏时与原生终端差一个数量级 —— 换 GPU/Canvas 渲染器是「不好用」的首要解药）。
+   termRendererName ∈ webgl|canvas|dom，dom 表示两个 addon 都没挂上（此时只是慢，不会白屏）。 */
+let termRendererName = 'dom', termSearch = null;
 
 /* ── 终端链路自愈（v0.13.6 P1-1）：应用层心跳 + 退避重连 + 显式失败 ──────────────
    实测缺陷（09-23 取证，非推断）：termConnect() 只有一个 new WebSocket，全仓零重连、
@@ -232,6 +236,18 @@ function termNotice(s) { if (term) term.write('\r\n\x1b[90m' + s + '\x1b[0m'); }
    正在跑的 TUI 会自己重新发 \x1b[?1003h（连上时我们已发过 resize，它会重画）→ 届时照常放行。 */
 let termMouseLive = false;
 const TERM_MOUSE_MODES = new Set(['9', '1000', '1001', '1002', '1003', '1005', '1006', '1007', '1015', '1016']);
+
+/* ── 粘贴闸门（bracketed paste, DECSET 2004）────────────────────────────────
+   痛点（方案 P1-3，属**正确性**问题不是锦上添花）：多行脚本粘进终端时，readline 把
+   第一行当命令立刻执行、其余行当垃圾逐条报错——多行 prompt / 多行命令会被打散执行。
+   对端开 2004 后 xterm 会自动把粘贴包成 ESC[200~ … ESC[201~（vendor/xterm.js 里
+   `decPrivateModes.bracketedPasteMode` 分支，5.5.0 实测存在），shell 侧就不再逐行解释。
+   Hub 自己要补的是 xterm **没做**的那一半：粘贴内容里若夹着终止序列 ESC[201~，
+   xterm 原样包进去 ⇒ 对端提前结束粘贴模式，剩下的字节被当普通按键执行（注入面）。
+   paseo 的处理见 terminal-paste.ts:27 —— 把内嵌的终止序列降级成字面量 `[201~`。
+   状态只从**实时帧**判定（回放帧不扫，与鼠标模式同口径）：历史里的 2004 是过期状态。 */
+let termBracketed = false;
+const TERM_PASTE_END = '\x1b[201~';
 const TERM_DECSET_RE = /\x1b\[\?([0-9;]+)([hl])/g;
 /* 三种鼠标编码：SGR(\x1b[<b;x;yM|m) / X10(\x1b[M + 3 字节) / 1015(\x1b[b;x;yM|m) */
 const TERM_MOUSE_REPORT_RE = /\x1b\[(?:<[0-9]+;[0-9]+;[0-9]+[Mm]|M[\s\S]{3}|[0-9]+;[0-9]+;[0-9]+[Mm])/g;
@@ -309,6 +325,9 @@ function termScanMouseMode(text) {
   TERM_DECSET_RE.lastIndex = 0;
   while ((m = TERM_DECSET_RE.exec(text))) {
     if (m[1].split(';').some(n => TERM_MOUSE_MODES.has(n))) termMouseLive = (m[2] === 'h');
+    /* 2004 与鼠标同批扫描：不同 Set 是因为语义不同（一个是上报开关，一个是粘贴模式开关），
+       混进 TERM_MOUSE_MODES 会让「鼠标开关」的判定多认一个不属于它的模式。 */
+    if (m[1].split(';').indexOf('2004') >= 0) termBracketed = (m[2] === 'h');
   }
 }
 

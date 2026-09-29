@@ -1,8 +1,18 @@
-/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。 */
+/** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。
+ *
+ *  v0.13.54（2026-09-29 报障「资源页面还是无法加载」的真身）：删掉原第 5 行
+ *  `if (resLoaded && !force) return;`。go()（01 分片）写的是
+ *  `if (page === 'resources' && !resLoaded) { resLoaded = true; loadResources(); }`
+ *  —— **先置位、后调用**，所以首次进页这道内部闸门必然命中，函数直接空返回：
+ *  既不发请求也不写 hint，页面就永远停在「加载中…」，而且**控制台零报错**
+ *  （没抛异常，什么都没发生）。probe 实测量到的正是：page_on=true、
+ *  resLoaded=true、cards=0、hint=""。
+ *  同型的 lpLoaded / ghLoaded 两个页面没炸，是因为 loadLocalProjects /
+ *  loadGithubRepos 内部**没有**这道闸门 —— 「进页只由 go() 一处把关」
+ *  是本仓既定纪律，资源页是唯一一个在加载函数里又关了一道的。 */
 var resLoaded = false;
 
 async function loadResources(force = false) {
-    if (resLoaded && !force) return;
     const listEl = document.getElementById("resList");
     const hintEl = document.getElementById("resHint");
     const summaryEl = document.getElementById("resSummary");
@@ -76,7 +86,7 @@ function renderResources(data) {
 
         for (const proc of processes) {
             html +=
-                        '<tr>' +
+                        '<tr data-pid="' + proc.pid + '">' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.pid + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.cpu_percent + '%</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.rss_mb + ' MB</td>' +
@@ -109,17 +119,92 @@ function toggleAgentProcs(agentId) {
 async function killProc(agentId, pid, signal) {
     if (!confirm("确定要 " + (signal === "SIGTERM" ? "结束" : "强制结束") + " 进程 PID " + pid + " 吗？")) return;
 
+    const rowEl = document.querySelector('#procs-' + agentId + ' tr[data-pid="' + pid + '"]');
+    const killBtns = rowEl ? rowEl.querySelectorAll('button') : [];
+    killBtns.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+
     try {
         const resp = await api("/api/resources/kill", {
             method: "POST",
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent_id: agentId, pid: pid, signal_name: signal })
         });
-        if (!resp.ok) throw new Error(resp.error || "Kill 失败");
-        alert((signal === "SIGTERM" ? "结束" : "强杀") + " 成功");
-        loadResources(true); // 刷新
+
+        if (!resp.ok) {
+            const failedPids = resp.failed || [pid];
+            const killedPids = resp.killed || [];
+            let msg = "";
+            if (killedPids.length && failedPids.length) {
+                msg = "部分成功：PID " + killedPids.join(',') + " 已结束；PID " + failedPids.join(',') + " 失败";
+            } else if (failedPids.length) {
+                msg = "失败：PID " + failedPids.join(',') + " 未能结束";
+            } else {
+                msg = resp.error || "Kill 失败";
+            }
+            throw new Error(msg);
+        }
+
+        toast("PID " + pid + " " + (signal === "SIGTERM" ? "已结束" : "已强杀"), "ok");
+
+        // 实时移除该进程行
+        if (rowEl) {
+            rowEl.style.transition = "opacity 0.2s, height 0.2s";
+            rowEl.style.opacity = "0";
+            rowEl.style.height = "0";
+            setTimeout(() => rowEl.remove(), 200);
+        }
+
+        // 更新 Agent 汇总信息
+        updateAgentSummary(agentId, -1);
+
+        // 若该 Agent 已无进程，移除整张卡片
+        checkAndRemoveEmptyAgent(agentId);
+
     } catch (e) {
         console.error("[Resources] kill failed:", e);
-        alert("操作失败：" + e.message);
+        killBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+        toast("操作失败：" + e.message, "err");
+    }
+}
+
+function updateAgentSummary(agentId, deltaCount) {
+    const cardEl = document.querySelector('[data-agent="' + agentId + '"]');
+    if (!cardEl) return;
+    const metaEl = cardEl.querySelector('.agent-meta');
+    if (!metaEl) return;
+    const text = metaEl.textContent;
+    const countMatch = text.match(/<b>(\d+)<\/b>\s*进程/);
+    if (countMatch) {
+        const newCount = Math.max(0, parseInt(countMatch[1], 10) + deltaCount);
+        metaEl.innerHTML = text.replace(/<b>\d+<\/b>\s*进程/, '<b>' + newCount + '</b> 进程');
+    }
+}
+
+function checkAndRemoveEmptyAgent(agentId) {
+    const procsEl = document.getElementById('procs-' + agentId);
+    if (!procsEl) return;
+    const rows = procsEl.querySelectorAll('tbody tr');
+    if (rows.length === 0) {
+        const cardEl = document.querySelector('[data-agent="' + agentId + '"]');
+        if (cardEl) {
+            cardEl.style.transition = "opacity 0.2s, height 0.2s, margin 0.2s";
+            cardEl.style.opacity = "0";
+            cardEl.style.height = "0";
+            cardEl.style.margin = "0";
+            setTimeout(() => {
+                cardEl.remove();
+                checkEmptyList();
+            }, 200);
+        }
+    }
+}
+
+function checkEmptyList() {
+    const listEl = document.getElementById("resList");
+    if (!listEl) return;
+    const cards = listEl.querySelectorAll('.agent-card');
+    if (cards.length === 0) {
+        listEl.innerHTML = '<div class="hint" style="padding:20px;text-align:center">当前没有运行中的 Agent 进程</div>';
     }
 }
 
