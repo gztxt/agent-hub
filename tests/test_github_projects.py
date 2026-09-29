@@ -37,6 +37,8 @@ sys.path.insert(0, str(_REPO / "src"))
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / "tests"))
 
+import tiers  # noqa: E402
+
 os.environ.setdefault("TERM_TOKEN", "unit-test-token-not-production")
 
 import githubprojects as gp     # noqa: E402
@@ -52,7 +54,9 @@ def _mktmp(prefix: str) -> pathlib.Path:
         d = _L0_TMP / (prefix + str(os.getpid()) + "-" + os.urandom(4).hex())
         try:
             d.mkdir()
-            return d
+            # v0.13.58：登记到进程级清单，退出时统一删。此前造完从不删，
+            # 实测累积 230MB/2402 个目录 ⇒ 被项目扫描当真实项目（176 vs 应 ≈44）。
+            return tiers.l0_fixture_register(d)
         except FileExistsError:
             continue
     raise RuntimeError("造夹具目录失败")

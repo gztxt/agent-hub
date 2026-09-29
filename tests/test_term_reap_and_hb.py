@@ -152,28 +152,42 @@ class TestReapReclaimsExitedProcess(unittest.TestCase):
         sess.kill()
 
     def test_idle_with_no_viewer_gets_killed(self):
-        """② TTL 只在「没有观看者」时判：有观看者说明有人在用，不动。"""
+        """② 无人观看 + pty 完全静默 + 超 TTL ⇒ 必须杀（配额要能释放）。
+
+        v0.13.58 档二：判据从「客户端静默」改成「无生命迹象」，所以这条比原版多一个
+        前提——last_activity 也要超 TTL。只把 last_io 推后而 pty 仍在产出时**不该**杀，
+        那正是跨客户端连续性的正身（见 tests/test_term_ttl_activity.py）。
+        """
         sess = self._spawn_quick(30)
         term._sessions[sess.id] = sess
-        sess.last_io = time.time() - (term.IDLE_TTL_S + 60)
+        stale = time.time() - (term.IDLE_TTL_S + 60)
+        sess.last_io = stale
+        sess.last_activity = stale          # pty 也没产出 ⇒ 真无生命迹象
         term._reap()
-        self.assertTrue(sess.hub_killed, "无观看者且超 TTL 却不杀")
+        self.assertTrue(sess.hub_killed, "无观看者 + 无产出 + 超 TTL 却不杀")
         self.assertIn(sess.id, term._sessions, "刚 kill 不该立刻摘表（等 reap 确认）")
 
-    def test_idle_with_viewer_is_still_reaped(self):
-        """TTL 的语义是**空闲**而非「离线」：窗口开着 45 分钟没敲键盘就该收。
+    def test_watcher_blocks_reap_even_when_client_silent(self):
+        """v0.13.58 档二（推翻本文件原 test_idle_with_viewer_is_still_reaped 的口径）。
 
-        这条不是我的设计而是既有 tests/test_term_reaper.py::test_idle_expired_gets_killed
-        钉死的口径（它用不具 viewers 字段的轻量 stub，断言只看 last_io）。
-        保留这条断言是为了防止未来有人「顺手优化」成有观看者就不杀 ——
-        那会让一个开着不动的终端永远占着 MAX_SESSIONS 的名额（P0-2 同型故障）。
+        原断言是「开着不动 45 分钟也该收」，理由是怕占满 MAX_SESSIONS 名额。
+        但用户 09-29 明确要求「任务状态跨客户端连续」，而实弹证据显示旧口径会在
+        agent 仍在产出时把会话杀掉（换端重连直接 4410）⇒ 腰斩正在跑的任务。
+        现在的取舍：**有人在看 ⇒ 绝不因静默被杀**；防配额占死改由另外三道闸承担 ——
+        进程退出即摘表（test_exited_child_is_dropped_from_registry）、
+        MAX_SESSIONS 满则拒开新会话、以及无人观看时的 TTL 回收（本类另一条）。
+        代价（知情接受）：一个开着不动也不退出的终端会一直占名额，只能由用户点 × 结束。
         """
         sess = self._spawn_quick(30)
         term._sessions[sess.id] = sess
         sess.viewers["v1"] = None            # 有观看者（队列内容无关）
-        sess.last_io = time.time() - (term.IDLE_TTL_S + 60)
+        stale = time.time() - (term.IDLE_TTL_S + 60)
+        sess.last_io = stale
+        sess.last_activity = stale           # 就算 pty 也静默，只要有人在看就不杀
         term._reap()
-        self.assertTrue(sess.hub_killed, "超 TTL 却不收 ⇒ 开着不动的终端永久占配额")
+        self.assertFalse(sess.hub_killed,
+                         "有人看着却被回收 ⇒ 用户在眼前的任务被静默腰斩（档二语义）")
+        self.assertTrue(sess.alive)
         sess.kill()
 
     def test_alive_count_matches_registry(self):

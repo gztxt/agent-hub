@@ -131,7 +131,14 @@ class Session:
                 os._exit(127)
         self.alive = True
         self.created = time.time()
+        # 两个时钟刻意分开（v0.13.58 / 档二）：
+        #   last_io      = 客户端最后一次**真实交互**（心跳不算）。只用于「用户多久没动手」的展示。
+        #   last_activity = 会话最后一次**有生命迹象**（客户端交互 或 pty 产出）。
+        # 旧实现只有一个时钟且被回收逻辑当「死活」判据 ⇒ 换设备/切后台时客户端静默
+        # 45min，正在跑的任务被腰斩（实弹：重连收到 4410）。两个时钟分开后，
+        # 回收只看 last_activity，「客户端不在」不再等价于「会话该死」。
         self.last_io = time.time()
+        self.last_activity = time.time()
         self.cols, self.rows = 80, 24
         # 每个观看者一条**独立**队列（P1-5）。
         # 旧做法：全会话共用一个 outputs 队列，而每个 WS 连接的 pump 都在同一个队列上 get()
@@ -154,7 +161,13 @@ class Session:
                 "cwd": self.cwd, "alive": self.alive,
                 "created": self.created, "resume_of": self.resume_of,
                 "exit_reason": describe_exit(self.exit_status, self.hub_killed),
-                "idle_s": round(time.time() - self.last_io)}
+                "idle_s": round(time.time() - self.last_io),
+                # activity_s：距上次「有生命迹象」的秒数。idle_s 涨而 activity_s 不涨
+                # = 客户端不在、agent 也没在跑（这才是真该回收的形态）。
+                # getattr 兜底同 _reap()：有测试用 Session.__new__ 绕过 __init__ 造实例，
+                # 读路径不该因为少一个时钟字段就 AttributeError（契约不该由实现细节决定）。
+                "activity_s": round(time.time() - getattr(
+                    self, "last_activity", self.last_io))}
 
     def _signal_group(self, sig):
         """pty.fork 子进程是会话首进程（pgid=pid）→ 组灭可带走它派生的子进程"""
@@ -509,7 +522,9 @@ _HEARTBEAT_TYPES = frozenset({"hb", "ping", "pong", "ack"})
 
 
 def _touch(sess: "Session", text: str) -> None:
-    """收到一帧客户端文本：只有**非心跳、非纯回执**的内容才算用户交互。
+    """收到一帧客户端文本：只有**非心跳、非回执**的内容才算用户交互。
+
+    同时续 last_activity（会话活着）；last_io（客户端静默）语义不变。
 
     - resize：用户拖窗口 ⇒ 真交互，必须续命（否则拖窗口看源码会被 TTL 杀掉）。
     - 其余文本帧（输入的按键/粘贴）⇒ 真交互。
@@ -520,24 +535,31 @@ def _touch(sess: "Session", text: str) -> None:
     if not t:
         return
     if t[0] not in "{[":
-        sess.last_io = time.time()      # 非 JSON 的裸帧：保守当交互
+        _mark_interaction(sess)           # 非 JSON 的裸帧：保守当交互
         return
     try:
         j = json.loads(t)
     except (json.JSONDecodeError, ValueError):
-        sess.last_io = time.time()      # 解析不了当输入处理，不因格式怪就丢 TTL
+        _mark_interaction(sess)           # 解析不了当输入处理，不因格式怪就丢 TTL
         return
     if not isinstance(j, dict):
-        sess.last_io = time.time()
+        _mark_interaction(sess)
         return
     if str(j.get("type") or "") in _HEARTBEAT_TYPES:
-        return                            # 心跳：不续命（关键的一行）
-    sess.last_io = time.time()
+        return                             # 心跳：不续命（P0-1 的病根）
+    _mark_interaction(sess)
+
+
+def _mark_interaction(sess: "Session") -> None:
+    """一次真实交互：续 last_io（客户端静默）与 last_activity（会话存活）。"""
+    now = time.time()
+    sess.last_io = now
+    sess.last_activity = now
 
 
 def _touch_bytes(sess: "Session") -> None:
-    """收到二进制帧：xterm 的输入走 data 通道 ⇒ 一定是交互，续命。"""
-    sess.last_io = time.time()
+    """收到二进制帧：xterm 的输入走 data 通道 ⇒ 一定是交互，两个时钟都续。"""
+    _mark_interaction(sess)
 
 
 def _reap():
@@ -549,10 +571,20 @@ def _reap():
        session 永远 alive=True 地留在 `_sessions`，一直占 MAX_SESSIONS(8) 的名额，
        用户表现为「开过几个终端之后再也开不出新的」。
 
-    ② **真空闲超 TTL**：只在**无观看者**时按 last_io 判（有心跳不代表有人在用）。
+    ② **无生命迹象超 TTL**（v0.13.58 档二改判据）：判据是 last_activity 且要求**无人观看**。
+       「没人观看」用 `viewers` 为空判断，而不是「客户端静默」——
+       客户端静默只是「这台设备不在」，不等于「没人要这个会话」。
 
     P0-2 的修法：这里主动 waitpid(WNOHANG) 探活——它是唯一不依赖「有没有人在看」
     的探针。子进程一退出，waitpid 立刻返回 pid，登记当轮就被摘掉。
+
+    ② 判据为什么换过（实弹证据，不是推断）：
+       旧口径 `now - s.last_io > TTL` 把「客户端静默」当死活判据，实测在
+       TERM_IDLE_TTL=45s 的实例上：agent 明明每 2s 在产出（idle_s 涨到 40s），
+       会话仍被回收，另一端重连直接收到 4410（已结束）。
+       用户要求的语义是「状态跨客户端连续」⇒ 客户端不在 ≠ 会话该死。
+       现在：**pty 有产出**（_attach_reader 续 last_activity）或**有人看着**（viewers 非空）
+       都不会被回收；只有「没人看 + 进程活着但 pty 长时间一个字节都不吐」才收。
     """
     now = time.time()
     for s in list(_sessions.values()):
@@ -566,9 +598,16 @@ def _reap():
         if callable(probe) and probe():
             _drop(s)
             continue
-        # ② 空闲 TTL：口径与既有 test_term_reaper 一致——只看 last_io，不看观看者。
-        # 「有人开着窗口但 45 分钟没敲键盘」本来就该收——TTL 的语义是空闲，不是离线。
-        if now - s.last_io > IDLE_TTL_S:
+        # ② 无生命迹象超 TTL（档二）：三个条件同时成立才回收。
+        #    watched：有观看者 ⇒ 有人在用，绝不回收（哪怕客户端静止不动）。
+        #    activity：last_activity 比 last_io 更能代表「会话活着」；
+        #      老 stub 没有这个字段 ⇒ getattr 兜底退回 last_io（契约由实现细节决定不得人心）。
+        watched = bool(getattr(s, "viewers", None))
+        activity = getattr(s, "last_activity", None)
+        base = s.last_io if activity is None else max(activity, s.last_io)
+        if watched:
+            continue
+        if now - base > IDLE_TTL_S:
             s.kill()
 
 
@@ -613,8 +652,13 @@ def alive_count() -> int:
 
 
 def idle_max_s() -> int:
-    """最久没 IO 的活会话闲置秒数（判断 TTL 有没有真的在跑）"""
-    live = [time.time() - s.last_io for s in _sessions.values() if s.alive]
+    """最久没有生命迹象（无输出且无人观看）的活会话闲置秒数（判断 TTL 有没有真的在跑）
+
+    口径必须与 _reap() 的判据一致（档二）：报 last_io 而回收看 last_activity，
+    会让 /health 的自证字段证明「一条正在被回收的会话也不忙」⇒ 假绿。
+    """
+    live = [time.time() - max(getattr(s, "last_activity", s.last_io), s.last_io)
+            for s in _sessions.values() if s.alive]
     return int(max(live)) if live else 0
 
 
@@ -625,7 +669,10 @@ def _attach_reader(sess: Session):
         try:
             data = os.read(sess.fd, 65536)
             if data:
-                sess.last_io = time.time()
+                # 档二关键一行：pty 有产出 = 会话活着，续 last_activity。
+                # 刻意**不**续 last_io —— 「agent 在跑」不等于「用户刚敲过键盘」，
+                # 两者混成一个时钟才会把正在跑的任务判成空闲（见 __init__ 注释）。
+                sess.last_activity = time.time()
                 sess.ring.extend(data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]

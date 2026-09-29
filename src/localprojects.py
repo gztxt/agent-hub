@@ -66,13 +66,31 @@ MAX_DEPTH = 3
 EXCLUDE_DIR_NAMES = {"node_modules", "venv", ".venv", "__pycache__", "target", "dist", ".cache",
                      # v0.13.31 精度收紧 P4：备份/归档/缓存——整仓拷贝与缓存不是项目
                      "snapshots", "git-backups", "session-backups", "Hermes-backup",
-                     "marketplace-cache"}
+                     "marketplace-cache",
+}
 
 #: v0.13.31 P4：目录名前缀闸（ARCHIVED-勿用-… 一类归档目录）
+#:
+#: v0.13.58：夹具前缀**不进这里**。曾试过排 "ghsync-"/"ghlist-" 等，当场 12 例红 ——
+#: tests/test_github_projects.py 的 setUp 就是 _mktmp("ghlist-") 然后把 lp.ROOTS 指到它，
+#: 指望那些仓被扫描到。按目录名排会把「测试自己造的仓」也排掉，治好了污染、测瞎了扫描。
+#: 正确的粒度是**路径**：见 EXCLUDE_PATH_PREFIXES —— 夹具根是一个绝对路径，不是名字模式。
 EXCLUDE_NAME_PREFIXES = ("ARCHIVED",)
 
 #: v0.13.31 P1：绝对路径前缀闸（/tmp 探针与临时会话目录；扫描与 cloudcli 合并共用）
+#:
+#: v0.13.58：加 L0 夹具根（HUB_L0_TMP 默认 ~/hub-l0test-fixtures）。实测代价是本机
+#: 真实项目被算成 176（应为 ≈44）—— 2400 多个带 .git 的夹具仓混进列表，于是
+#: L1 精度闸（≤50）与 prepush 闸门一起红。**按路径排才对**：测试把 lp.ROOTS 显式
+#: 指到自己的夹具目录时，本地仓扫描仍然生效（那正是扫描用例要测的）。
 EXCLUDE_PATH_PREFIXES = ("/tmp",)
+
+#: v0.13.58：L0 夹具根（tests/*.py 的 HUB_L0_TMP 默认值）——**只在扫描侧挡**。
+#: 为什么不并进 EXCLUDE_PATH_PREFIXES：那个集合被扫描与 cloudcli 合并共用，而合并侧
+#: 收的是「cloudcli 亲口说有、盘上确实是 git 仓」的条目（test_cc_only_real_repo_outside_roots_kept
+#: 钉死这条不许杀）。夹具污染是**扫描**的问题（把 2400 个夹具仓当项目），
+#: 不是 cloudcli 记录的问题。合成一处会让那条断言当场红 —— 治污染治成了砍真仓。
+L0_FIXTURE_ROOT = str(Path.home() / "hub-l0test-fixtures")
 
 #: 返回条目上限（防异常目录树拖垮响应；实测 git 仓约 48 + cloudcli 29 ≈ 60）
 LIMIT = 256
@@ -84,11 +102,22 @@ def _is_git_dir(d: Path) -> bool:
     return g.is_dir() or g.is_file()
 
 
-def _under_excluded(path: str) -> bool:
-    """v0.13.31 精度闸：路径前缀（/tmp）/任一段命中备份目录名/段名 ARCHIVED- 前缀。
-    扫描收录与 cloudcli 合并共用——排除口径必须一处定义，两处各写必漂移。"""
+def _under_excluded(path: str, under: Optional[List[str]] = None,
+                   extra_prefixes: Tuple[str, ...] = ()) -> bool:
+    """v0.13.31 精度闸：路径前缀（/tmp、夹具根）/任一段命中备份目录名/段名 ARCHIVED- 前缀。
+    扫描收录与 cloudcli 合并共用——排除口径必须一处定义，两处各写必漂移。
+
+    ``under`` 是**点名要扫的根**（ROOTS）。排除闸治的是「默认扫到的东西不该混进来」，
+    不是「用户点名要的目录」：所以显式指定的根及其全部后代一律豁免，豁免逻辑放在**这里**
+    而不是各调用点各打一个补丁 —— 实测正是两处口径不一致造成的（扫描侧只豁免根自身、
+    合并侧完全不豁免，于是夹具根下的仓「扫描收了、合并又排掉」，TestMerge 10 例红）。
+    """
     p = os.path.normpath(path)
-    for pref in EXCLUDE_PATH_PREFIXES:
+    for r in (under or []):
+        rn = os.path.normpath(r)
+        if p == rn or p.startswith(rn + os.sep):
+            return False
+    for pref in tuple(EXCLUDE_PATH_PREFIXES) + tuple(extra_prefixes):
         if p == pref or p.startswith(pref + os.sep):
             return True
     for seg in p.split(os.sep):
@@ -147,7 +176,12 @@ def _scan_roots(roots: List[str]) -> Tuple[List[Dict[str, Any]], List[str], Dict
             for dirpath, dirnames, filenames in it:
                 cur = Path(dirpath)
                 # P4：收录前过排除闸（含 ARCHIVED- 目录本身——深度剪枝够不到它的孩子）
-                if _under_excluded(str(cur)) and str(cur) != str(root):
+                # 根豁免要**递归**：指定根之下的一切都算「点名要扫的」。
+                # 旧写法只豁免根自身那一次，于是指定根落在排除前缀里时，它的**孩子**
+                # 仍被剪掉 ⇒ 「根被扫了却一个仓都没收到」（实测 TestMerge：夹具根下的
+                # gitonly 不见了，merged 是空数组）。与 _merge_cloudcli 的豁免同口径。
+                if _under_excluded(str(cur), [str(root)],
+                                   extra_prefixes=(L0_FIXTURE_ROOT,)):
                     stats["excluded"] += 1
                     dirnames[:] = []
                     continue
@@ -239,7 +273,12 @@ def _merge_cloudcli(git_projects: List[Dict[str, Any]],
         if key in root_set:
             _drop(key, "根目录自身")
             continue
-        if _under_excluded(key):
+        # 根豁免：与 _scan_roots（:161）同一口径 —— 排除闸只管「默认扫到的东西」，
+        # 不管「点名要扫的根」。测试把 lp.ROOTS 指到 ~/hub-l0test-fixtures/xxx/root 后，
+        # 其下的仓在扫描侧被收（:161 对 root 本身有豁免），若合并侧不豁免就会凭空消失
+        # ⇒ 同一个路径「扫描收了、合并排了」，实测 TestMerge 12 例红。
+        # 豁免粒度是**指定根的后代**，不是根自身：root_set 存的是根，key 是项目目录。
+        if _under_excluded(key, list(root_set)):
             _drop(key, "排除路径")
             continue
         d = Path(key)
