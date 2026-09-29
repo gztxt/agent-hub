@@ -267,6 +267,64 @@ class _OutputCoalescer:
         self._buf.clear()
 
 
+# sid -> 持有尺寸所有权的观看者 vid。用 vid 字符串而非对象引用：
+# Python 的弱引用语义与 paseo 的 WeakRef<object> 不同，拿 vid 记账更简单也更可查。
+_size_owner: Dict[str, str] = {}
+
+# 行列上限。pty 尺寸是 struct.pack("HHHH")，超过 65535 会抛 struct.error
+# 打断整条 WS 收包循环；下界 1 是防止 0 行让 TUI 直接崩。
+_ROWS_RANGE = (1, 500)
+_COLS_RANGE = (2, 1000)
+
+
+def _clamp(v, lo: int, hi: int) -> Optional[int]:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return max(lo, min(hi, n))
+
+
+def _norm_intent(raw) -> str:
+    """归一化尺寸意图。
+
+    缺省（老客户端没有 intent 字段）⇒ claim：否则一次前后端版本错配就会让尺寸永远改不动
+    （paseo 同口径，terminal-size-ownership.ts:32-38）。
+    未知的非空值 ⇒ update（保守）：宁可要它先拿到所有权，也不能让一个看不懂的字段
+    绕过所有权检查直接改尺寸。
+    """
+    if raw is None or str(raw).strip() == "":
+        return "claim"
+    s = str(raw).strip().lower()
+    return s if s in ("claim", "update") else "update"
+
+
+def _apply_size(sess: Session, vid: str, rows, cols, intent: str) -> bool:
+    """按所有权语义改 PTY 尺寸；返回是否真的改了（未改/被拒都返回 False）。
+
+    纯记账 + 一次 ioctl，不抛异常：前端几何事件是高频且不可信的输入，
+    让它炸掉 WS 收包循环等于把「拖一下窗口」变成「终端断开」。
+    """
+    # 只有 claim 能夺权；**其余一切**（含看不懂的意图）都要求「本端已是所有者」，
+    # 否则一个手滑拼错的字段就等于把所有权检查整个旁路掉。
+    if intent == "claim":
+        _size_owner[sess.id] = vid        # claim 无条件夺权（含同尺寸也要转移）
+    elif _size_owner.get(sess.id) != vid:
+        return False                      # 非所有者：静默忽略（这就是要防的"偷尺寸"）
+    r = _clamp(rows, *_ROWS_RANGE)
+    c = _clamp(cols, *_COLS_RANGE)
+    if r is None or c is None:
+        return False
+    if sess.rows == r and sess.cols == c:
+        return False                      # 尺寸未变：不打扰 pty（等价于 paseo 的服务端短路）
+    try:
+        fcntl.ioctl(sess.fd, termios.TIOCSWINSZ, struct.pack("HHHH", r, c, 0, 0))
+    except OSError:
+        return False
+    sess.rows, sess.cols = r, c
+    return True
+
+
 class CreateIn(BaseModel):
     agent_id: str
     session_id: Optional[str] = None    # v0.13.0：续聊某条历史；仅接受形状合法且实盘存在的 id
@@ -592,9 +650,15 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                 try:
                     j = json.loads(msg["text"])
                     if j.get("type") == "resize":
-                        sess.cols, sess.rows = int(j["cols"]), int(j["rows"])
-                        fcntl.ioctl(sess.fd, termios.TIOCSWINSZ,
-                                    struct.pack("HHHH", sess.rows, sess.cols, 0, 0))
+                        # 尺寸所有权（B2 / paseo 融合）：任何连接都能改尺寸 ⇒ 后台的手机端
+                        # 一次 ResizeObserver 就能把桌面上正开着的 vim 压扁，
+                        # 用户看到的是「我什么都没做，终端自己乱了」，极难归因。
+                        #   claim  = 「我是主人，按我的尺寸来」（无条件夺权，含同尺寸）
+                        #   update = 「我只是几何变了」；非所有者一律静默忽略
+                        # 老客户端没有 intent 字段 ⇒ 缺省按 claim 处理（与 paseo 同口径），
+                        # 否则一次前后端版本错配就会让尺寸永远改不动。
+                        _apply_size(sess, vid, j.get("rows"), j.get("cols"),
+                                    _norm_intent(j.get("intent")))
                         continue
                     if j.get("type") == "hb":
                         # 应用层心跳（P1-1 前端自愈靠它识半开连接）：只回执，
@@ -620,6 +684,10 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
         pump_task.cancel()
         sess.viewers.pop(vid, None)
         sess.dropped.pop(vid, None)
+        # 所有者走了必须交还所有权：留着悬挂的 vid 会让**所有**客户端的 update 全被忽略，
+        # 表现就是「重连之后尺寸再也改不动了」。
+        if _size_owner.get(sid) == vid:
+            _size_owner.pop(sid, None)
         co = sess.coalescers.pop(vid, None)
         if co is not None:
             co.close()   # 定时器不收会让 loop 一直攥着一个已离开的观看者

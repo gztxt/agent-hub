@@ -1,11 +1,42 @@
+/* 尺寸意图（B2）：claim = 「我是主人，按我的尺寸来」；update = 「我只是几何变了」。
+   服务端对非所有者的 update 一律静默忽略 ⇒ 后台手机端偷不走 PTY 尺寸。
+   force（连接建立 / 重连 / 点芯片 / 自愈）一律 claim：那是用户主动动作，
+   也保证至少有一端能拿到所有权（否则谁都只发 update，尺寸会永远卡在 80×24）。 */
+function termSizeIntent(force) {
+  if (force) return 'claim';
+  if (document.hidden) return 'update';   // 后台标签/切走的手机：不夺权
+  return termSizeClaimed ? 'claim' : 'update';
+}
+function termSendSize(cols, rows, force) {
+  if (!termWs || termWs.readyState !== 1) return;
+  const intent = termSizeIntent(force);
+  try {
+    termWs.send(JSON.stringify({ type: 'resize', intent: intent, cols: cols, rows: rows }));
+    if (intent === 'claim') termSizeClaimed = true;
+  } catch (e) { /* 正在关：交给 onclose */ }
+}
+
+/* 几何变化走 debounce，force 走立刻。
+   debounce 只压几何变化：连拖窗口时中间那些尺寸一个都不必真的下发，
+   ioctl + 整屏 refresh 才是最贵的那部分。 */
+let termRepaintTimer = null;
 function termRepaint(force) {
   if (!term || !termFit) return;
   if (!termVisible()) { termPaintedAt = ''; return; }
+  if (force) {
+    if (termRepaintTimer) { clearTimeout(termRepaintTimer); termRepaintTimer = null; }
+    termRepaintNow(true);
+    return;
+  }
+  if (termRepaintTimer) clearTimeout(termRepaintTimer);
+  termRepaintTimer = setTimeout(() => { termRepaintTimer = null; termRepaintNow(false); },
+                                TERM_RESIZE_DEBOUNCE_MS);
+}
+function termRepaintNow(force) {
   try { termFit.fit(); } catch (e) {}
   const size = term.cols + 'x' + term.rows;
   // pty 那边可能被别的客户端改过尺寸，重连时（force）无条件报一次当前行列
-  if ((size !== termPaintedAt || force) && termWs && termWs.readyState === 1)
-    termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  if ((size !== termPaintedAt || force)) termSendSize(term.cols, term.rows, force);
   termPaintedAt = size;
   try { term.refresh(0, term.rows - 1); } catch (e) {}
   termHealNow();   // 隐藏期间攒下的「回放只剩半屏」在这里补做
@@ -156,10 +187,11 @@ function termHealNow() {
   const blank = termViewportBlankRows(term);
   if (blank * 3 < term.rows * 2) return;   // 画面有内容就别去打扰 pty
   const c = term.cols, r = term.rows;
-  termWs.send(JSON.stringify({ type: 'resize', cols: c, rows: Math.max(1, r - 1) }));
-  setTimeout(() => {
-    if (termWs && termWs.readyState === 1) termWs.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
-  }, 120);
+  /* 自愈是**主动干预**（不是被动的几何变化），两帧都必须 claim：
+     一是它得能真的改到尺寸，二是顺手把所有权收回本端——白块往往正是被别的端
+     改小尺寸压出来的。它有自己的 120ms 定时器，不经过 resize debounce。 */
+  termSendSize(c, Math.max(1, r - 1), true);
+  setTimeout(() => termSendSize(c, r, true), 120);
 }
 
 /* ── 渲染器选择 ────────────────────────────────────────────────────────────────
@@ -262,6 +294,14 @@ function ensureTerm() {
   } catch (e) { console.warn('[term] WebLinksAddon 挂载失败：' + ((e && e.message) || e)); }
 
   term.onData(termSend);
+  /* 用户亲手点到终端 / 焦点落进来 ⇒ 本端主张尺寸所有权（见 termSizeIntent 注释）。
+     这是「谁在用谁说了算」：正在操作的那一端永远能拿回尺寸，后台那一端拿不走。 */
+  try { term.onFocus(() => { termSizeClaimed = true; }); } catch (e) {}
+  const tEl = $('termEl');
+  if (tEl && !tEl.dataset.claimBound) {
+    tEl.dataset.claimBound = '1';
+    tEl.addEventListener('pointerdown', () => { termSizeClaimed = true; });
+  }
   /* 回调一律包一层：termRepaint(force) 的形参不能接 addEventListener/ResizeObserver 的事件对象 */
   window.addEventListener('resize', () => termRepaint());
   new ResizeObserver(() => termRepaint()).observe($('termEl'));

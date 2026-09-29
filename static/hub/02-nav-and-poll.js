@@ -198,6 +198,11 @@ let termRendererName = 'dom', termSearch = null;
      1005/1006/1011/1012 等传输码 = 链路断了但 pty 多半还活着 ⇒ 自动重连，
      服务端会保留会话到 idle TTL 并回放 ring（最近 64KB），所以重连后画面自己就回来了。
    退避 1/2/4/8/16/30s 封顶后每 30s 继续试，绝不静默放弃；只有 hb 真往返成功才回到 1s 档。 */
+/* resize 去抖（B2 / paseo 融合）：拖窗口、分屏动画、手机键盘弹起会在几十毫秒里
+   打出几十上百次几何事件，每一次都是一次 TIOCSWINSZ ioctl + xterm 整屏 refresh。
+   100ms 是 paseo 的取值（terminal-pane.tsx:95）。注意它只作用于**几何变化**：
+   连接建立 / 重连 / 用户点芯片 / 白块自愈这些必须立刻发，走 force 路径不受它延迟。 */
+const TERM_RESIZE_DEBOUNCE_MS = 100;
 const TERM_HB_SEND_MS = 15000;    // 每 15s 发一帧 {"type":"hb"}
 const TERM_HB_DEAD_MS = 30000;    // 距上一次 hb 回执 ≥30s ⇒ 判定半开，主动断开进重连
 const TERM_RC_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];   // 封顶 30s，之后一直 30s
@@ -359,6 +364,13 @@ function termSend(data) {
       （用户报的「切页面 / 换会话标签后有白色遮挡」）。重新可见时把全部行 refresh 一遍。
    ResizeObserver 在 0→实际尺寸那一刻自动进来；浏览器标签页切回来走 visibilitychange。 */
 let termPaintedAt = '';
+/* 本客户端是否主张终端尺寸所有权（B2 / paseo 融合）。
+   场景：桌面正开着 vim（120×40），手机端同一个会话的页面在后台被 ResizeObserver
+   或 visibilitychange 唤醒，发来一个 80×24 ⇒ 桌面的 vim 被压扁。用户看到的是
+   「我什么都没做，终端自己乱了」，极难归因。
+   规则：只有**前台且用户主动**的那一端才 claim；后台端只 update（服务端会静默忽略
+   非所有者的 update）。claim 一次即置位，之后本端的几何变化继续以主人身份更新。 */
+let termSizeClaimed = false;
 function termVisible() {
   const el = $('termEl');
   return !!(el && el.clientWidth && el.clientHeight);
