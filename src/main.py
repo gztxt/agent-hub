@@ -77,7 +77,12 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.51"   # 漂移自动写回（带备份）+ 续聊会话也注入 --model
+VERSION = "0.13.56"   # 终端：输出合并 + 尺寸所有权 + xterm addon 补齐（paseo 融合 B1/B2/B4）
+                      #   ↑ v0.13.56：尺寸所有权 claim/update + resize 100ms 去抖 —— 后台那一端
+                      #     偷不走 PTY 尺寸（桌面开着 vim、手机端在后台唤醒的典型坑）。
+                      #   ↑ v0.13.55：输出合并 coalescer（5ms 前后沿），WS 帧数 2602→7。
+                      #   ↑ v0.13.54：xterm addon 补齐（webgl/canvas 渲染器、Unicode11、
+                      #     终端内查找、bracketed paste 安全包装）。
                       #   ↑ v0.13.51：① drift 体检从「只报」升级为「按持久化值写回」（落笔前
                       #     时间戳备份，HUB_MODEL_DRIFT_REPAIR=0 可退回只报）；因 CCR 与 hub
                       #     开机同秒启动，启动那一次会被 CCR 盖掉 ⇒ 再加 300s 定期巡检。
