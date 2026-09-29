@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 import modelcfg
 import profiles
 import sessions_store
+import term_record
 
 router = APIRouter()
 
@@ -235,6 +236,9 @@ class Session:
             return
         self._cleaned = True
         self.alive = False
+        _rec = getattr(self, "recorder", None)
+        if _rec is not None:
+            _rec.close()   # 落 ended + 跑 7 天保留期清理
         try:
             asyncio.get_event_loop().remove_reader(self.fd)
         except Exception:  # noqa: BLE001
@@ -445,6 +449,9 @@ async def create_session(body: CreateIn, request: Request):
     sess = Session(sid, prof["id"], cmd, cwd)
     sess.resume_of = body.session_id or ""
     _sessions[sid] = sess
+    # v0.13.59 录制器（PT-20260927-16）：TERM_RECORD 缺省 0 ⇒ active=False，全程零开销。
+    # Recorder 只吃 pty 字节与客户端按键，从签名上够不到 child_env()（env 里有 TERM_TOKEN）。
+    sess.recorder = term_record.Recorder(sid, prof["id"])
     _attach_reader(sess)
     # P0-8：live_titles 实测 jcode 分支要 json.load 159 个文件/29MB（冷缓存 130ms+），
     # 跑在 async handler 里会按住整个事件循环。丢进线程池，标题晚几十毫秒无所谓，
@@ -492,6 +499,21 @@ async def agent_history(agent_id: str, request: Request, limit: int = Query(defa
         raise HTTPException(400, f"{agent_id} 无历史会话仓库")
     cwd = prof["terminal"].get("cwd") or os.path.expanduser("~")
     return dict(sessions_store.list_history(prof["id"], cwd, limit), agent=prof["id"])
+
+
+@router.get("/api/term/recording/{sid}")
+async def get_recording(sid: str, request: Request,
+                        limit: int = Query(default=2000, ge=1, le=20000)):
+    """回放某会话的录制（PT-20260927-16）。
+
+    **按「含用户键入内容 = 敏感」定鉴权，不按「只读 = 宽松」定**：拿得到录制就等于拿到了
+    别人刚刚敲的每一行 —— 与 09-23「写端点不设防」收口同一口径，fail-closed 走 term token。
+    """
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "GET /api/term/recording")
+    out = term_record.status(sid)
+    out["tape"] = term_record.frames(sid, limit)
+    return out
 
 
 @router.delete("/api/term/sessions/{sid}")
@@ -673,6 +695,9 @@ def _attach_reader(sess: Session):
                 # 刻意**不**续 last_io —— 「agent 在跑」不等于「用户刚敲过键盘」，
                 # 两者混成一个时钟才会把正在跑的任务判成空闲（见 __init__ 注释）。
                 sess.last_activity = time.time()
+                rec = getattr(sess, "recorder", None)
+                if rec is not None:
+                    rec.feed("out", data)   # 脱敏在 Recorder 内部、落盘前完成
                 sess.ring.extend(data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]
@@ -858,6 +883,10 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             else:
                 data = msg.get("bytes") or b""
             if data and sess.alive:
+                rec = getattr(sess, "recorder", None)
+                if rec is not None:
+                    # 录在写之前：PTY 背压把尾巴丢了(EAGAIN 分支)也不改「用户敲过什么」这个事实
+                    rec.feed("in", data)
                 try:
                     os.write(sess.fd, data)
                 except BlockingIOError:

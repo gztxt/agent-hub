@@ -33,9 +33,19 @@ _PATTERNS = [
     re.compile(r"github_pat_[0-9A-Za-z_]{20,}"),
     re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"sk-[0-9A-Za-z]{16,}"),
-    re.compile(r"(?i)\b((?:ccr_web_token|api[_-]?key|access[_-]?token|secret|password|passwd)"
-               r"\s*[:=]\s*)([A-Za-z0-9_./+-]{16,})"),
+    # v0.13.59：容连字符/下划线。旧式 `sk-[0-9A-Za-z]{16,}` 对上兄弟式
+    # `xox[baprs]-[0-9A-Za-z-]{10,}` 是**自相矛盾**的——而真实密钥几乎都带前缀词
+    # （sk-live-… / sk-ant-…），于是「长得更像真密钥」的那种反而漏了。
+    re.compile(r"sk-[0-9A-Za-z_-]{16,}"),
+    # v0.13.59：两处实测缺口（PTY 录制落盘取证当场撞出来的，非理论推导）：
+    #   ① `\b` + 无前缀容忍 ⇒ `ANTHROPIC_API_KEY=…` 里的 `API_KEY` 前面紧邻 `_`
+    #      （`_` 是单词字符 ⇒ 无词边界）⇒ 整条不匹配，**前缀式环境变量名全漏**。
+    #   ② 备选词表没有裸 `token` ⇒ `TERM_TOKEN=…` 同样漏。
+    # 修法：键名侧允许 `ENV_` 式前缀（字符类不含换行，不会跨行乱吞），
+    # 并补上裸 token。捕获组 1 仍是「键名+分隔符」⇒ 键名照旧保留、只吃值。
+    re.compile(r"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token"
+               r"|auth[_-]?token|token|secret|password|passwd)\s*[:=]\s*)"
+               r"([A-Za-z0-9_./+-]{16,})"),
     re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9_.\-]{16,})"),
 ]
 MASK = "<REDACTED-导出脱敏>"

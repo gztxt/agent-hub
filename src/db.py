@@ -123,6 +123,22 @@ CREATE TABLE IF NOT EXISTS app_prefs (
     value TEXT NOT NULL,             -- JSON（形状由 prefs.PrefValue 校验）
     updated_at TEXT NOT NULL
 );
+-- v0.13.59 终端会话录制（PT-20260927-16）：pty I/O 落盘 + 回放。
+-- 独立表（不混 chat_messages），**不进备份链**（运行时库在 ~/agent-hub/data 与 /vol1）。
+-- data 列是**已脱敏**字节 —— redact_text 在 term_record 里、落盘前跑，库里不会有凭据原文。
+-- 单会话/全局双上限与「触顶即停录并可查」在 term_record.py：静默丢帧会让用户事后
+-- 分不清「没发生」和「录不下」，所以 capped 是一等状态，经 /api/term/recording/{sid} 报出。
+CREATE TABLE IF NOT EXISTS term_recordings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,        -- 单调序号 = 回放顺序
+    ts REAL NOT NULL,            -- epoch
+    direction TEXT NOT NULL,     -- out(pty→客户端) | in(客户端→pty)
+    data BLOB NOT NULL,          -- 已脱敏字节
+    bytes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_termrec_sid ON term_recordings(session_id, seq);
 """
 
 
