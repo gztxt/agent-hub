@@ -178,6 +178,26 @@ HUB_PASSCODE = os.getenv("HUB_PASSCODE", "")
 _api_rate: Dict[str, deque] = defaultdict(deque)
 _RATE_EXCLUDED_PREFIXES = ("/telemetry/events/", "/health", "/mcp")
 _RATE_WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+#: P0-6：_api_rate 是进程级字典，每个见过的 IP 留一个 deque **永不删除**。
+#: 唯一来源是内网/反代，但 IP 会随设备休眠、DHCP 续租、容器重建不断变化 ⇒ 长时间运行
+#: 内存单调增长（mcpgw 同型缺陷）。上限按「记住多少个 IP 还在限流窗口内」取，
+#: 超出就整条丢弃（该 IP 下次请求会以 0 计数重新开始，等价于放过一次，超了仍会 429）。
+_RATE_MAX_IPS = int(os.getenv("API_RATE_MAX_IPS", "4096"))
+
+
+def _rate_prune(now: float) -> None:
+    """回收 _api_rate 里已经过窗口的 IP 条目（每个 IP 至少来过一次才会被记）。"""
+    if len(_api_rate) <= _RATE_MAX_IPS:
+        return
+    cut = now - 60
+    stale = [ip for ip, w in _api_rate.items() if not w or w[-1] < cut]
+    for ip in stale:
+        _api_rate.pop(ip, None)
+    # 极端情况：所有 IP 都在窗口内（真实 DDoS 或超大 NAT）⇒ 超额部分按最旧的整条丢，
+    # 保证表本身有硬上界，不因来客太多而无限长。
+    while len(_api_rate) > _RATE_MAX_IPS:
+        oldest = min(_api_rate, key=lambda ip: _api_rate[ip][-1])
+        _api_rate.pop(oldest, None)
 
 
 @app.middleware("http")
@@ -187,6 +207,7 @@ async def api_rate_limit(request: Request, call_next):
         path = request.url.path
         if not any(path.startswith(p) for p in _RATE_EXCLUDED_PREFIXES):
             ip = request.client.host if request.client else "unknown"
+            _rate_prune(time.monotonic())
             window = _api_rate[ip]
             cut = time.monotonic() - 60
             while window and window[0] < cut:
