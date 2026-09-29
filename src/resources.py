@@ -122,7 +122,8 @@ def _sample_processes(pids: List[int]) -> Dict[int, dict]:
 
 
 def _kill_pid(pid: int, sig: int = signal.SIGTERM) -> bool:
-    """尝试杀掉进程，返回是否成功。仅允许杀当前用户自己的进程。"""
+    """尝试杀掉进程，返回是否成功。仅允许杀当前用户自己的进程。
+    如果进程已不存在，视为成功（目标状态已达成）。"""
     try:
         # 先检查进程归属（/proc/<pid>/status 中的 Uid）
         with open(f"/proc/{pid}/status", "r") as f:
@@ -136,7 +137,11 @@ def _kill_pid(pid: int, sig: int = signal.SIGTERM) -> bool:
                     break
         os.kill(pid, sig)
         return True
-    except (OSError, ProcessLookupError, PermissionError):
+    except (ProcessLookupError, FileNotFoundError):
+        # 进程已不存在（kill 时或读取 /proc 时），目标已达成
+        return True
+    except (OSError, PermissionError):
+        # 其他错误（如无权限、进程归属不匹配已在上面处理）
         return False
 
 
