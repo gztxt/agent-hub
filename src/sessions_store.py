@@ -430,6 +430,61 @@ def resume_argv(agent_id: str, session_id: str, cwd: str) -> List[str]:
 
 
 # ── 活会话 pid → 中文标题（顶栏芯片去字母用；各 agent 登记表结构均实测）────────
+#: P0-8 缓存：live_titles() 是本仓最重的同步 IO（实测 jcode 分支要 json.load
+#: 159 个文件 / 29MB，单次 130ms 冷缓存更慢）。它被 term.py 的 async 端点
+#: create_session / list_sessions 直接调用 ⇒ 每开一个终端、每 30s 轮询一次列表，
+#: 就把整个事件循环按住上百毫秒，期间所有 WebSocket 帧停摆（终端看起来「卡了一下」）。
+#: 缓存键 = (agent, 该 agent 目录下最新 mtime, 文件数)——磁盘没动就直接复用，
+#: agent 退出/新开会话必然改写自己的 session 文件 ⇒ mtime 变 ⇒ 自动失效。
+_LIVE_TITLES_CACHE: Dict[tuple, Dict[int, str]] = {}
+_LIVE_TITLES_TTL_S = 15.0
+_LIVE_TITLES_TS: Dict[str, float] = {}
+
+
+def _live_titles_fingerprint(agent_id: str) -> tuple:
+    """该 agent 的会话目录指纹（最新 mtime + 文件数）。取不到就返回 None ⇒ 不走缓存。"""
+    dirs = {"jcode": HOME / ".jcode" / "sessions",
+            "claude": HOME / ".claude" / "sessions",
+            "grok": HOME / ".grok" / "sessions"}
+    d = dirs.get(agent_id)
+    if not d or not d.is_dir():
+        return None
+    try:
+        newest, count = 0.0, 0
+        for p in d.iterdir():
+            if not p.is_file():
+                continue
+            count += 1
+            m = p.stat().st_mtime
+            if m > newest:
+                newest = m
+        return (round(newest, 3), count)
+    except OSError:
+        return None
+
+
+def live_titles_cached(agent_id: str) -> Dict[int, str]:
+    """带指纹缓存的 live_titles。同步接口不变（调用方无需改），只在安全时复用旧值。
+
+    缓存只在「目录指纹未变」时生效。指纹读不出来（目录没了/权限）⇒ 直接算，宁可慢
+    一次也不能给过期标题——标题错一次用户就以为认错了会话。
+    """
+    fp = _live_titles_fingerprint(agent_id)
+    now = time.time()
+    if fp is not None:
+        hit = _LIVE_TITLES_CACHE.get((agent_id, fp))
+        if hit is not None and now - _LIVE_TITLES_TS.get(agent_id, 0.0) < _LIVE_TITLES_TTL_S:
+            return hit
+    out = live_titles(agent_id)
+    if fp is not None:
+        _LIVE_TITLES_CACHE[(agent_id, fp)] = out
+        _LIVE_TITLES_TS[agent_id] = now
+        # 同 agent 的旧指纹条目最多留一份（mtime 变了就换 key），防无界增长
+        for k in [k for k in _LIVE_TITLES_CACHE if k[0] == agent_id and k[1] != fp]:
+            _LIVE_TITLES_CACHE.pop(k, None)
+    return out
+
+
 def live_titles(agent_id: str) -> Dict[int, str]:
     out: Dict[int, str] = {}
     try:

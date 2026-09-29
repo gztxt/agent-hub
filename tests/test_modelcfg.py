@@ -30,6 +30,7 @@ sys.path.insert(0, str(_REPO / "tests"))
 _L0_TMP = pathlib.Path(os.getenv("HUB_L0_TMP",
                                  pathlib.Path.home() / "hub-l0test-fixtures"))
 
+import tiers                     # noqa: E402
 import db                        # noqa: E402
 import modelcfg                  # noqa: E402
 
@@ -37,7 +38,7 @@ import modelcfg                  # noqa: E402
 def _mktmp(prefix: str) -> pathlib.Path:
     _L0_TMP.mkdir(parents=True, exist_ok=True)
     p = pathlib.Path(tempfile.mkdtemp(prefix=prefix, dir=str(_L0_TMP)))
-    return p
+    return tiers.l0_fixture_register(p)      # v0.13.58：登记，退出时统一删（见 tiers 说明）
 
 
 CLAUDE_JSON = {

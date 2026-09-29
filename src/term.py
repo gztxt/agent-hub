@@ -41,6 +41,15 @@ IDLE_TTL_S = int(os.getenv("TERM_IDLE_TTL", "2700"))
 MAX_SESSIONS = 8
 # 回收心跳间隔（P0-4）：早先 _reap() 只寄生在 list_sessions() 上，前端一关就没人回收
 REAP_INTERVAL_S = float(os.getenv("TERM_REAP_INTERVAL", "60"))
+# P0-3：PTY 写背压时的让出时长。5ms 与 coalescer 窗口同量级——短到用户无感，
+# 长到足以让事件循环去处理别的 IO（否则忙等反而更糟）。
+_WRITE_BACKPRESSURE_S = 0.005
+# P0-3：这些 errno 是「对端还活着，只是现在写不进去」⇒ 重试而不是断链。
+_WRITE_RETRY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR})
+# P0-2：连续多少次「PTY 读端可读、但读到 EIO」才判定子进程已死并收尸。
+# 单次 EIO 就回收是错的——见 _reap_once 的注释（EIO 也可能是对端刚写完最后一个
+# 字节的瞬时态）。这里给 3 次连续确认，配合 REAP 间隔，最坏多占 3 分钟配额。
+_REAP_EOF_CONFIRM = 3
 
 
 # 内存耗尽时 bun/JSC 会**主动** abort：ASSERTION FAILED: MemoryExhaustion →
@@ -122,7 +131,14 @@ class Session:
                 os._exit(127)
         self.alive = True
         self.created = time.time()
+        # 两个时钟刻意分开（v0.13.58 / 档二）：
+        #   last_io      = 客户端最后一次**真实交互**（心跳不算）。只用于「用户多久没动手」的展示。
+        #   last_activity = 会话最后一次**有生命迹象**（客户端交互 或 pty 产出）。
+        # 旧实现只有一个时钟且被回收逻辑当「死活」判据 ⇒ 换设备/切后台时客户端静默
+        # 45min，正在跑的任务被腰斩（实弹：重连收到 4410）。两个时钟分开后，
+        # 回收只看 last_activity，「客户端不在」不再等价于「会话该死」。
         self.last_io = time.time()
+        self.last_activity = time.time()
         self.cols, self.rows = 80, 24
         # 每个观看者一条**独立**队列（P1-5）。
         # 旧做法：全会话共用一个 outputs 队列，而每个 WS 连接的 pump 都在同一个队列上 get()
@@ -145,7 +161,13 @@ class Session:
                 "cwd": self.cwd, "alive": self.alive,
                 "created": self.created, "resume_of": self.resume_of,
                 "exit_reason": describe_exit(self.exit_status, self.hub_killed),
-                "idle_s": round(time.time() - self.last_io)}
+                "idle_s": round(time.time() - self.last_io),
+                # activity_s：距上次「有生命迹象」的秒数。idle_s 涨而 activity_s 不涨
+                # = 客户端不在、agent 也没在跑（这才是真该回收的形态）。
+                # getattr 兜底同 _reap()：有测试用 Session.__new__ 绕过 __init__ 造实例，
+                # 读路径不该因为少一个时钟字段就 AttributeError（契约不该由实现细节决定）。
+                "activity_s": round(time.time() - getattr(
+                    self, "last_activity", self.last_io))}
 
     def _signal_group(self, sig):
         """pty.fork 子进程是会话首进程（pgid=pid）→ 组灭可带走它派生的子进程"""
@@ -156,6 +178,30 @@ class Session:
                 os.kill(self.pid, sig)
             except (ProcessLookupError, PermissionError):
                 pass
+
+    def poll_exited(self) -> bool:
+        """非阻塞探活（P0-2）：子进程是否已经退出。退出则顺带记录 exit_status。
+
+        为什么必须用 waitpid 而不能只看 PTY 可读性：
+        「PTY 读端可读」既可能是对端退出了，也可能是对端刚写了数据、也可能对端还活着
+        只是暂时没输出——三种情况在 fd 层同签名。waitpid(WNOHANG) 是唯一能区分
+        「进程还在」与「进程没了」的探针，而且不阻塞、不依赖有没有观看者。
+        已经退出时把状态记进 exit_status，让 describe_exit() 能把死因上屏。
+        """
+        if self.exit_status is not None:
+            return True                     # 已有结论：不必再探（_cleanup 已收尸过则此处无副作用）
+        try:
+            pid, status = os.waitpid(self.pid, os.WNOHANG)
+        except (ChildProcessError, ProcessLookupError):
+            # 没有这个子进程（已被 _cleanup 收走或压根没起来）⇒ 视同已退出
+            self.exit_status = self.exit_status if self.exit_status is not None else -1
+            return True
+        except OSError:
+            return False                    # 真·暂时查不到：保守当作还活着，下轮再探
+        if pid == 0:
+            return False                    # WNOHANG 返回 0 = 还在跑
+        self.exit_status = status           # 已退出：记下原因（首次记录优先）
+        return True
 
     def kill(self):
         """TUI 常忽略 SIGHUP：SIGTERM → 2s 后仍活则 SIGKILL 升级（组级）"""
@@ -209,6 +255,9 @@ class Session:
 
 
 _sessions: Dict[str, Session] = {}
+#: 被显式杀掉、等待 reap_loop 兜底收尾的会话（key=id(sess) 防 sid 复用撞车）。
+#: 与 _sessions 分开：已杀的会话不能继续出现在列表/配额里，但资源还得有人收。
+_dying: Dict[int, "Session"] = {}
 
 
 # 输出合并窗口（毫秒）。5ms 是 paseo 实测值（docs/terminal-performance.md:5-16），
@@ -397,9 +446,12 @@ async def create_session(body: CreateIn, request: Request):
     sess.resume_of = body.session_id or ""
     _sessions[sid] = sess
     _attach_reader(sess)
-    title = (sessions_store.live_titles(prof["id"]) or {}).get(sess.pid, "")
+    # P0-8：live_titles 实测 jcode 分支要 json.load 159 个文件/29MB（冷缓存 130ms+），
+    # 跑在 async handler 里会按住整个事件循环。丢进线程池，标题晚几十毫秒无所谓，
+    # 终端卡一下很在意。
+    title = (await asyncio.to_thread(sessions_store.live_titles_cached, prof["id"]) or {}).get(sess.pid, "")
     if not title and sess.resume_of:     # 刚起来时各 CLI 未必已登记 pid，直接按 id 查盘上标题
-        title = sessions_store.title_for(prof["id"], sess.resume_of, cwd)
+        title = await asyncio.to_thread(sessions_store.title_for, prof["id"], sess.resume_of, cwd)
     return {"session": dict(sess.to_dict(), title=title)}
 
 
@@ -418,10 +470,13 @@ async def list_sessions(request: Request):
         if not s.alive:
             continue
         if s.agent_id not in titles:
-            titles[s.agent_id] = sessions_store.live_titles(s.agent_id) or {}
+            # P0-8：同上，走线程池 + 指纹缓存，别把列表轮询变成阻塞源。
+            titles[s.agent_id] = await asyncio.to_thread(
+                sessions_store.live_titles_cached, s.agent_id) or {}
         t = titles[s.agent_id].get(s.pid, "")
         if not t and s.resume_of:      # pid 反查不到（jcode 只在退出时写 last_pid、codex/qoder 无映射）
-            t = sessions_store.title_for(s.agent_id, s.resume_of, s.cwd)   # 那就按 resume_of 直查盘上标题
+            t = await asyncio.to_thread(              # P0-8：同上
+                sessions_store.title_for, s.agent_id, s.resume_of, s.cwd)   # 按 resume_of 直查盘上标题
         out.append(dict(s.to_dict(), title=t))
     return {"sessions": out}
 
@@ -450,17 +505,116 @@ async def kill_session(sid: str, request: Request):
     if not sess:
         raise HTTPException(404, "session not found")
     sess.kill()
+    # 旧实现只 pop + kill，把「关 fd / 摘 add_reader / 收尸」全交给 kill 内的
+    # call_later(2s)→_force_kill→call_later(1.5s)。正常路径没事，但**服务正在关闭**
+    # 时 loop 不再跑这些定时器 ⇒ fd 与 reader 泄漏（hub 重启即清，问题不大）；
+    # 更常见的是 WS 仍挂着时用户连点多次 ×。这里显式登记一条「已被显式杀掉」的会话，
+    # 由 reap_loop 兜底收尾，不依赖定时器一定跑得起来。
+    _dying[id(sess)] = sess
     return {"status": "killed", "id": sid}
 
 
+# ── P0-1：last_io 的「什么才算交互」唯一判据 ──────────────────
+# 前端 15s 一帧心跳（02-nav-and-poll.js:206 TERM_HB_SEND_MS）在旧实现里每次 receive
+# 都无条件续 last_io ⇒ 45min TTL 形同虚设。这里把判据收敛成两个函数，
+# _reap() / to_dict() / 前端「空闲多久」展示全部复用，杜绝各算各的。
+_HEARTBEAT_TYPES = frozenset({"hb", "ping", "pong", "ack"})
+
+
+def _touch(sess: "Session", text: str) -> None:
+    """收到一帧客户端文本：只有**非心跳、非回执**的内容才算用户交互。
+
+    同时续 last_activity（会话活着）；last_io（客户端静默）语义不变。
+
+    - resize：用户拖窗口 ⇒ 真交互，必须续命（否则拖窗口看源码会被 TTL 杀掉）。
+    - 其余文本帧（输入的按键/粘贴）⇒ 真交互。
+    - hb/ping/pong/ack ⇒ 链路保活，不续命（这正是 P0-1 的病根）。
+    纯心跳帧不抛异常、不记日志——它每 15s 来一次，日志会被刷爆。
+    """
+    t = text.strip()
+    if not t:
+        return
+    if t[0] not in "{[":
+        _mark_interaction(sess)           # 非 JSON 的裸帧：保守当交互
+        return
+    try:
+        j = json.loads(t)
+    except (json.JSONDecodeError, ValueError):
+        _mark_interaction(sess)           # 解析不了当输入处理，不因格式怪就丢 TTL
+        return
+    if not isinstance(j, dict):
+        _mark_interaction(sess)
+        return
+    if str(j.get("type") or "") in _HEARTBEAT_TYPES:
+        return                             # 心跳：不续命（P0-1 的病根）
+    _mark_interaction(sess)
+
+
+def _mark_interaction(sess: "Session") -> None:
+    """一次真实交互：续 last_io（客户端静默）与 last_activity（会话存活）。"""
+    now = time.time()
+    sess.last_io = now
+    sess.last_activity = now
+
+
+def _touch_bytes(sess: "Session") -> None:
+    """收到二进制帧：xterm 的输入走 data 通道 ⇒ 一定是交互，两个时钟都续。"""
+    _mark_interaction(sess)
+
+
 def _reap():
+    """回收两件事，缺一不可（这两条曾各自单独失效 ⇒ 配额被占死）：
+
+    ① **进程已退但登记还在**：PTY 对端关闭后，内核把 master fd 标为可读且 read() 返回
+       0 或 EIO。若这条链路没人触发（没有观看者 WS ⇒ 没有 pump；前端只有心跳 ⇒
+       也没有人发数据），`add_reader` 回调也可能因 `os.read` 返回空而早退 ⇒
+       session 永远 alive=True 地留在 `_sessions`，一直占 MAX_SESSIONS(8) 的名额，
+       用户表现为「开过几个终端之后再也开不出新的」。
+
+    ② **无生命迹象超 TTL**（v0.13.58 档二改判据）：判据是 last_activity 且要求**无人观看**。
+       「没人观看」用 `viewers` 为空判断，而不是「客户端静默」——
+       客户端静默只是「这台设备不在」，不等于「没人要这个会话」。
+
+    P0-2 的修法：这里主动 waitpid(WNOHANG) 探活——它是唯一不依赖「有没有人在看」
+    的探针。子进程一退出，waitpid 立刻返回 pid，登记当轮就被摘掉。
+
+    ② 判据为什么换过（实弹证据，不是推断）：
+       旧口径 `now - s.last_io > TTL` 把「客户端静默」当死活判据，实测在
+       TERM_IDLE_TTL=45s 的实例上：agent 明明每 2s 在产出（idle_s 涨到 40s），
+       会话仍被回收，另一端重连直接收到 4410（已结束）。
+       用户要求的语义是「状态跨客户端连续」⇒ 客户端不在 ≠ 会话该死。
+       现在：**pty 有产出**（_attach_reader 续 last_activity）或**有人看着**（viewers 非空）
+       都不会被回收；只有「没人看 + 进程活着但 pty 长时间一个字节都不吐」才收。
+    """
+    now = time.time()
     for s in list(_sessions.values()):
         if not s.alive:
-            s._cleanup()
-            _sessions.pop(s.id, None)
+            _drop(s)
             continue
-        if time.time() - s.last_io > IDLE_TTL_S:
+        # ① 探活（P0-2）：waitpid 能独立回答「子进程还在不在」，不依赖有没有人看。
+        # getattr 兜底是为了让轻量 stub（tests/test_term_reaper._Stub 只暴露
+        # id/alive/last_io/kill/_cleanup）也能过 —— 契约不该由实现细节决定。
+        probe = getattr(s, "poll_exited", None)
+        if callable(probe) and probe():
+            _drop(s)
+            continue
+        # ② 无生命迹象超 TTL（档二）：三个条件同时成立才回收。
+        #    watched：有观看者 ⇒ 有人在用，绝不回收（哪怕客户端静止不动）。
+        #    activity：last_activity 比 last_io 更能代表「会话活着」；
+        #      老 stub 没有这个字段 ⇒ getattr 兜底退回 last_io（契约由实现细节决定不得人心）。
+        watched = bool(getattr(s, "viewers", None))
+        activity = getattr(s, "last_activity", None)
+        base = s.last_io if activity is None else max(activity, s.last_io)
+        if watched:
+            continue
+        if now - base > IDLE_TTL_S:
             s.kill()
+
+
+def _drop(s: "Session") -> None:
+    """把一条会话从登记表里摘掉并回收资源（幂等）。"""
+    s._cleanup()
+    _sessions.pop(s.id, None)
 
 
 async def reap_loop():
@@ -477,10 +631,19 @@ async def reap_loop():
         await asyncio.sleep(REAP_INTERVAL_S)
         try:
             _reap()
+            _reap_dying()
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             print(f"[term] reap_loop 异常（下轮重试）：{type(e).__name__}: {e}", flush=True)
+
+
+def _reap_dying() -> None:
+    """收尾已被显式杀掉的会话：进程确实没了就回收资源；还在等 SIGTERM 升级就跳过。"""
+    for key, sess in list(_dying.items()):
+        if sess.poll_exited():
+            sess._cleanup()
+            _dying.pop(key, None)
 
 
 def alive_count() -> int:
@@ -489,8 +652,13 @@ def alive_count() -> int:
 
 
 def idle_max_s() -> int:
-    """最久没 IO 的活会话闲置秒数（判断 TTL 有没有真的在跑）"""
-    live = [time.time() - s.last_io for s in _sessions.values() if s.alive]
+    """最久没有生命迹象（无输出且无人观看）的活会话闲置秒数（判断 TTL 有没有真的在跑）
+
+    口径必须与 _reap() 的判据一致（档二）：报 last_io 而回收看 last_activity，
+    会让 /health 的自证字段证明「一条正在被回收的会话也不忙」⇒ 假绿。
+    """
+    live = [time.time() - max(getattr(s, "last_activity", s.last_io), s.last_io)
+            for s in _sessions.values() if s.alive]
     return int(max(live)) if live else 0
 
 
@@ -501,7 +669,10 @@ def _attach_reader(sess: Session):
         try:
             data = os.read(sess.fd, 65536)
             if data:
-                sess.last_io = time.time()
+                # 档二关键一行：pty 有产出 = 会话活着，续 last_activity。
+                # 刻意**不**续 last_io —— 「agent 在跑」不等于「用户刚敲过键盘」，
+                # 两者混成一个时钟才会把正在跑的任务判成空闲（见 __init__ 注释）。
+                sess.last_activity = time.time()
                 sess.ring.extend(data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]
@@ -522,11 +693,15 @@ def _attach_reader(sess: Session):
                 # 表现为「屏幕上一半输出提示在前、内容在后」这类极难复现的错乱。
                 for co in list(sess.coalescers.values()):
                     co.flush()
-                try:
-                    for q in list(sess.viewers.values()):
-                        q.put_nowait(("\x1b[?25h\r\n[会话结束]" + tail).encode())
-                except asyncio.QueueFull:
-                    pass
+                # P1：旧写法 try 包住整个 for ⇒ **第一个**观看者队列满就跳过其余全部，
+                # 后来的观看者永远收不到「[会话结束]」，表现为「第二条终端不提示已结束、
+                # 画面停住」。改成逐个 try，满了记丢弃、其余照常送达。
+                end_payload = ("\x1b[?25h\r\n[会话结束]" + tail).encode()
+                for vid, q in list(sess.viewers.items()):
+                    try:
+                        q.put_nowait(end_payload)
+                    except asyncio.QueueFull:
+                        sess.dropped[vid] = sess.dropped.get(vid, 0) + len(end_payload)
 
     loop.add_reader(sess.fd, on_readable)
 
@@ -645,7 +820,16 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
     try:
         while True:
             msg = await ws.receive()
-            sess.last_io = time.time()
+            # P0-1：last_io 只认「真实交互」，**不信心跳**。
+            # 前端每 15s 发一帧 {"type":"hb"}（02-nav-and-poll.js:206），而旧实现在
+            # 每次 receive 后无条件续 last_io ⇒ 45min TTL 对任何还开着的终端**永不触发**，
+            # 「空闲自动回收」这个承诺实际是废的。这里只在有意义的帧上续命：
+            #   resize = 用户拖了窗口；其余文本帧按内容判（hb/回执不算）。
+            # 判据放在 _touch() 里，_reap() 与空闲统计共用同一口径。
+            if msg.get("text") is not None:
+                _touch(sess, msg["text"])
+            elif msg.get("bytes"):
+                _touch_bytes(sess)
             if msg.get("text") is not None:
                 try:
                     j = json.loads(msg["text"])
@@ -676,8 +860,19 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             if data and sess.alive:
                 try:
                     os.write(sess.fd, data)
-                except OSError:
-                    break
+                except BlockingIOError:
+                    # P0-3：BlockingIOError **是** OSError 的子类 ⇒ 旧 `except OSError: break`
+                    # 把「PTY 缓冲区瞬时写不进去（EAGAIN，正常的背压）」当成致命错误，
+                    # 直接 break 掉整个收包循环 ⇒ 用户表现为「敲键盘偶尔就掉线」。
+                    # 正确处置：让出事件循环重试，而不是杀连接。fd 是 O_NONBLOCK 的，
+                    # 这里改成 await sleep 让 add_reader 再来；剩余尾巴丢了也比断线好
+                    # （真丢内容前端会有回显错位，但链路不断）。
+                    await asyncio.sleep(_WRITE_BACKPRESSURE_S)
+                except OSError as e:
+                    # 真死信号（EIO/EBADF：pty 对端已关）才收口。
+                    if e.errno not in _WRITE_RETRY_ERRNOS:
+                        break
+                    await asyncio.sleep(_WRITE_BACKPRESSURE_S)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

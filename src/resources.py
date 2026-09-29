@@ -16,6 +16,7 @@
 - 无需鉴权（与 /api/agents 同口径：列表只读，写动作才要 token）；kill 由前端确认后调用。
 """
 
+import asyncio
 import os
 import signal
 import subprocess
@@ -86,8 +87,25 @@ def _get_cpu_total() -> int:
         return 0
 
 
-def _sample_processes(pids: List[int]) -> Dict[int, dict]:
-    """批量采样多个 PID，返回 {pid: {cpu_percent, rss_mb, cmdline}}。"""
+async def _run_cli(argv: List[str], timeout: float = 5.0):
+    """在**线程池**里跑一条外部命令（P0-5：绝不阻塞事件循环）。
+
+    `subprocess.run` 会同步等子进程退出，最长到 timeout 秒。调用方里有三处在
+    async 函数体内直接调它（systemctl show ×N、docker inspect ×N），而
+    `subprocess` 内部偶尔会等在 event loop 上；一台 docker 卡住就是整个 hub 的
+    WebSocket 帧停摆 5 秒 —— 表现为「我什么都没点，终端突然卡了一下」。
+    统一收口到这里：asyncio.to_thread 把阻塞搬进工作线程，事件循环全程可调度。
+    返回 CompletedProcess；抛出的异常由调用方原有的 try/except 处置（语义不变）。
+    """
+    return await asyncio.to_thread(
+        subprocess.run, argv, capture_output=True, text=True, timeout=timeout)
+
+
+async def _sample_processes(pids: List[int]) -> Dict[int, dict]:
+    """批量采样多个 PID，返回 {pid: {cpu_percent, rss_mb, cmdline}}。
+
+    async 而非 def（P0-5）：内部有一次必须的采样间隔 sleep，走 await 才能让出事件循环。
+    """
     if not pids:
         return {}
     # 第一次采样
@@ -96,7 +114,12 @@ def _sample_processes(pids: List[int]) -> Dict[int, dict]:
         return {}
     cmdlines = _read_all_cmdlines(list(stats1.keys()))
     total1 = _get_cpu_total()
-    time.sleep(SAMPLE_INTERVAL)
+    # P0-5：这里是唯一必须**真睡**的地方（CPU 占用率按两次采样差值算），
+    # 但调用链 list_resources() 是 async —— 早先直接 time.sleep 会把整个事件循环
+    # 按住 150ms：同期所有 WebSocket 帧停摆、/health 不回、其它终端看起来「卡住」。
+    # 改成 await asyncio.sleep(...)：同样睡 150ms，但让出控制权给别人。
+    # 这条 sleep 与 SAMPLE_INTERVAL 必须保持同一口径，否则 cpu_pct 会系统性偏。
+    await asyncio.sleep(SAMPLE_INTERVAL)
     # 第二次采样
     stats2 = _read_all_proc_stats(list(stats1.keys()))
     total2 = _get_cpu_total()
@@ -145,7 +168,7 @@ def _kill_pid(pid: int, sig: int = signal.SIGTERM) -> bool:
         return False
 
 
-def _collect_agent_resources() -> List[dict]:
+async def _collect_agent_resources() -> List[dict]:
     """聚合所有画像的进程资源信息。"""
     procs = profiles.list_processes()
     units = profiles.running_systemd_units()
@@ -186,10 +209,8 @@ def _collect_agent_resources() -> List[dict]:
         for unit in systemd_units:
             if unit in units:
                 try:
-                    r = subprocess.run(
-                        ["systemctl", "--user", "show", unit, "--property=MainPID", "--value"],
-                        capture_output=True, text=True, timeout=5
-                    )
+                    r = await _run_cli(
+                        ["systemctl", "--user", "show", unit, "--property=MainPID", "--value"])
                     mp = int(r.stdout.strip())
                     if mp > 0:
                         matched_pids.append(mp)
@@ -200,10 +221,8 @@ def _collect_agent_resources() -> List[dict]:
         for dname in docker_names:
             if dockers.get(dname) == "running":
                 try:
-                    r = subprocess.run(
-                        ["docker", "inspect", dname, "--format", "{{.State.Pid}}"],
-                        capture_output=True, text=True, timeout=5
-                    )
+                    r = await _run_cli(
+                        ["docker", "inspect", dname, "--format", "{{.State.Pid}}"])
                     dp = int(r.stdout.strip())
                     if dp > 0:
                         matched_pids.append(dp)
@@ -219,7 +238,7 @@ def _collect_agent_resources() -> List[dict]:
     for pids in profile_pids.values():
         all_pids.extend(pids)
     all_pids = list(set(all_pids))
-    sampled = _sample_processes(all_pids)
+    sampled = await _sample_processes(all_pids)
 
     # 构建结果
     results = []
@@ -259,7 +278,7 @@ def _collect_agent_resources() -> List[dict]:
 async def list_resources():
     """返回所有运行中 Agent 的资源占用列表。"""
     t0 = time.monotonic()
-    data = _collect_agent_resources()
+    data = await _collect_agent_resources()
     return {
         "ok": True,
         "agents": data,
@@ -305,12 +324,20 @@ async def kill_resource(
 
     target_pids: List[int] = []
 
-    # /proc 匹配
+    # /proc 匹配 —— 与 _collect_agent_resources() 的采集侧**逐字同口径**（P0-4）。
+    # 旧实现在 kill 侧少了 MainThread 的 cmdline 佐证，而采集侧有 ⇒ 同一进程在
+    # 「列资源」时被正确排除，在「点结束」时却被匹配上。后果是**误杀**：CCR 画像里
+    # 带 MainThread 模式时，任何 comm=MainThread 的进程（实测含 WorkBuddy 桌面端
+    # 等 Electron 应用）只要 cmdline 里出现 ccr 字样就中枪。资源页越点越危险。
     for pr in procs:
         ok = False
         for rx in proc_patterns:
             pat = __import__("re").compile(rx)
             if pat.search(pr["comm"]) or pat.search(pr["cmdline"]):
+                # MainThread 这类通用 comm 需 cmdline 佐证（与采集侧、profiles.detect_status 同口径）
+                if rx == "MainThread":
+                    if ".ccr" not in pr["cmdline"] and "claude-code-router" not in pr["cmdline"]:
+                        continue
                 ok = True
                 break
         if ok:
@@ -320,10 +347,8 @@ async def kill_resource(
     for unit in systemd_units:
         if unit in units:
             try:
-                r = subprocess.run(
-                    ["systemctl", "--user", "show", unit, "--property=MainPID", "--value"],
-                    capture_output=True, text=True, timeout=5
-                )
+                r = await _run_cli(
+                    ["systemctl", "--user", "show", unit, "--property=MainPID", "--value"])
                 mp = int(r.stdout.strip())
                 if mp > 0:
                     target_pids.append(mp)
@@ -334,10 +359,8 @@ async def kill_resource(
     for dname in docker_names:
         if dockers.get(dname) == "running":
             try:
-                r = subprocess.run(
-                    ["docker", "inspect", dname, "--format", "{{.State.Pid}}"],
-                    capture_output=True, text=True, timeout=5
-                )
+                r = await _run_cli(
+                    ["docker", "inspect", dname, "--format", "{{.State.Pid}}"])
                 dp = int(r.stdout.strip())
                 if dp > 0:
                     target_pids.append(dp)
