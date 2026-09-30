@@ -55,15 +55,20 @@ function renderResources(data) {
         // 根据 kind 给不同颜色标记
         const kindBadge = {
             agent: '<span class="s-badge running"></span>',
-            gateway: '<span class="s-badge" style="background:var(--accent);color:#fff">网关</span>',
-            service: '<span class="s-badge" style="background:var(--primary);color:#fff">服务</span>',
-            tool: '<span class="s-badge" style="background:#6b7280;color:#fff">工具</span>',
-            memory: '<span class="s-badge" style="background:#8b5cf6;color:#fff">记忆</span>'
+            gateway: '<span class="s-badge" style="background:var(--accent);color:var(--on-accent)">网关</span>',
+            // 三个色值全走 :root 实名 token。此前 service 用 var(--primary)、
+            // tool/memory 写字面色，而这三个变量在 :root 里**定义数为 0**
+            // ⇒ var() 解析失败回退到初始值（透明），服务徽章看起来「没上色」。
+            // 语义映射：service/工具/记忆都是「非交互的分类标识」，
+            // 用灰阶 --text-2 / --muted 表达层级差，不与 --accent（可点击主色）抢语义。
+            service: '<span class="s-badge" style="background:var(--text-2);color:var(--on-accent)">服务</span>',
+            tool: '<span class="s-badge" style="background:var(--muted);color:var(--on-accent)">工具</span>',
+            memory: '<span class="s-badge" style="background:var(--accent);color:var(--on-accent)">记忆</span>'
         }[kind] || '<span class="s-badge"></span>';
 
         html +=
-        '<div class="agent-card" data-agent="' + agentId + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--card-bg);overflow:hidden">' +
-            '<div class="agent-header" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--panel-bg);cursor:pointer;border-bottom:1px solid var(--divider)" onclick="toggleAgentProcs(\'' + agentId + '\')">' +
+        '<div class="agent-card" data-agent="' + agentId + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--bg);overflow:hidden">' +
+            '<div class="agent-header" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);cursor:pointer;border-bottom:1px solid var(--divider)" onclick="toggleAgentProcs(\'' + agentId + '\')">' +
                 kindBadge +
                 '<span class="agent-name" style="flex:1;font-weight:500">' + escapeHtml(agentName) + '</span>' +
                 '<span class="agent-meta" style="font-size:12px;color:var(--text-2)">' +
@@ -74,7 +79,7 @@ function renderResources(data) {
             '<div class="agent-procs" id="procs-' + agentId + '" style="display:none;padding:8px 12px;max-height:300px;overflow-y:auto">' +
                 '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
                     '<thead>' +
-                        '<tr style="position:sticky;top:0;background:var(--panel-bg);z-index:1">' +
+                        '<tr style="position:sticky;top:0;background:var(--surface-2);z-index:1">' +
                             '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--divider)">PID</th>' +
                             '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--divider)">CPU%</th>' +
                             '<th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--divider)">内存</th>' +
@@ -90,10 +95,10 @@ function renderResources(data) {
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.pid + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.cpu_percent + '%</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.rss_mb + ' MB</td>' +
-                            '<td style="padding:4px 8px;border-bottom:1px solid var(--divider);max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(proc.cmdline) + '">' + escapeHtml(proc.cmdline) + '</td>' +
+                            '<td class="res-cmd" style="padding:4px 8px;border-bottom:1px solid var(--divider);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(proc.cmdline) + '">' + escapeHtml(proc.cmdline) + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider);text-align:center">' +
-                                '<button class="btn xs danger" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGTERM\')" title="优雅结束 (SIGTERM)">结束</button>' +
-                                '<button class="btn xs danger" style="margin-left:4px" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGKILL\')" title="强制结束 (SIGKILL)">强杀</button>' +
+                                '<button class="btn sm danger" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGTERM\')" title="优雅结束 (SIGTERM)">结束</button>' +
+                                '<button class="btn sm danger" style="margin-left:4px" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGKILL\')" title="强制结束 (SIGKILL)">强杀</button>' +
                             '</td>' +
                         '</tr>';
         }
@@ -214,3 +219,26 @@ function escapeHtml(s) {
 
 // 供外部调用（如从其它页面跳转）
 window.loadResources = loadResources;
+/* ── P1-16（2026-09-30）：资源页窄屏档 ─────────────────────────────────
+   症状：命令行列写死 max-width:400px，加 PID/CPU/RSS/操作四列后在 390px 视口
+   必然横向溢出（手机上表现为整页左右拖、右侧「结束/强杀」按钮点不到）。
+   修法：宽度交给 CSS 表格布局按视口分配。min-width:0 是关键 —— 表格单元格默认
+   min-width:auto，内容多宽就撑多宽，text-overflow 永远不生效。
+   断点 767px 与 01-core-boot.js 的 HUB_NARROW_MQ / templates/index.html 的
+   @media(max-width:767px) 同源同值（分档偏好不变量第 3 条：断点只允许一处定义）。
+   注意：本文件是 JS 分片，裸 CSS 文本不会被解析，必须 insertRule 真注入。 */
+(function () {
+    var CSS = [
+        ".res-cmd { max-width: 400px; }",
+        "@media (max-width: 767px) {",
+        "  .res-cmd { max-width: none; }",
+        "  #resList .agent-card table { table-layout: fixed; width: 100%; }",
+        "  #resList .agent-card td, #resList .agent-card th { padding: 4px 6px; }",
+        "  #resList .agent-card td.res-cmd { word-break: break-all; white-space: normal; }",
+        "}"
+    ].join("");
+    if (typeof CSSStyleSheet === "undefined" || !CSSStyleSheet.prototype.insertRule) return;
+    var sheet = new CSSStyleSheet();
+    sheet.replaceSync(CSS);
+    document.adoptedStyleSheets = document.adoptedStyleSheets.concat([sheet]);
+})();

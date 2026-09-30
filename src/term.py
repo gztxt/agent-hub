@@ -339,8 +339,10 @@ def _norm_intent(raw) -> str:
 
     缺省（老客户端没有 intent 字段）⇒ claim：否则一次前后端版本错配就会让尺寸永远改不动
     （paseo 同口径，terminal-size-ownership.ts:32-38）。
-    未知的非空值 ⇒ update（保守）：宁可要它先拿到所有权，也不能让一个看不懂的字段
-    绕过所有权检查直接改尺寸。
+    未知的非空值 ⇒ **update**（不放宽）：_apply_size 里只有 claim 能夺权，
+    一切非 claim（含看不懂的值）都要求「本端已是所有者」。把未知值当 claim 等于让
+    一个拼错的字段直接绕过所有权检查、把别人正在用的终端尺寸改掉 —— 与实现相反的
+    旧 docstring 写的是「宁可要它先拿到所有权」，那正好是被刻意否掉的那条路。
     """
     if raw is None or str(raw).strip() == "":
         return "claim"
@@ -511,6 +513,10 @@ async def kill_session(sid: str, request: Request):
     # 更常见的是 WS 仍挂着时用户连点多次 ×。这里显式登记一条「已被显式杀掉」的会话，
     # 由 reap_loop 兜底收尾，不依赖定时器一定跑得起来。
     _dying[id(sess)] = sess
+    # 尺寸所有权是按 sid 记的全局表，会话被 pop 掉后这条记录永无回收点
+    # （正常关闭路径在 WS finally 里清，但显式 kill 走不到那里）⇒ 长跑累积，
+    # 且 sid 复用时新会话会被一条陈旧的 owner 记录误判成「非所有者」。
+    _size_owner.pop(sid, None)
     return {"status": "killed", "id": sid}
 
 
