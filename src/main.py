@@ -993,6 +993,7 @@ async def startup():
     asyncio.create_task(prov_loop())   # 代码溯源（工作区脏度）刷新
     # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
     asyncio.create_task(term_mod.reap_loop())
+    asyncio.create_task(term_mod._child_reap_loop())
     mcpgw_mod.ensure_schema()
     cronjobs_mod.ensure_schema()
     cronjobs_mod.set_context(

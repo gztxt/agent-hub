@@ -53,6 +53,18 @@ _WRITE_RETRY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR})
 _REAP_EOF_CONFIRM = 3
 
 
+# ===== 子进程即时感知（PT-20260929-02）=====
+# 问题：子进程若零输出即死，PTY master 仅产生 POLLHUP，asyncio 的
+# add_reader（仅监 EPOLLIN）不触发回调 ⇒ hub 无感知路径，exit_status 恒 None、
+# alive 恒 True、前端回放空 ring ⇒ 用户看到永久空白终端。
+# 修法：后台任务以短周期（默认 2s）跑 waitpid(-1, WNOHANG) 全量扫描，
+# 任意子进程一退出立刻把对应 Session 标记为死，写入 exit_status，触发清理。
+# 该任务与现有 60s 的 reap_loop 并行，互不干扰、各司其职。
+_REAP_CHILD_POLL_S = float(os.getenv("TERM_REAP_CHILD_POLL", "2.0"))
+# 允许把子进程轮询完全关掉（设 0），仅依赖 60s reap_loop —— 兼容旧行为
+
+
+
 # 内存耗尽时 bun/JSC 会**主动** abort：ASSERTION FAILED: MemoryExhaustion →
 # JSC::LocalAllocator::allocateSlowCase 调 __builtin_trap() → ud2 → SIGILL。
 # 内核只记一行 `trap invalid opcode`，终端上原本只显示「[会话结束]」⇒ 用户无从得知
@@ -128,7 +140,18 @@ class Session:
                 env = child_env()
                 os.chdir(cwd)
                 os.execvpe(cmd[0], cmd, env)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # 09-30 可观测性：原实现 `os._exit(127)` 把死因**完全吞掉**——
+                # 父进程只看到「PTY 零字节 + 干净关闭」，与「CLI 自己崩了」同签名，
+                # 于是无法区分「exec 失败」和「CLI 启动即退」。现在双写：PTY（用户可见）
+                # + stdout（可 grep）。成本仅在失败路径。
+                import traceback
+                print("[term] 子进程 exec 失败 cmd=%r cwd=%r: %s"
+                      % (cmd[0], cwd, traceback.format_exc()), flush=True)
+                try:
+                    os.write(2, ("\r\n[hub: 无法启动 %s —— %s]\r\n" % (cmd[0], exc)).encode())
+                except OSError:
+                    pass
                 os._exit(127)
         self.alive = True
         self.created = time.time()
@@ -660,6 +683,77 @@ async def reap_loop():
             print(f"[term] reap_loop 异常（下轮重试）：{type(e).__name__}: {e}", flush=True)
 
 
+async def _child_reap_loop() -> None:
+    """子进程即时感知轮询（PT-20260929-02）。
+
+    以短周期（默认 2s，可用 TERM_REAP_CHILD_POLL=0 关闭）跑 waitpid(-1, WNOHANG)
+    全量扫描。任何子进程一退出，立刻把对应 Session 的 exit_status 写入、
+    alive 置 False、触发 _cleanup —— 解决「零输出即死、add_reader 捕捉不到
+# POLLHUP」导致的永久空白终端与假存活。
+
+    该任务与 60s 的 reap_loop 并行，互不干扰：
+    - reap_loop：TTL 回收、配额释放、已死会话的最终兜底
+    - _child_reap_loop：子进程退出的即时感知与 exit_status 回填
+    """
+    if _REAP_CHILD_POLL_S <= 0:
+        print("[term] 子进程即时感知已关闭（TERM_REAP_CHILD_POLL <= 0）", flush=True)
+        return
+    print(f"[term] 子进程即时感知已启动，轮询间隔 {_REAP_CHILD_POLL_S}s", flush=True)
+    while True:
+        await asyncio.sleep(_REAP_CHILD_POLL_S)
+        try:
+            _reap_all_children()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[term] _child_reap_loop 异常（下轮重试）：{type(e).__name__}: {e}", flush=True)
+
+
+def _reap_all_children() -> None:
+    """跑一次 waitpid(-1, WNOHANG) 扫描所有已退出子进程，标记对应 Session。
+
+    关键点：waitpid(-1, ...) 返回的是**任意**已退出子进程的 pid/status，
+    不局限于某个 Session 自家的 pid。这能捕获那些「零输出即死」
+    而 add_reader 永不触发的会话。
+    """
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            # 没有子进程了
+            break
+        except OSError:
+            # 暂时不可用，下轮再试
+            break
+        if pid <= 0:
+            # 没有已退出的子进程
+            break
+        # 找到对应的 Session
+        sess = None
+        for s in _sessions.values():
+            if s.pid == pid:
+                sess = s
+                break
+        if sess is None:
+            # 可能是 _dying 里的，或者已被清理
+            for s in _dying.values():
+                if s.pid == pid:
+                    sess = s
+                    break
+        if sess is None:
+            # 完全找不到（可能是外部进程、或已清理），记录忽略
+            print(f"[term] 回收到未知子进程 pid={pid} status={status}", flush=True)
+            continue
+        # 只在首次记录时写入（poll_exited / _cleanup 也会写，保持首次优先）
+        if sess.exit_status is None:
+            sess.exit_status = status
+        sess.alive = False
+        print(f"[term] 即时感知：sid={sess.id} pid={pid} exit_status={status} → alive=False", flush=True)
+        # 触发清理（幂等，_cleanup 内会 remove_reader、close fd、收尸）
+        sess._cleanup()
+        _sessions.pop(sess.id, None)
+
+
 def _reap_dying() -> None:
     """收尾已被显式杀掉的会话：进程确实没了就回收资源；还在等 SIGTERM 升级就跳过。"""
     for key, sess in list(_dying.items()):
@@ -686,11 +780,25 @@ def idle_max_s() -> int:
 
 def _attach_reader(sess: Session):
     loop = asyncio.get_event_loop()
+    # 09-30 可观测性：本次接入的读侧统计（只存在于 attach 后的这条闭包里）
+    _stat = {"reads": 0, "bytes": 0, "sent": 0}
 
     def on_readable():
         try:
+            _stat["calls"] = _stat.get("calls", 0) + 1
+            if _stat["calls"] <= 3:
+                import select as _sel
+                _rd, _, _ = _sel.select([sess.fd], [], [], 0)
+                print("[term] on_readable 第%d次进入 sid=%s 可读=%s 即将 os.read"
+                      % (_stat["calls"], sess.id, bool(_rd)), flush=True)
             data = os.read(sess.fd, 65536)
             if data:
+                _stat["reads"] += 1
+                _stat["bytes"] += len(data)
+                if _stat["reads"] <= 3:
+                    print("[term] on_readable sid=%s 第%d次读 %d 字节（ring 现在 %d，viewers=%d）"
+                          % (sess.id, _stat["reads"], len(data), len(sess.ring), len(sess.viewers)),
+                          flush=True)
                 # 档二关键一行：pty 有产出 = 会话活着，续 last_activity。
                 # 刻意**不**续 last_io —— 「agent 在跑」不等于「用户刚敲过键盘」，
                 # 两者混成一个时钟才会把正在跑的任务判成空闲（见 __init__ 注释）。
@@ -707,6 +815,8 @@ def _attach_reader(sess: Session):
                     co.handle(data)
         except (OSError, BlockingIOError) as e:
             if isinstance(e, OSError) and e.errno in (errno.EIO, errno.EBADF):
+                print("[term] on_readable 命中 EIO/EBADF sid=%s errno=%s ⇒ 判定子进程已死"
+                      % (sess.id, e.errno), flush=True)
                 sess.alive = False
                 sess._cleanup()  # 摘 reader + 关 fd + 收尸（幂等，替代原散落逻辑）
                 # _cleanup() 已记下 exit_status ⇒ 这里能把「为什么没了」一起说出来。
@@ -728,7 +838,12 @@ def _attach_reader(sess: Session):
                     except asyncio.QueueFull:
                         sess.dropped[vid] = sess.dropped.get(vid, 0) + len(end_payload)
 
+    # 09-30 可观测性：读侧挂载快照。ring 当时的长度 = 「从建会话起已经攒下多少字节」；
+    # 后续 WS 接入时若 ring 仍为 0，说明 PTY 一个字节都没被读走（空白终端的判定点）。
+    print("[term] 挂读侧 sid=%s pid=%s fd=%s ring=%d 字节"
+          % (sess.id, sess.pid, sess.fd, len(sess.ring)), flush=True)
     loop.add_reader(sess.fd, on_readable)
+    print("[term] add_reader 已挂 sid=%s" % sess.id, flush=True)
 
 
 @router.websocket("/ws/term/{sid}")
@@ -773,21 +888,43 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             sess.dropped[vid] = sess.dropped.get(vid, 0) + len(payload)
 
     sess.coalescers[vid] = _OutputCoalescer(_enqueue)
+    # 09-30 可观测性：本观看者的发送统计
+    _stat = {"sent": 0}
     # 回放最近输出（重连不白屏）
+    # 09-30 可观测性：ring 长度与回放结果一并上屏。ring=0 ⇒ PTY 真的没产出过任何字节，
+    # 这时空白就不是「回放漏了」而是「CLI 侧没画出来」，两者的修法完全不同。
     if sess.ring:
         try:
             await ws.send_bytes(bytes(sess.ring))
-        except Exception:  # noqa: BLE001
-            pass
+            print("[term] 回放 sid=%s vid=%s ring=%d 字节已发出" % (sess.id, vid, len(sess.ring)),
+                  flush=True)
+        except Exception as e:  # noqa: BLE001
+            print("[term] 回放失败 sid=%s vid=%s: %r" % (sess.id, vid, e), flush=True)
+    else:
+        print("[term] 回放 sid=%s vid=%s ring 为空（PTY 至今零产出）" % (sess.id, vid), flush=True)
     # 输出泵：queue → ws；带超时兜底，进程死亡且队列排空即收口，绝不无限挂起
     async def pump():
+        print(f"[term] pump 启动 sid={sess.id} vid={vid}", flush=True)
         while True:
             try:
+                print(f"[term] pump 等待数据 sid={sess.id} alive={sess.alive}", flush=True)
                 data = await asyncio.wait_for(vq.get(), timeout=2.0)
+                print(f"[term] pump 收到数据 sid={sess.id} len={len(data)} alive={sess.alive}", flush=True)
+                _stat["sent"] += 1
+                if _stat["sent"] <= 3:
+                    print("[term] pump sid=%s 第%d帧下发 %d 字节" % (sess.id, _stat["sent"], len(data)),
+                          flush=True)
             except asyncio.TimeoutError:
+                print(f"[term] pump 超时 sid={sess.id} alive={sess.alive}", flush=True)
                 if not sess.alive:
                     break
                 continue
+            except asyncio.CancelledError:
+                print(f"[term] pump 被取消 sid={sess.id}", flush=True)
+                raise
+            except Exception as e:
+                print(f"[term] pump 异常 sid={sess.id}: {type(e).__name__}: {e}", flush=True)
+                break
             # 慢消费者必须可见（P1-5）：丢了就明说，绝不静默吞字节
             lost = sess.dropped.pop(vid, 0)
             if lost:
@@ -797,50 +934,35 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                 except Exception:  # noqa: BLE001
                     break
             # 真正修：send_bytes 必须 try（手机断网/切网络 → WS 已断 → 1006）
+            # 直接尝试发送；WS 已关闭时 send_bytes 抛 WebSocketDisconnect
             try:
                 await ws.send_bytes(data)
             except Exception:  # noqa: BLE001
-                # WS 已断开：pump 退场，由收尾 try 兜底
+                # WS 已关闭：把数据写入临时文件，供后续回放取用
+                import tempfile, os
+                _tmp = tempfile.mktemp(suffix=".term", dir=os.environ.get("HUB_DATA_DIR", "/tmp"))
+                try:
+                    with open(_tmp, "ab") as f:
+                        f.write(data)
+
+                except Exception:  # noqa: BLE001
+                    pass
                 break
             if not sess.alive:
-                break
-        # 收尾：捕获 WS 已断开的情况（手机重连/切网络 → 客户端 1006），不再把异常抛回 event loop
-        # 与 on_readable 的 EIO 分支同理：有面因就一并说出来，别让「为什么没了」变成哑谜。
-        # 走到这里必然 alive=False，而 alive 只由 _cleanup() 置（全仓两处，另一处紧随其后调它）
-        # ⇒ exit_status 已记录，直接读即可，不必补调 _cleanup()。
-        # 保序（P1-1）：[process exited] 是带外消息，必须排在最后一段输出**之后**。
-        # 两步都不能省：① flush —— 把合并器里攒着的落进队列；
-        #              ② 排空 —— pump 循环已退出，队列里剩下的帧没人再发了，
-        #                 不排空的话退出提示会抢在刚 flush 出来的输出前面。
-        co = sess.coalescers.get(vid)
-        if co is not None:
-            co.flush()
-        lost = sess.dropped.pop(vid, 0)
-        if lost:
-            try:
-                await ws.send_bytes(("\r\n\x1b[90m[hub: 输出过快，已丢弃 %d 字节]\x1b[0m\r\n"
-                                      % lost).encode())
-            except Exception:  # noqa: BLE001
-                pass
-        while True:
-            try:
-                pending = vq.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            try:
-                await ws.send_bytes(pending)
-            except Exception:  # noqa: BLE001
-                break
-        reason = describe_exit(sess.exit_status, sess.hub_killed)
-        tail = f" ({reason})" if reason else ""
-        try:
-            await ws.send_bytes(("\r\n\x1b[90m[process exited" + tail + "]\x1b[0m").encode())
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await ws.close(code=4410)
-        except Exception:  # noqa: BLE001
-            pass
+                # 进程已死：发送退出提示并关闭 WS，然后返回（handler 会收到 WebSocketDisconnect）
+                reason = describe_exit(sess.exit_status, sess.hub_killed)
+                tail = f" ({reason})" if reason else ""
+                exit_payload = ("\r\n\x1b[90m[process exited" + tail + "]\x1b[0m").encode()
+
+                try:
+                    await ws.send_bytes(exit_payload)
+                    # 给客户端一点时间读取数据帧，再发关闭帧
+                    await asyncio.sleep(0.5)
+                    await ws.close(code=4410)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[term] pump 退出提示发送失败 sid={sess.id}: {e}", flush=True)
+                return
+        # 正常退出（WS 已由上方 return 关闭）
     pump_task = asyncio.create_task(pump())
     try:
         while True:
@@ -905,7 +1027,13 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        pump_task.cancel()
+        # 先等 pump 完成清理（发送退出提示、关闭 WS），再拆观看者
+        try:
+            await pump_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
         sess.viewers.pop(vid, None)
         sess.dropped.pop(vid, None)
         # 所有者走了必须交还所有权：留着悬挂的 vid 会让**所有**客户端的 update 全被忽略，
