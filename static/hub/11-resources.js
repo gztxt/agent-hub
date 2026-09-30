@@ -30,10 +30,18 @@ async function loadResources(force = false) {
         resLoaded = true;
     } catch (e) {
         console.error("[Resources] load failed:", e);
-        hintEl && (hintEl.textContent = "加载失败：" + e.message);
-        listEl.innerHTML = '<div class="hint" style="padding:10px;color:var(--danger)">加载失败：' + e.message + '</div>';
+        hintEl && (hintEl.textContent = "加载失败");
+        /* P1-24：此前直吐 e.message 进 innerHTML —— 后端 message 里带 &<>"' 就破版，
+           且与全站其它页的 boxFail 口径不一致（少了 escapeHtml 与「重试」按钮）。
+           统一走 boxFail：同一个渲染 + 同一个转义 + 同一条重试路径。 */
+        /* 重试入口用显式函数名：onclick="loadResources()" 会把事件对象当 force 传进去
+           （隐式 truthy），重试语义恰好也该强制刷新，但不该靠这个巧合成立。 */
+        boxFail("resList", e, "resourcesRetry");
     }
 }
+
+/** 资源页「重试」按钮的显式入口（不依赖 onclick 传参的隐式 truthy）。 */
+function resourcesRetry() { loadResources(true); }
 
 function renderResources(data) {
     const listEl = document.getElementById("resList");
@@ -177,11 +185,16 @@ function updateAgentSummary(agentId, deltaCount) {
     if (!cardEl) return;
     const metaEl = cardEl.querySelector('.agent-meta');
     if (!metaEl) return;
-    const text = metaEl.textContent;
-    const countMatch = text.match(/<b>(\d+)<\/b>\s*进程/);
-    if (countMatch) {
-        const newCount = Math.max(0, parseInt(countMatch[1], 10) + deltaCount);
-        metaEl.innerHTML = text.replace(/<b>\d+<\/b>\s*进程/, '<b>' + newCount + '</b> 进程');
+    /* P1-24：此前读的是 textContent（纯文本，形如 "2 进程 · 120MB"），
+       却拿它去跑 /<b>(\d+)<\/b>/ 这种**只可能匹配 innerHTML** 的正则 ——
+       永远匹配不上，计数更新是死代码；即便某次碰巧匹配上，把 textContent
+       的结果塞回 innerHTML 也会把实体（&<>）重新解释成标签。
+       改成对纯文本做正则，输出也走 textContent：不碰解析器就没有二次解释。 */
+    const text = metaEl.textContent || '';
+    const m = text.match(/(\d+)\s*进程/);
+    if (m) {
+        const newCount = Math.max(0, parseInt(m[1], 10) + deltaCount);
+        metaEl.textContent = text.replace(/\d+\s*进程/, newCount + ' 进程');
     }
 }
 
