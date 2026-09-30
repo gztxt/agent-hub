@@ -287,6 +287,13 @@
         #navTree::-webkit-scrollbar { display: none; }
         /* 操作按钮组 */
         .nav-acts { display: flex; gap: 1px; flex: none; margin-left: 1px; }
+        /* P1-18：导航徽章。setBadge(page, n) 一直在写 #badge-<page> 的 textContent，
+           但模板里一个 badge 元素都没有 ⇒ 计数算了、DOM 为 null、el 判空直接跳过，
+           界面上永远看不到。空内容不占位（:empty 不渲染），避免无计数时留灰点。 */
+        .nav-badge { margin-left: auto; min-width: 16px; height: 16px; padding: 0 4px;
+                     border-radius: 8px; background: var(--sel-bg); color: var(--text-2);
+                     font-size: 10px; line-height: 16px; text-align: center; flex: none; }
+        .nav-badge:empty { display: none; }
         /* 行内操作按钮：统一 22×22 图形按钮，图标恒为 16px（14px 会把 monitor 这类多细节图形糊成一格）*/
         .act-btn { display: inline-flex; align-items: center; justify-content: center; flex: none;
                    width: 22px; height: 22px; padding: 0; border-radius: 5px; cursor: pointer;
@@ -899,7 +906,7 @@
              侧栏事件委托本来就认 data-sys（点击即 go()，窄屏顺带收抽屉），而 data-page 会被刚删掉的
              遗留规则打歪。选中态由 go() 里补的一行同步；嵌入视图行1 原来的 crumb 已删（不留双入口）。 -->
         <button class="side-item side-top" id="btnNavHome" data-sys="classroom" role="tab" aria-selected="false"
-                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span></button>
+                aria-label="总览" title="总览 · 本机 Agent 与基础设施一览"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span class="lbl">总览</span><span class="nav-badge" id="badge-classroom"></span></button>
         <!-- v0.13.30 本机项目：用户要求置于 AGENTS 菜单之上。同「总览」的常驻项形态
              （data-sys 点击即 go()，选中态由 go() 的 side-item[data-sys] 同步行接管），
              页面四件套：本按钮 + #page-localprojects + PAGE_LABELS + go() 懒加载钩子。 -->
@@ -1981,6 +1988,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
     <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=a712583d"></script>
+    <script src="/static/hub.js?v=5fc753c9"></script>
 </body>
 </html>

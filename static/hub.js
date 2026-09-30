@@ -3327,17 +3327,23 @@ function navMatch(a, q) {
          String(a.port || '').includes(q);
 }
 // 搜索词高亮
+/* P1-22（2026-09-30）：高亮改在**转义之后**的串上匹配。
+   旧写法拿原文下标 idx 去切 escapeHtml(text)：
+     text = 'a & b'，查 '&' → 原文 idx=2，切转义串得到 'a &' 之类错位，
+   含 & < > " ' 时高亮会盖错字符（轻则高亮到半个实体，重则切出 < 破坏 HTML）。
+   正确做法：先转义成最终 HTML，再在这份 HTML 上匹配 —— 但那样查询词里的
+   & 也要跟着转义才搜得到，所以两边各自转义后再比。 */
 function hlMatch(text, q) {
   if (!q) return escapeHtml(text);
   const escaped = escapeHtml(text);
-  const ql = q.toLowerCase();
-  const lower = text.toLowerCase();
-  let result = '', last = 0;
-  let idx = lower.indexOf(ql);
+  const needle = escapeHtml(q);
+  if (!needle) return escaped;
+  const hay = escaped.toLowerCase(), nd = needle.toLowerCase();
+  let result = '', last = 0, idx = hay.indexOf(nd);
   while (idx !== -1) {
-    result += escaped.slice(last, idx) + '<mark>' + escaped.slice(idx, idx + q.length) + '</mark>';
-    last = idx + q.length;
-    idx = lower.indexOf(ql, last);
+    result += escaped.slice(last, idx) + '<mark>' + escaped.slice(idx, idx + needle.length) + '</mark>';
+    last = idx + needle.length;
+    idx = hay.indexOf(nd, last);
   }
   return result + escaped.slice(last);
 }
@@ -3516,9 +3522,14 @@ function renderNav() {
       const hlth = p => (typeof CENTER_HEALTH !== 'undefined' && CENTER_HEALTH[p]) ?
         '<span class="s-badge ' + (CENTER_HEALTH[p] === 'ok' ? 'running' : CENTER_HEALTH[p] === 'warn' ? 'installed' : 'error') + '"></span>' : '';
       const HLTH_PAGE = { memory: 1, skills: 1, kb: 1 };
+      /* P1-18：补 #badge-<page> 挂载点。setBadge 一直在写这两个元素的 textContent，
+         此前模板里不存在 ⇒ 每次都 el 为 null 直接 return，MCP 服务器数 / 启用中的
+         定时任务数算了但永远显示不出来。空内容靠 CSS :empty 不占位。 */
+      const badge = p => '<span class="nav-badge" id="badge-' + p + '"></span>';
       body = list.map(([p, label, ic]) =>
         '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
-        ico(ic) + '<span class="lbl">' + label + '</span>' + (HLTH_PAGE[p] ? hlth(p) : '') + '</button>').join('');
+        ico(ic) + '<span class="lbl">' + label + '</span>' + (HLTH_PAGE[p] ? hlth(p) : '') +
+        badge(p) + '</button>').join('');
     } else {
       body = list.map(navRow).join('');
     }
