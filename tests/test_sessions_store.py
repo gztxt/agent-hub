@@ -178,6 +178,43 @@ class TestRealStores(unittest.TestCase):
         self.assertIn(row["id"], [i["id"] for i in d["items"]],
                       "最新真实会话必须出现在历史里（白名单 source 会漏）")
 
+    def test_codex_resume_accepts_non_cli_source(self):
+        """v0.13.62 回归锁：**列表口径与续聊校验口径必须一致**（09-30 实测事故）。
+
+        v0.13.61 把列表侧改成「排除噪音」，但 `resume_argv` 走的 `_exists_on_disk()`
+        仍写死 `source='cli'` ⇒ 列表里点得到的 vscode 会话，续聊一律 404
+        「session_id 不在实盘清单内」。本例对账：列表里的 codex 条目必须都能 resume。"""
+        d = ss.list_history("codex", CWD, 20)
+        if not d["items"]:
+            self.skipTest("本机无真实 codex 会话")
+        bad = []
+        for it in d["items"]:
+            try:
+                argv = ss.resume_argv("codex", it["id"], it.get("cwd") or CWD)
+            except ValueError as e:
+                bad.append(f"{it['id'][:8]}… {e}")
+                continue
+            self.assertEqual(argv, ["codex", "resume", it["id"]])
+        self.assertEqual(bad, [], f"列表可见却续不了（口径分叉）：{bad}")
+
+    def test_codex_exists_on_disk_rejects_noise(self):
+        """反向：噪音（exec 探针 / 子代理线程）仍不得被 `_exists_on_disk` 放行 ——
+        修口径分叉不能顺手把「排除噪音」这条原意也删掉（两边必须同一套判据）。"""
+        import sqlite3
+        db = Path.home() / ".codex" / "state_5.sqlite"
+        if not db.exists():
+            self.skipTest("无 ~/.codex/state_5.sqlite（非本机形态）")
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
+            noise = [r[0] for r in c.execute(
+                "select id from threads where archived=0 and "
+                "(source like 'exec%' or source like '{\"subagent\"%') limit 5")]
+        if not noise:
+            self.skipTest("本机无 exec/subagent 噪音样本")
+        for sid in noise:
+            with self.subTest(sid=sid[:8]):
+                self.assertFalse(ss._exists_on_disk("codex", sid),
+                                 "exec 探针/子代理线程不得被当作可续聊历史")
+
     def test_hermes_note_declares_scope(self):
         d = ss.list_history("hermes", "/home/gztxt", 3)
         self.assertTrue(d["note"], "hermes 不按 cwd 过滤，note 必须写明口径")

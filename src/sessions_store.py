@@ -263,6 +263,18 @@ def _t_hermes(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
 CODEX_NOISE_SOURCE = ("exec",)
 CODEX_SUBAGENT_PREFIX = '{"subagent":'
 
+#: v0.13.62：codex「这条线程不是人开的会话」的 SQL 判据 —— **列表侧与续聊校验侧必须逐字共用**。
+#: 事故（09-30 实测）：v0.13.61 只把列表侧从白名单改成排除集，`_exists_on_disk()` 却仍写死
+#: `source='cli'` ⇒ 侧栏点得到的 8 条 vscode 会话，续聊一律 404「不在实盘清单内」。
+#: 本质是**同一判据抄了两遍**，抄第二遍时漏改 ⇒ 这类 bug 只要还抄就一定会再犯。
+#: 规则：codex 的 source 判据只允许出现在这一个函数里；两侧都引用它，谁都改不漏。
+def codex_is_noise_sql() -> tuple:
+    """返回 (sql 片段, 前置参数)。**只有本函数**可以拼 codex 的 source 判据。"""
+    frag = " or ".join(["source like ?"] * len(CODEX_NOISE_SOURCE)) + \
+           " or source like ?"
+    return f"({frag})", tuple([f"{s}%" for s in CODEX_NOISE_SOURCE] +
+                              [CODEX_SUBAGENT_PREFIX + "%"])
+
 
 def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     """列**真实用户会话**（排除 exec 探针与 subagent 子线程），**跳目录**（用户 09-22 裁定）。
@@ -274,12 +286,12 @@ def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
         return [], "codex 无 state_5.sqlite"
     try:
         with _ro(db) as c:
+            frag, ps = codex_is_noise_sql()
             rows = c.execute(
                 "select id, title, cwd, updated_at, source from threads "
-                "where archived=0 and source not like 'exec%' "
-                "  and source not like '{\"subagent\"%' "
+                f"where archived=0 and not {frag} "
                 "order by updated_at desc limit ?",
-                (max(limit * 3, limit),)).fetchall()
+                ps + (max(limit * 3, limit),)).fetchall()
     except Exception as e:  # noqa: BLE001
         return [], f"codex 读取失败：{type(e).__name__}"
     items = [{"agent": "codex", "id": r["id"], "title": mask_title(r["title"] or "") or "未命名会话",
@@ -389,8 +401,13 @@ def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
         return bool(_sql_one(HOME / ".hermes" / "state.db",
                              "select 1 from sessions where id=? and source='cli'", (sid,)))
     if agent_id == "codex":
+        # v0.13.62：与 _t_codex 共用 codex_is_noise_sql()——写死 source='cli' 会把
+        # IDE 扩展里开的会话（source='vscode'，本机 8 条）判成不存在 ⇒ 续聊 404。
+        # 仍然保留 archived=0 与「排噪音」两条，闸门一道都不松。
+        frag, ps = codex_is_noise_sql()
         return bool(_sql_one(HOME / ".codex" / "state_5.sqlite",
-                             "select 1 from threads where id=? and source='cli' and archived=0", (sid,)))
+                             f"select 1 from threads where id=? and archived=0 and not {frag}",
+                             (sid,) + ps))
     if agent_id == "opencode":
         return bool(_sql_one(OPENCODE_DB,
                              "select 1 from session where id=? and (parent_id is null or parent_id='')"

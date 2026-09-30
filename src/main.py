@@ -77,7 +77,7 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.61"   # codex 历史不再被 source 白名单漏掉：排除 exec 探针/subagent，收进 vscode 等真实用户会话
+VERSION = "0.13.62"   # codex 续聊校验与列表口径统一：列表可见的会话不再被 404「不在实盘清单内」
                       #   ↑ v0.13.61：侧栏 agent 名下「最新会话」停在 09-28 的根因 ——
                       #     sessions_store._t_codex 写死 where source='cli'，而 09-29 起
                       #     用户在 IDE 扩展里开的会话 source 记为 'vscode' ⇒ 最新会话被整体

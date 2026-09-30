@@ -1,5 +1,48 @@
 # CHANGELOG
 
+## v0.13.62 — codex 历史看得到却续不了：续聊校验仍写死 source='cli'
+
+> 由 `wt/01a0f070` 施工（PT-20260930-04）。用户报障「续聊失败：session_id 不在实盘清单内」，
+> 是 v0.13.61（同一个上午、本仓修的上一条）的**漏改**——修一半。
+
+### 根因（实测，不是推断）
+
+v0.13.61 把「列表哪些会话算真会话」的判据从白名单改成了排除集，但**只改了列表侧一处**。
+续聊走的是另一处独立拷贝：
+
+```
+_t_codex()          列表侧   →  排除 exec 探针 + subagent 子线程   ✅ 已改
+_exists_on_disk()   续聊侧   →  source = 'cli'                     ❌ 漏改
+```
+
+同一个判据被抄成两遍，抄第二遍时没跟着改。`resume_argv()` 先查 `_exists_on_disk()`，
+不通过就抛 `session_id 不在实盘清单内` ⇒ `term.py` 转 404 ⇒ **侧栏点得到的 8 条会话一条都续不了**。
+
+实测（`~/.codex/state_5.sqlite`，09-30 全库）`archived=0` 的 20 条里：`exec` 74 条是探针、
+`vscode` 8 条是真实用户会话、`cli` 7 条。而用户的会话自 09-29 起都在 `vscode` 里开
+⇒ 校验侧把**当前所有真实会话**判成不存在。列表侧 8/8 续聊全 404，复现无误。
+
+### 修法：判据提成单一真源，不靠"记得两边都改"
+
+新增 `codex_is_noise_sql()`，**列表侧与续聊校验侧逐字共用**同一份 SQL 片段。
+闸门一道都没松：`archived=0` 保留、`exec` 探针与 `{"subagent":…}` 子代理照样拒绝
+（`test_codex_exists_on_disk_rejects_noise` 专门钉这条，防"修口径分叉时把排噪音一起删了"）。
+
+这类 bug 的教训不是"要细心"，而是**同一判据不该抄两遍**——抄了就会漏改，
+而且 v0.13.61 的 CHANGELOG 当时写满了口径说明，却没发现隔壁还留着旧白名单。
+
+### 测试（两个方向都做过变异测试）
+
+| 用例 | 钉住什么 | 变异测试 |
+|---|---|---|
+| `test_codex_resume_accepts_non_cli_source` | 列表里每条 codex 历史都必须能 resume | 退回 `source='cli'` ⇒ **判红**，报的正是本故障 |
+| `test_codex_exists_on_disk_rejects_noise` | exec 探针/子代理仍不得放行 | 去掉排噪音 ⇒ **判红**，5 个 subTest 全挂 |
+
+第一个用例是**对账式**的：不硬编码任何 id，直接拿 `list_history` 的输出逐条试 `resume_argv`，
+所以未来 codex 再新增入口（cli/vscode/桌面端…）若又出分叉，它会自己红。
+
+全量：L0-hermetic 908 OK / 零跳过，L1-host 47 OK。
+
 ## v0.13.61 — codex 最新会话不显示：source 白名单漏掉 IDE 扩展入口
 
 > 由 `wt/01a0f05e` 施工（PT-20260930-03）。用户报障「侧栏 agent 名称下面没有最新会话记录」，
