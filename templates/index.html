@@ -927,7 +927,7 @@
     </aside>
     <div id="sideMask" aria-hidden="true"></div>
 
-    <main>
+    <main id="mainWrap">   <!-- P1-21：抽屉打开时对整块正文 inert（浮层焦点陷阱的落点）-->
         <!-- 右侧操作区顶栏：面包屑 + 按 entries 动态渲染的模式 tab -->
         <div id="opBar">
             <nav id="crumb" aria-label="位置"></nav>
@@ -1845,7 +1845,7 @@
     </div>
 
     <!-- 技能正文抽屉（v0.13.27：技能中心「查看」→ /api/skill/read 全文，409 多路选路） -->
-    <aside id="skillDocDrawer" role="dialog" aria-label="技能正文">
+    <aside id="skillDocDrawer" role="dialog" aria-modal="false" aria-label="技能正文" tabindex="-1">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <b id="skillDocTitle" style="font-size:var(--fs-lg)"></b>
             <button class="btn ghost sm" aria-label="关闭技能正文" onclick="closeSkillDoc()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
@@ -1854,7 +1854,7 @@
     </aside>
 
     <!-- 实体详情抽屉 -->
-    <aside id="detailDrawer" role="dialog" aria-label="实体详情">
+    <aside id="detailDrawer" role="dialog" aria-modal="false" aria-label="实体详情" tabindex="-1">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
             <b id="detailTitle" style="font-size:var(--fs-lg)"></b>
             <button class="btn ghost sm" aria-label="关闭详情" onclick="closeDetail()"><svg class="i xs" aria-hidden="true"><use href="#i-x"/></svg></button>
@@ -1988,6 +1988,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
     <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=b85ecb5f"></script>
+    <script src="/static/hub.js?v=6e3d2aeb"></script>
 </body>
 </html>

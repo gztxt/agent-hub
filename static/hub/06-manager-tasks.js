@@ -265,11 +265,20 @@ function keyTargetIsEditing(e) {
 document.addEventListener('keydown', e => {
   const editing = keyTargetIsEditing(e);
   if (e.key === 'Escape') {
-    // 终端里的 Esc 原样给 pty；只有搜索框自己认领"Esc 清空"
-    if (editing && !(e.target && e.target.id === 'navSearch')) return;
-    closeDetail();
+    /* P1-21 优先级：抽屉 > 命令面板 > 搜索框 > 终端/输入位。
+       改前两处真缺口：
+       · 只调 closeDetail()，skillDocDrawer 没接 ⇒ 技能正文抽屉键盘关不掉；
+       · editing 分支在最前面 return，于是**焦点在抽屉里的输入位时 Esc 整体失效**
+         （详情抽屉的云CLI 项目搜索框就在里面），用户只能去点遮罩 —— 手机能点、
+         键盘不能，等于"没有关闭"。
+       终端里的 Esc 仍原样给 pty（bash/vim 不能被抢），命令面板自己的 keydown
+       在 input 上先冒泡认领 closeCmd，这里不重复。 */
+    if (e.target && e.target.closest && e.target.closest('.xterm')) return;   // 终端 Esc 归 pty
+    if (window.overlayAnyOpen && overlayAnyOpen()) { closeDrawers(); return; }   // 单一出口：关干净所有抽屉
+    if ($('cmdMask') && $('cmdMask').classList.contains('on')) { closeCmd(); return; }
     const si = $('navSearch');
     if (si && si.value) { si.value = ''; renderNav(); return; }
+    if (editing) return;
     return;
   }
   if (editing) return;

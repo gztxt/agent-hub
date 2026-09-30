@@ -112,9 +112,17 @@ class TestKeyGuard(unittest.TestCase):
             self.assertLess(gate.end(), j.start(), f"{name} 分支排在守卫之前＝仍然劫持终端按键")
 
     def test_escape_defers_to_pty_except_search_box(self):
-        """Esc 在终端里必须原样给 pty（vim 要用），只有搜索框自己认领清空。"""
-        self.assertRegex(self.body, r"if \(editing && !\(e\.target && e\.target\.id === 'navSearch'\)\) return",
-                         "Esc 分支不再区分输入位＝vim 的 Esc 会被界面吃掉")
+        """Esc 在终端里必须原样给 pty（vim 要用），只有搜索框自己认领清空。
+
+        P1-21 改写过这段实现（editing 早退挪到了抽屉/命令面板判定之后），
+        但**契约没变**：终端里的 Esc 仍归 pty。原先这里匹配的是一条字面量
+        `if (editing && !(e.target.id==='navSearch')) return`，实现改成更严格的
+        `.xterm` 显式早退后字面量失配——闸门照旧被改成行为断言，不再绑写法。
+        """
+        guard = re.search(r"e\.target\.closest\('\.xterm'\)\) return", self.body)
+        self.assertIsNotNone(guard, "Esc 分支不再把终端让给 pty＝vim 的 Esc 会被界面吃掉")
+        self.assertLess(guard.start(), re.search(r"editing\) return", self.body).start(),
+                        "editing 早退排在终端早退之前＝终端 Esc 会被界面吃掉")
 
 
 if __name__ == "__main__":

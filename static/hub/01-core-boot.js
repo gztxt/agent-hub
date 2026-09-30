@@ -201,27 +201,112 @@ var CENTER_HEALTH = { memory: '', skills: '', kb: '' };
 const OVERLAY_IDS = ['detailDrawer', 'skillDocDrawer'];   // v0.13.43：设置抽屉已拆，改走正文页
 const overlayOpen = id => { const el = $(id); return !!(el && el.classList.contains('on')); };
 window.overlayAnyOpen = () => OVERLAY_IDS.some(overlayOpen);
+
+/* ── P1-21（2026-09-30）：抽屉的键盘/无障碍契约 ──────────────────────────────
+   改动前的实测缺口（不是"锦上添花"，是三条会真出问题的路）：
+   ① Esc 关不干净：全局 Esc 出口（06）只调 closeDetail()，skillDocDrawer 完全没接；
+   ② 焦点在抽屉内的输入位时 Esc 整体失效 —— 06 的 keyTargetIsEditing 提前 return，
+      用户在详情里选完文本按 Esc 没反应，而抽屉里恰好有 input/select（云CLI 项目搜索）；
+   ③ 抽屉打开后焦点仍留在页面上被遮住的元素，键盘用户在抽屉外裸奔（读屏会串页）。
+   手机没有 ESC 这条已有（遮罩点击 = 唯一逃生路径，09-23 军规），这里不重复造。
+   口径：inert 一次性解决"抽屉外不可聚焦"（比逐个 tabindex=-1 更省事且不漏网），
+        焦点进抽屉首个可聚焦元素、关闭后归还给开启者。 */
+const overlayFocusables = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+function overlayFocusablesIn(el) {
+  if (!el) return [];
+  return Array.from(el.querySelectorAll(overlayFocusables)).filter(
+    n => n.offsetWidth > 0 || n.offsetHeight > 0 || n === document.activeElement);
+}
+let overlayOpener = null;   // 开启抽屉前的焦点，关抽屉时原样还回去
+function syncOverlayA11y() {
+  const openId = OVERLAY_IDS.find(overlayOpen);
+  OVERLAY_IDS.forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.setAttribute('aria-modal', openId === id ? 'true' : 'false');
+    el.setAttribute('aria-hidden', openId && openId !== id ? 'true' : 'false');
+  });
+  /* 抽屉开着时把页面其余部分整体 inert：Tab 不再能跑到遮住的元素上，
+     读屏也不会串到抽屉外面去。这是 03 里"焦点陷阱"的实现方式。 */
+  const page = document.getElementById('mainWrap') || document.body;
+  /* 双向写：不是"开着才置 inert"，而是每次都按当前状态**显式赋值**。
+     只在开时置 true 会留下永久残留 —— 抽屉全关后 openId 为 undefined，
+     旧代码走不进任何分支，detailDrawer.inert 永远卡在 true；此后往那个抽屉里
+     塞的任何元素都收不到焦点（真渲染探针 O8a 实测：焦点掉到 BODY），
+     而且该抽屉再打开时**整个抽屉点不动**。 */
+  OVERLAY_IDS.forEach(id => {
+    const el = $(id);
+    if (el && el !== page) el.inert = !!(openId && openId !== id);
+  });
+  if (page && page !== document.body) {
+    page.inert = !!openId;
+  }
+}
+function rememberOverlayOpener() {
+  const a = document.activeElement;
+  if (a && a.nodeType === 1 && !OVERLAY_IDS.includes(a.id)) overlayOpener = a;
+}
 function closeDrawers() {
   let changed = false;
   OVERLAY_IDS.forEach(id => {
     const el = $(id);
     if (el && el.classList.contains('on')) { el.classList.remove('on'); changed = true; }
   });
-  if (changed && window.syncOverlayMask) syncOverlayMask();
+  if (changed) {
+    syncOverlayA11y();
+    if (window.syncOverlayMask) syncOverlayMask();
+    /* 焦点归还：原来落在被遮住的页面上，关闭后必须能接回去，
+       否则键盘用户会掉回 body 顶（等于"页面没了"）。 */
+    if (overlayOpener && document.contains(overlayOpener) && overlayOpener.focus) {
+      try { overlayOpener.focus(); } catch (e) { /* 元素已不可聚焦：静默降级 */ }
+    }
+    overlayOpener = null;
+  }
   return changed;
 }
 function closeOverlay(id) {
   const el = $(id);
-  if (el && el.classList.contains('on')) el.classList.remove('on');
+  const wasOpen = !!(el && el.classList.contains('on'));
+  if (wasOpen) el.classList.remove('on');
+  if (wasOpen) {
+    syncOverlayA11y();
+    if (overlayOpener && document.contains(overlayOpener) && overlayOpener.focus) {
+      try { overlayOpener.focus(); } catch (e) { }
+      overlayOpener = null;
+    }
+  }
   if (window.syncOverlayMask) syncOverlayMask();
 }
 function openOverlay(id) {
+  rememberOverlayOpener();
   closeDrawers();                      // ① 只允许一个抽屉在开
   const el = $(id);
   if (el) el.classList.add('on');
   if (window.collapseSidebar) collapseSidebar();   // 窄屏别让侧栏抽屉和它叠着
   if (window.syncOverlayMask) syncOverlayMask();
+  syncOverlayA11y();
+  /* 焦点进抽屉：落在首个可聚焦元素上（关闭按钮），键盘用户不必先 Tab 一圈找路。
+     用 setTimeout 是因为 openOverlay 常在刚写完 innerHTML 后调用，要等渲染。 */
+  setTimeout(() => {
+    const cur = $(id);
+    if (!cur || !cur.classList.contains('on')) return;   // 期间已被关掉就别再抢焦点
+    const f = overlayFocusablesIn(cur)[0] || cur;
+    if (f && f.focus) { try { f.focus({ preventScroll: true }); } catch (e) { f.focus(); } }
+  }, 0);
 }
+/* 抽屉开着时 Tab 在抽屉内循环（inert 之外的显式兜底：Safari 对 inert 支持不齐，
+   且 <11 的 Chromium 也没有；两条一起上，任何一档都能兜住）。 */
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const openId = OVERLAY_IDS.find(overlayOpen);
+  if (!openId) return;
+  const el = $(openId);
+  const list = overlayFocusablesIn(el);
+  if (!list.length) { e.preventDefault(); return; }
+  const first = list[0], last = list[list.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 function go(page) {
   /* 持久化状态必须校验后回退（2026-09-23 事故第二幕）：启动时直接吃
