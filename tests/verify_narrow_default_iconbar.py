@@ -19,7 +19,7 @@ import shutil
 import tempfile
 import time
 
-sys.path.insert(0, "/home/gztxt/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
 BASE = "http://127.0.0.1:3102"

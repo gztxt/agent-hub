@@ -1,13 +1,13 @@
 [Unit]
 Description=Agent Hub 智管 (FastAPI :3102)
-Documentation=file:///home/gztxt/agent-hub/README.md
+Documentation=file:///fs/1000/ftp/技术文档/agent-hub/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/gztxt/agent-hub
-ExecStart=/home/gztxt/agent-hub/venv/bin/python3 -m uvicorn src.main:app --host 0.0.0.0 --port 3102
+WorkingDirectory=/fs/1000/ftp/技术文档/agent-hub
+ExecStart=/fs/1000/ftp/技术文档/agent-hub/venv/bin/python3 -m uvicorn src.main:app --host 0.0.0.0 --port 3102
 # 注意：.env 由应用自身加载（src/config.py 覆盖模式），此处不重复注入，避免双份真值
 Restart=always
 RestartSec=3

@@ -2520,7 +2520,7 @@ $('chatModel')?.addEventListener?.('change', e => {
 });
 
 /* ── 工作目录（CWD 选择器）── */
-const DEFAULT_CWDS = ['/fs/1000/ftp/技术文档', '/home/gztxt', '/home/gztxt/agent-hub', '/vol1/1000/技术文档', '/tmp'];
+const DEFAULT_CWDS = ['/fs/1000/ftp/技术文档', '/home/gztxt', '/fs/1000/ftp/技术文档/agent-hub', '/vol1/1000/技术文档', '/tmp'];
 function chatCwdLoad() {
   const sel = $('chatCwd');
   if (!sel) return;
