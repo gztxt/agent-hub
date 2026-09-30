@@ -231,12 +231,15 @@ function navItemHtml(a) {
     actBtns.push('<span class="act-btn start-btn" onclick="event.stopPropagation();startAgent(\'' + a.id + '\')" title="启动">' + ico('play') + '</span>');
   }
   const actsHtml = actBtns.length ? '<span class="nav-acts">' + actBtns.join('') + '</span>' : '';
+  /* P2-B：行尾忙碌点。有活着的终端会话才亮（12-activity 的 ACTIVITY 口径），
+     无会话返回空串 ⇒ 零会话时侧栏与改动前逐像素一致。 */
+  const busyDot = (typeof activityDotHtml === 'function') ? activityDotHtml(a) : '';
   return '<button class="nav-item' + on + '" data-entity="' + escapeHtml(a.id) + '"' +
     ' title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(a.name + ' ' + seatLabelOf(a)) + '">' +
     '<span class="s-badge ' + st + '"></span>' +
     '<span class="lbl">' + nameHtml + '</span>' +
     (a.port ? '<span class="nav-port">:' + a.port + '</span>' : '') +
-    actsHtml + '</button>';
+    busyDot + actsHtml + '</button>';
 }
 /* v0.12.3：行内状态文字（.nav-st）与其横向滚动窗（rollNavStatus / st-roll）已按用户要求整体删除。
    行内只留 .s-badge 方块表达在线/离线；完整状态串在上面的 tip（hover）与工作台卡片里给。 */

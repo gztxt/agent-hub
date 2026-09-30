@@ -201,6 +201,7 @@
         .hdot.g { background: var(--st-running); animation: pulse 2s infinite; }
         .hdot.y { background: var(--st-installed); }
         .hdot.r { background: var(--st-error); }
+        .hdot.b { background: var(--accent); }   /* P2-B：在跑指示（蓝点，与健康灯色族区分） */
         /* P1-19：code_stale 提示。后端一直在 /health 里算这个字段，前端此前零消费
            ⇒ 「改了代码没重启」这件事只有知情者知道，普通用户看到的是「我改了怎么没变化」。
            刻意不并进 status：代码没重启 ≠ 服务坏了（main.py 注释里的设计意图）。 */
@@ -263,6 +264,13 @@
         /* v0.12.1：菜单行内间隙收到 6px，把省下的空间让给名称（分组含 3~5 个元素，每行省 6~12px） */
         .nav-item { gap: 6px; }
         .nav-item .nav-port { flex: 0 0 auto; font-size: var(--fs-xs); color: var(--muted); font-family: var(--font-mono); }
+        /* P2-B 活动指示：忙碌点。会话活着但空闲 >2min = 常亮；有动静 = 呼吸。
+           色值全走 :root 实名 token（P1-14 之后本站不写字面色）。
+           呼吸动画在 prefers-reduced-motion 下关掉。 */
+        .nav-busy { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; align-self: center; }
+        .nav-busy.busy { background: var(--accent); animation: navBusyPulse 1.6s ease-in-out infinite; }
+        @keyframes navBusyPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+        @media (prefers-reduced-motion: reduce) { .nav-busy.busy { animation: none; } }
         /* ── v0.12.3 菜单行 = 状态方块 + 名称（用户 09-22）─────────────────────────────
            行内状态文字整条删除：能否使用要点进去才知道，行内预告一串诊断文字既占宽又常与
            实际不符。在线/离线改由 .s-badge 方块单独承担（实心=在线 / 空心=可启动 /
@@ -890,6 +898,7 @@
             <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
             <span id="hStale"></span>
             <span id="hAgents">Agents: -</span>
+            <span id="hBusy"></span>   <!-- P2-B：在跑的 Agent（活着的终端会话）-->
             <span id="hErrors"></span>
         </div>
     </div>
@@ -1988,6 +1997,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
     <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=72bfd594"></script>
+    <script src="/static/hub.js?v=e7d0bd57"></script>
 </body>
 </html>

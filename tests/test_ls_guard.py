@@ -44,9 +44,10 @@ SHARDS = sorted((ROOT / "static" / "hub").glob("[0-9][0-9]-*.js"))
 # 故意列成显式名单而不是「取不到就静默 skip」：一旦有人把红基线整段注掉，
 # RED_TOTAL 那道全站计数断言会立刻变空转（那正是 09-24 侦察报的假绿家族）。
 # 09-local-projects.js（v0.13.30）、10-github-projects.js（v0.13.31）、11-resources.js（v0.13.52）：新分片，红基线期不存在。
+# 12-activity.js（v0.13.59 P2-B 跨 Agent 活动指示）：新分片，红基线期不存在。
 # 08-runlog.js（v0.13.27）随运行日志页于 v0.13.47 删除，名字从两处清单里一并摘掉。
 SHARDS_AFTER_RED = ["07-asset-panel.js", "09-local-projects.js",
-                    "10-github-projects.js", "11-resources.js"]
+                    "10-github-projects.js", "11-resources.js", "12-activity.js"]
 HUBJS = ROOT / "static" / "hub.js"   # 产物也一起纳入零丢行断言
 HUB = ROOT / "static" / "hub.js"
 TPL = ROOT / "templates" / "index.html"
@@ -294,7 +295,7 @@ class TestLsGuardStatic(unittest.TestCase):
                          ["01-core-boot.js", "02-nav-and-poll.js", "03-agents-cards.js",
                           "04-terminal-ws.js", "05-chat-and-history.js", "06-manager-tasks.js",
                           "07-asset-panel.js", "09-local-projects.js",
-                          "10-github-projects.js", "11-resources.js"],
+                          "10-github-projects.js", "11-resources.js", "12-activity.js"],
                          "分片清单变了 ⇒ 逐文件计数与红基线要一起核")
 
     def test_R1_no_bare_localStorage_in_shards(self):
@@ -353,8 +354,8 @@ class TestLsGuardStatic(unittest.TestCase):
         per, total = {}, 0
         red_shards = [p for p in SHARDS if p.name not in SHARDS_AFTER_RED]
         self.assertEqual(len(red_shards), 6,
-                         "红基线覆盖的分片数应为 6（10 分片 − 4 个红基线后新增）"
-                         "⇒ 不能靠新增分片稀释计数基线")
+                         "红基线覆盖的分片数应为 6（11 分片 − 5 个红基线后新增）"
+                         "⇒ 不能靠新增分片稀释计数基线；新增分片要登记进 SHARDS_AFTER_RED")
         for p in red_shards:
             old = blank_js_comments(_git(RED_SHA, "static/hub/" + p.name))
             n = len(bare_uses(old))
