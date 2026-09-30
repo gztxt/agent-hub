@@ -172,9 +172,16 @@ const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同'
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
-/* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
-const NAV_RANK = { error: 0, running: 1, installed: 2, stopped: 3 };
-function navRank(a) { return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status]; }
+/* 排序：异常置顶 > running > installed > stopped，同级按名称。
+   P1-20：异常档改用 agentHealth()（vitsals 实测 verdict）而不是 a.status。
+   旧口径 NAV_RANK.error 这一档实际永远命中不到 —— vitals 不把 status 打成
+   'error'，于是"启动异常"的 Agent 照样按 running 排在中间，异常项被埋在列表里，
+   与顶栏那个恒为 0 的异常计数是同一个病根（判据取了一个永远不取该值的字段）。 */
+const NAV_RANK = { running: 1, installed: 2, stopped: 3 };
+function navRank(a) {
+  if (typeof agentHealth === 'function' && agentHealth(a).bad) return 0;
+  return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status];
+}
 function navMatch(a, q) {
   const ql = q.toLowerCase();
   return String(a.name || '').toLowerCase().includes(ql) ||

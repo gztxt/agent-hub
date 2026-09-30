@@ -300,8 +300,8 @@ async function loadAgents() {
     const pendN = ag.filter(a => a.usable == null).length;
     $('hAgents').textContent = 'Agents: ' + ag.length + '（可用 ' + usableN +
       (untryN ? ' · 未实测 ' + untryN : '') + (pendN ? ' · 待检 ' + pendN : '') + '）';
-    const errs = AGENTS.filter(a => a.status === 'error').length;
-    $('hErrors').innerHTML = errs ? '<span class="hdot r"></span>异常 ' + errs : '';
+    const errs = countBadAgents(AGENTS);
+    $('hErrors').innerHTML = errs ? '<span class="hdot r" title="启动异常的 Agent（vitals 实测结论）">异常 ' + errs + '</span>' : '';
   } catch (e) {
     // 服务重启窗口容忍瞬时失败；连续 ≥2 次才亮红灯（避免误报）
     agentFailStreak++;
@@ -317,7 +317,7 @@ function renderHomeStats() {
   const ag = AGENTS.filter(a => a.kind === 'agent');
   const infra = AGENTS.filter(a => a.kind !== 'agent');
   const running = ag.filter(a => a.attested === true).length;   /* 「可用」只统计有实测凭据的 */
-  const errs = AGENTS.filter(a => a.status === 'error').length;
+  const errs = countBadAgents(AGENTS);   /* P1-20：与顶栏异常块同一判据 */
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   set('cntAgent', ag.length);
   set('cntInfra', infra.length);
@@ -367,6 +367,31 @@ const RT_LABELS = {
   model_unsupported: '模型标识', timeout: '应答超时', probe_rejected: '探针缺陷',
   no_output: '无输出', skipped: '未实测'
 };
+/* ── P1-20（2026-09-30）：全站唯一「这个 Agent 到底算不算异常」判据 ────────────
+   修的是**口径打架**：同一份 /api/agents 数据，四处各判各的 ——
+     顶栏可用数   a.attested === true          （10/10）
+     卡片标签     a.verdict === 'usable'        （6/10）
+     异常计数     a.status === 'error'          （恒为 0：vitals 从不把 status 打成 error）
+     导航排序     NAV_RANK[a.status]
+   用户看到的现象是「顶栏说 10 个可用，列表里有 4 个标着别的东西，异常数永远是 0」，
+   而 0 是**结构性假象**（判据取了一个永远不取该值的字段），不是「真没异常」。
+
+   口径按证据强度排，只认 vitals 的实测结论：
+     usable   实测通过                       → 正常
+     broken   启动异常（实测起不来）           → 异常
+     其余     账号受限/未运行/未安装/待体检   → 都不是「异常」，各自保留原标签
+   非 agent 类型（网关/服务/工具/记忆）不参与这套裁决：它们的 status 由 systemd
+   与 docker 判定，与 vitals 的 agent 结论不是一回事，混进来会把「服务没起」算成 agent 异常。 */
+function agentHealth(a) {
+  if (!a || a.kind !== 'agent') return { bad: false, verdict: a ? a.verdict : null };
+  const v = a.verdict;
+  return { bad: v === 'broken', verdict: v || null };
+}
+/** 异常 Agent 的唯一计数口径：顶栏异常块与首页摘要都调它，不允许各自 filter。 */
+function countBadAgents(list) {
+  return (list || []).filter(a => agentHealth(a).bad).length;
+}
+
 function seatStateOf(a) {
   /* 生死只看 verdict（能否打开窗口 + 能否自检）。额度/限流/超时是账号与上游条件，
      不配把菱形打成「异常」—— 那正是上一版误伤 claude/jcode/grok 的地方。 */
@@ -3317,9 +3342,16 @@ const PAGE_LABELS = { classroom: '总览', chat: '统一对话', tasks: '协同'
 const navOpenStored = lsGet('hub.nav.open');
 let navOpen = navOpenStored === null ? 'agents' : navOpenStored;   // 首屏默认展开 AGENTS；'' = 用户主动全收起
 let curPage = '';
-/* 排序：error > running > installed > stopped（异常置顶），同级按名称 */
-const NAV_RANK = { error: 0, running: 1, installed: 2, stopped: 3 };
-function navRank(a) { return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status]; }
+/* 排序：异常置顶 > running > installed > stopped，同级按名称。
+   P1-20：异常档改用 agentHealth()（vitsals 实测 verdict）而不是 a.status。
+   旧口径 NAV_RANK.error 这一档实际永远命中不到 —— vitals 不把 status 打成
+   'error'，于是"启动异常"的 Agent 照样按 running 排在中间，异常项被埋在列表里，
+   与顶栏那个恒为 0 的异常计数是同一个病根（判据取了一个永远不取该值的字段）。 */
+const NAV_RANK = { running: 1, installed: 2, stopped: 3 };
+function navRank(a) {
+  if (typeof agentHealth === 'function' && agentHealth(a).bad) return 0;
+  return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status];
+}
 function navMatch(a, q) {
   const ql = q.toLowerCase();
   return String(a.name || '').toLowerCase().includes(ql) ||
