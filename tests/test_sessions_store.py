@@ -129,11 +129,54 @@ class TestRealStores(unittest.TestCase):
         ts = [i["ts"] for i in items]
         self.assertEqual(ts, sorted(ts, reverse=True))
 
-    def test_codex_cli_only(self):
-        d = ss.list_history("codex", CWD, 3)
-        self.assertLessEqual(len(d["items"]), 3)            # 实测 1 条；0 也合法但须给 note
+    def test_codex_excludes_exec_noise(self):
+        """v0.13.61：`codex exec` 探针不得进历史（D5 的原意），但**不能用 source 白名单实现**。
+
+        09-30 事故：老实现 `where source='cli'`，而 09-29 起用户实际在 IDE 扩展里开会话，
+        source 记的是 `vscode` ⇒ 最新会话被整体过滤，侧栏历史停在 09-28。
+        故判据锁成「排除噪音」而非「只认 cli」。"""
+        import sqlite3
+        db = Path.home() / ".codex" / "state_5.sqlite"
+        if not db.exists():
+            self.skipTest("无 ~/.codex/state_5.sqlite（非本机形态）")
+        # ⚠ 判别力说明：exec 探针的 title/first_user_message **就是真实用户提问**
+        # （本仓探针统一发「只回复一个字：好」，09-30 实测 74 条同款）。
+        # ⇒ 内容层无法区分探针与人开的会话，唯一可靠判据是 threads.source。
+        #    所以这里直接对账「结果集里一条 exec 都没有」，而不是猜标题长相。
+        d = ss.list_history("codex", CWD, 20)
+        self.assertLessEqual(len(d["items"]), 20)
         if not d["items"]:
-            self.assertTrue(d["note"])
+            self.assertTrue(d["note"])   # 0 条必须给 note，不许静默空白
+            return
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
+            noise = {r[0] for r in c.execute(
+                "select id from threads where archived=0 and ("
+                "source like 'exec%' or source like '{\"subagent\"%')")}
+        leaked = [i["id"] for i in d["items"] if i["id"] in noise]
+        self.assertEqual(leaked, [], f"exec 探针/子代理线程混进历史：{leaked}")
+        for it in d["items"]:
+            self.assertRegex(it["id"], r"\A[0-9a-fA-F-]{36}\Z", "非 UUID 会话不得进历史")
+
+    def test_codex_shows_recent_sessions_not_only_cli(self):
+        """回归锁：历史必须能取到**最近的**真实会话，不能停在某个旧日期。
+
+        取本机 threads 库里 updated_at 最大的非 exec 线程（跳过子代理），
+        断言它出现在 list_history 结果里 —— 白名单实现下此例会红。"""
+        import sqlite3
+        db = Path.home() / ".codex" / "state_5.sqlite"
+        if not db.exists():
+            self.skipTest("无 ~/.codex/state_5.sqlite（非本机形态）")
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
+            c.row_factory = sqlite3.Row
+            row = c.execute(
+                "select id, cwd from threads where archived=0 "
+                "and source not like 'exec%' and source not like '{\"subagent\"%' "
+                "order by updated_at desc limit 1").fetchone()
+        if not row:
+            self.skipTest("本机无真实 codex 会话")
+        d = ss.list_history("codex", row["cwd"] or CWD, 20)
+        self.assertIn(row["id"], [i["id"] for i in d["items"]],
+                      "最新真实会话必须出现在历史里（白名单 source 会漏）")
 
     def test_hermes_note_declares_scope(self):
         d = ss.list_history("hermes", "/home/gztxt", 3)
