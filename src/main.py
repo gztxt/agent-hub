@@ -77,7 +77,13 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.58"   # 终端状态跨客户端连续（TTL 判据=无生命迹象）+ P0 止血批 + 夹具污染治本
+VERSION = "0.13.60"   # P2-A：xterm 5.5.0→6.0.0 整组升级 + canvas addon 移除 + WebGL 图集止血
+                      #   ↑ v0.13.60：xterm 5.5.0 → 6.0.0 整组升级（core + 6 addon），
+                      #     canvas addon 随 6.0 移除（peerDeps 仍锁 ^5.0.0，取证见
+                      #     static/vendor/README.md），回落链收敛为 webgl → dom；
+                      #     另补 WebGL 纹理图集定时清理（clearTextureAtlas，显存不再单调涨）。
+                      #   ↑ v0.13.59：P2-B 跨 Agent 活动指示 + P2-D 文档/密钥纵深批。
+                      #   ↑ v0.13.58：终端状态跨客户端连续（TTL 判据=无生命迹象）+ P0 止血批
                       #   ↑ v0.13.56：尺寸所有权 claim/update + resize 100ms 去抖 —— 后台那一端
                       #     偷不走 PTY 尺寸（桌面开着 vim、手机端在后台唤醒的典型坑）。
                       #   ↑ v0.13.55：输出合并 coalescer（5ms 前后沿），WS 帧数 2602→7。

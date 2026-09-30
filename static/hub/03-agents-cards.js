@@ -195,30 +195,41 @@ function termHealNow() {
 }
 
 /* ── 渲染器选择 ────────────────────────────────────────────────────────────────
-   实测（@xterm/xterm 5.5.0，grep vendor/xterm.js）：核心只内置 DomRenderer，
+   实测（@xterm/xterm 6.0.0，grep vendor/xterm.js）：核心只内置 DomRenderer，
    `_createRenderer()` 直接 `createInstance(DomRenderer, ...)` —— 每个字符格子是一个
    DOM <span>，80×24 就 1920 个节点，scrollback 5000 行上限下最多约 40 万节点在 DOM 里。
    原生终端是 GPU 画的位图，这是「跟系统终端差很远」的首要技术原因。
-   Canvas/WebGL 渲染器是**独立包**，必须自己挂：WebGL 优先，不可用回落 Canvas，
-   都失败才留 DOM（慢，但不白屏）。
-   本机无物理 GPU（远程桌面 / 无头 / 部分移动端 WebGL 拿不到上下文），
-   所以 Canvas 回落不是理论分支，是实际会走到的主力路径之一。
+   WebGL 渲染器是**独立包**，必须自己挂：挂不上就留 DOM（慢，但不白屏）。
    必须在 term.open() **之后**挂：渲染器要拿真实 DOM 容器。 */
 
-/* 渲染器偏好：URL `?term=webgl|canvas|dom` 优先（并记进 localStorage），其次 localStorage，
+/* 渲染器偏好：URL `?term=webgl|dom` 优先（并记进 localStorage），其次 localStorage，
    `?term=auto` 清除记忆回到默认。留这个后门是因为「哪个渲染器能用」取决于客户端字体与
-   GPU，服务端看不见也测不到 —— 出事时用户能自己一键切，不用等我。 */
+   GPU，服务端看不见也测不到 —— 出事时用户能自己一键切，不用等我。
+   `canvas` 曾是中间档，xterm 6.0 已移除该 addon（peerDependencies 仍锁 `^5.0.0`，
+   取证见 vendor/README.md）⇒ 老链接里的 `?term=canvas` 现在**显式降级 dom 并告警**，
+   不静默改写成别的档：留着旧 URL 的人要能看见"这条后门没了"，否则他只会当成
+   "改了参数没生效"再来报一次。 */
 function termRendererPref() {
   try {
     const q = new URLSearchParams(location.search).get('term');
     if (q === 'auto') { lsRemove('hubTermRenderer'); return ''; }
-    if (/^(webgl|canvas|dom)$/.test(q || '')) {
+    if (q === 'canvas') {
+      console.warn('[term] ?term=canvas 在 xterm 6.0 已不存在（canvas addon 停止维护且不兼容 6.0）→ 按 dom 处理');
+      lsSet('hubTermRenderer', 'dom');
+      return 'dom';
+    }
+    if (/^(webgl|dom)$/.test(q || '')) {
       lsSet('hubTermRenderer', q);
       return q;
     }
     // 走 01 分片的 lsGet 守卫（隐私模式/配额满时不抛，见 tests/test_ls_guard.py）
     const s = lsGet('hubTermRenderer', '');
-    return /^(webgl|canvas|dom)$/.test(s || '') ? s : '';
+    if (s === 'canvas') {
+      console.warn('[term] 本地记忆的渲染器偏好 canvas 已失效（xterm 6.0 移除该 addon）→ 按 dom 处理');
+      lsSet('hubTermRenderer', 'dom');
+      return 'dom';
+    }
+    return /^(webgl|dom)$/.test(s || '') ? s : '';
   } catch (e) { return ''; }
 }
 
@@ -265,6 +276,27 @@ window.hubTermDiag = function () {
   };
 };
 
+/* WebGL 图集显存止血（v0.13.60）：webgl 渲染器把每个用到的字形光栅化进一张纹理
+   图集，上游只按 LRU 换页、**从不主动清空**；终端会跑数小时（长会话 / tail -f / 编译进度），
+   字形集单调增长 ⇒ 图集页用满后换页开销上升，长期挂着会出现显存占用偏高、GPU 进程吃紧。
+   上游 5.5.0 与 6.0.0 都提供公开的 `clearTextureAtlas()`，本项目从未调用过 ⇒ 这是未修态。
+   这里定时调它：字形表是**惰性重建**的（清掉后用到哪个字形重新光栅化，多一次几十微秒的工作），
+   换来显存不单调涨。放在终端不可见时跳过，不打扰后台标签页。 */
+const TERM_ATLAS_SWEEP_MS = 120000;
+function termAtlasSweep(addon) {
+  const tick = () => {
+    if (!termVisible() || document.hidden) return;
+    try { addon.clearTextureAtlas(); } catch (e) {
+      /* 上游若改签名就安静停掉这条止血线：宁可显存涨，也不能因为清理失败把终端带崩 */
+      console.warn('[term] 图集清理失败，已停用定时清理：' + ((e && e.message) || e));
+      clearInterval(id);
+    }
+  };
+  const id = setInterval(tick, TERM_ATLAS_SWEEP_MS);
+  /* term 是全局单例、整个页面生命周期不 dispose，所以定时器不用随 term 清理 */
+  return id;
+}
+
 function termLoadRenderer() {
   const pref = termRendererPref();
   if (pref === 'dom') {
@@ -275,14 +307,15 @@ function termLoadRenderer() {
   if (!termCjkUsable()) {
     /* 中文是硬需求，性能是软需求：宁可慢，不能看不见字。 */
     termRendererName = 'dom';
-    console.warn('[term] 字体栈取不到 CJK 字形（汉字会画成方块）→ 放弃 GPU/Canvas，改走 DOM 渲染');
+    console.warn('[term] 字体栈取不到 CJK 字形（汉字会画成方块）→ 放弃 GPU，改走 DOM 渲染');
     return;
   }
+  /* 只有 GPU 一档，失败即 DOM：canvas addon 的 peerDependencies 仍锁 @xterm/xterm ^5.0.0，
+     与 6.0 不兼容（取证见 vendor/README.md），挂着它只会得到一个白屏的终端。 */
   let tries = [
-    ['webgl', window.WebglAddon && window.WebglAddon.WebglAddon],
-    ['canvas', window.CanvasAddon && window.CanvasAddon.CanvasAddon]
+    ['webgl', window.WebglAddon && window.WebglAddon.WebglAddon]
   ];
-  if (pref === 'webgl' || pref === 'canvas') tries = tries.filter(t => t[0] === pref);
+  if (pref === 'webgl') tries = tries.filter(t => t[0] === pref);
   for (let i = 0; i < tries.length; i++) {
     const name = tries[i][0], Ctor = tries[i][1];
     if (typeof Ctor !== 'function') continue;
@@ -291,12 +324,13 @@ function termLoadRenderer() {
       term.loadAddon(addon);
       /* WebGL 上下文会被系统回收（GPU 进程崩溃 / 驱动重置 / 标签页后台久了被丢弃）。
          xterm 会自己摘掉渲染器退回 DOM，这里补一条可见日志 + 强制重画把画面补回来。 */
-      if (name === 'webgl' && addon.onContextLoss) {
-        addon.onContextLoss(() => {
+      if (name === 'webgl') {
+        if (addon.onContextLoss) addon.onContextLoss(() => {
           termRendererName = 'dom';
           console.warn('[term] WebGL 上下文丢失，已回落 DOM 渲染');
           try { term.refresh(0, term.rows - 1); } catch (e) {}
         });
+        if (typeof addon.clearTextureAtlas === 'function') termAtlasSweep(addon);
       }
       termRendererName = name;
       console.info('[term] 渲染器：' + name);
@@ -306,7 +340,7 @@ function termLoadRenderer() {
     }
   }
   termRendererName = 'dom';
-  console.warn('[term] 未挂上 GPU/Canvas 渲染器，停留在 DOM 渲染（可用但会卡）');
+  console.warn('[term] 未挂上 WebGL 渲染器，停留在 DOM 渲染（可用但会卡）');
 }
 
 function ensureTerm() {

@@ -1,11 +1,13 @@
 # static/vendor/ 第三方组件许可证
 
 本目录是**离线内嵌**的第三方前端组件（终端栈）。全部为 MIT 许可，版权归各上游作者。
-引入方式见 `README.md`：从 npm tarball 直取 `lib/`（CDN 另存版），版本逐字节比对确认。
+引入方式见 `README.md`：从 npm tarball 直取 `lib/`（未压缩原始产物），版本逐字节比对确认。
+
+每节正文为该版本 npm tarball 内 `LICENSE` 原文。
 
 ---
 
-## @xterm/xterm 5.5.0 —— `xterm.js` / `xterm.css`
+## @xterm/xterm 6.0.0 —— `xterm.js` / `xterm.css`
 
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
@@ -31,7 +33,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-fit 0.10.0 —— `fit.js`
+## @xterm/addon-fit 0.11.0 —— `fit.js`
 
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -55,7 +57,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-webgl 0.18.0 —— `addon-webgl.js`
+## @xterm/addon-webgl 0.19.0 —— `addon-webgl.js`
 
 Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -79,7 +81,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-canvas 0.7.0 —— `addon-canvas.js`
+## @xterm/addon-search 0.16.0 —— `addon-search.js`
 
 Copyright (c) 2017, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -103,31 +105,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-search 0.15.0 —— `addon-search.js`
-
-Copyright (c) 2017, The xterm.js authors (https://github.com/xtermjs/xterm.js)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
----
-
-## @addon-unicode11 0.8.0 —— `addon-unicode11.js`
+## @xterm/addon-unicode11 0.9.0 —— `addon-unicode11.js`
 
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -151,7 +129,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-web-links 0.11.0 —— `addon-web-links.js`
+## @xterm/addon-web-links 0.12.0 —— `addon-web-links.js`
 
 Copyright (c) 2017, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -175,7 +153,7 @@ THE SOFTWARE.
 
 ---
 
-## @addon-clipboard 0.1.0 —— `addon-clipboard.js`
+## @xterm/addon-clipboard 0.2.0 —— `addon-clipboard.js`
 
 Copyright (c) 2023, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 
@@ -196,3 +174,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+---

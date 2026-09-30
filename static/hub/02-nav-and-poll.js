@@ -180,8 +180,8 @@ function embedCopyUrl() {
 
 let term = null, termFit = null, termWs = null, termSid = null, termSidAgent = null;
 /* 渲染器与搜索插件的实际挂载结果（v0.13.3x：xterm 默认 DomRenderer 是每字符一个 DOM span，
-   大输出/滚屏时与原生终端差一个数量级 —— 换 GPU/Canvas 渲染器是「不好用」的首要解药）。
-   termRendererName ∈ webgl|canvas|dom，dom 表示两个 addon 都没挂上（此时只是慢，不会白屏）。 */
+   大输出/滚屏时与原生终端差一个数量级 —— 换 GPU 渲染器是「不好用」的首要解药）。
+   termRendererName ∈ webgl|dom，dom 表示 webgl addon 没挂上（此时只是慢，不会白屏）。 */
 let termRendererName = 'dom', termSearch = null;
 
 /* ── 终端链路自愈（v0.13.6 P1-1）：应用层心跳 + 退避重连 + 显式失败 ──────────────
@@ -246,7 +246,7 @@ const TERM_MOUSE_MODES = new Set(['9', '1000', '1001', '1002', '1003', '1005', '
    痛点（方案 P1-3，属**正确性**问题不是锦上添花）：多行脚本粘进终端时，readline 把
    第一行当命令立刻执行、其余行当垃圾逐条报错——多行 prompt / 多行命令会被打散执行。
    对端开 2004 后 xterm 会自动把粘贴包成 ESC[200~ … ESC[201~（vendor/xterm.js 里
-   `decPrivateModes.bracketedPasteMode` 分支，5.5.0 实测存在），shell 侧就不再逐行解释。
+   `decPrivateModes.bracketedPasteMode` 分支，6.0.0 升版后重新实测仍在），shell 侧就不再逐行解释。
    Hub 自己要补的是 xterm **没做**的那一半：粘贴内容里若夹着终止序列 ESC[201~，
    xterm 原样包进去 ⇒ 对端提前结束粘贴模式，剩下的字节被当普通按键执行（注入面）。
    paseo 的处理见 terminal-paste.ts:27 —— 把内嵌的终止序列降级成字面量 `[201~`。

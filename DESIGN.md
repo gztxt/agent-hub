@@ -78,7 +78,7 @@
 | 层 | 技术 | 版本 |
 |----|------|------|
 | 后端 | Python FastAPI | 0.104+ |
-| 前端 | 原生 JS，**无框架无 npm 构建**；真源 `static/hub/*.js` 12 分片 → `scripts/build_hubjs.sh` 拼成产物 `static/hub.js`；终端用本地 vendor xterm 5.5.0 + 7 addon（离线，无 CDN）| - |
+| 前端 | 原生 JS，**无框架无 npm 构建**；真源 `static/hub/*.js` 12 分片 → `scripts/build_hubjs.sh` 拼成产物 `static/hub.js`；终端用本地 vendor xterm **6.0.0** + 6 addon（离线，无 CDN；canvas addon 已随 6.0 移除，取证见 `static/vendor/README.md`）| - |
 | 数据库 | SQLite | 内置 |
 | 异步 | asyncio + httpx | - |
 | 部署 | 直接运行 | :3102 |
@@ -121,7 +121,7 @@
 │   │   ├── 10-github-projects.js # GitHub 项目
 │   │   ├── 11-resources.js       # 资源监控页（懒加载）
 │   │   └── 12-activity.js        # 跨 Agent 活动指示（8s 独立轮询）
-│   └── vendor/                   # xterm 5.5.0 + 7 addon（离线，见 vendor/README.md）
+│   └── vendor/                   # xterm 6.0.0 + 6 addon（离线，见 vendor/README.md）
 ├── templates/index.html          # 唯一模板：结构 + :root 设计 token（视觉权威源）
 ├── tests/                        # L0 hermetic（880 例）+ L1 host + verify_* 真渲染探针
 ├── data/                         # 运行时数据（agents.db / logs / term 录放），不入 git

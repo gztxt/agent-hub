@@ -1,5 +1,61 @@
 # CHANGELOG
 
+## v0.13.60 — P2-A：xterm 5.5.0 → 6.0.0 整组升级 + canvas addon 移除 + WebGL 图集止血
+
+> 由 `wt/01a0efca` 施工（PT-20260930-01 P2-A）。终端栈整组换版本，破坏性变更
+> 逐条撞过真渲染，不是靠 changelog 抄的。
+
+### ① 整组升级（8 个文件逐字节取证）
+
+`@xterm/xterm` 6.0.0 + webgl 0.19.0 / fit 0.11.0 / search 0.16.0 / unicode11 0.9.0 /
+web-links 0.12.0 / clipboard 0.2.0。全部取自 npm tarball 的**未压缩** `lib/` 产物，
+md5 与仓内文件一致（登记表见 `static/vendor/README.md`）。
+
+- **代价知情接受**：整栈 ~470KB → ~880KB（`xterm.js` 290→489KB、`addon-webgl.js`
+  101→248KB）。换取的是可审计性 —— 压缩产物里搜不到 `clearTextureAtlas`，
+  这次正是靠未压缩产物确认 6.0 仍带该 API 与 `onContextLoss`，才敢保留止血线与
+  上下文自愈。局域网自用场景，长缓存下多 350KB 划算。
+- `addon-clipboard@0.2.0` 声明依赖 `js-base64`，但产物已由 webpack 内联（实测
+  `grep 3.7.8` 命中、无外部 `define("js-base64")`）⇒ 不需额外引入文件。
+- `bracketedPasteMode`（粘贴闸门的依赖）在 6.0 重新实测仍在 —— 这条如果没了，
+  项目里那段"对端开 2004 后 xterm 自动包粘贴"的注释就是错的。
+
+### ② canvas addon 移除（三条实测证据，非拍脑袋）
+
+1. `addon-canvas@0.7.0` 的 `peerDependencies` 是 `{"@xterm/xterm": "^5.0.0"}`
+   —— 不覆盖 6.0，硬挂只会得到一个不工作的终端；
+2. `grep -c CanvasRenderer` 在 xterm **6.0.0 与 5.5.0 核心里都是 0** ——
+   canvas 从来就不在核心里，核心没给它开过后门；
+3. 上游没有 6.0 兼容版，registry 上 `addon-canvas` 的 latest 仍是 0.7.0。
+
+- 回落链收敛为 `webgl → dom`，死分支 `window.CanvasAddon && …` 一并删掉
+  （留着永远走不到 = 与 vendor 不同源的死代码，哪天放回文件就悄悄复活成第二档）。
+- **旧链接显式降级**：`?term=canvas` 与 localStorage 里的老存量都降级 dom 并
+  `console.warn`、**写回 dom**（不写回则每页刷一条 warn，永不自愈）。不静默改写
+  —— 留着旧 URL 的人要看得见"这条后门没了"，否则只会当成"改了参数没生效"再报一次。
+
+### ③ WebGL 纹理图集止血（迁移前就该修的未修态）
+
+上游 webgl 渲染器把每个用到的字形光栅化进纹理图集，**只按 LRU 换页、从不主动清空**；
+终端会跑数小时（长会话 / `tail -f` / 编译进度），字形集单调增长 ⇒ 图集页用满后换页
+开销上升，长期挂着显存占用偏高。`clearTextureAtlas()` 在 5.5 与 6.0 都是公开 API，
+**本项目此前从未调用过** ⇒ 这是未修态，不是新缺陷。
+
+- 每 2 分钟清一次（终端不可见 / 页面在后台时跳过，不打扰后台标签页）；
+- 包在 try/catch 里，失败即**停掉这条线**并告警：清理绝不能把终端带崩；
+- 字形表是惰性重建的（清掉后用到哪个重光栅化，多几十微秒），换来显存不单调涨。
+
+### ④ 验收
+
+- L0 单测 `tests/test_term_xterm6.py` **18 项**：canvas 四处清零（文件/模板/全局符号/
+  回落链）、`?term=canvas` 与存量 canvas 的显式降级含写回、止血线存在且 try/catch
+  且只在可见时跑、README 版本表 md5 与盘上文件逐字节对账、LICENSE 七节齐备、
+  clipboard 无外部 Base64 依赖、模板 9 处 `?v=` 提手与内容一致。
+- 真渲染 `tests/verify_term_xterm6.py` **15/15 PASS**。意外收获：headless 即使
+  `--disable-gpu` 也拿到 SwiftShader 的 WebGL2 上下文 ⇒ **webgl 路径在 6.0 上
+  被真跑通了**（不只量到 DOM 回落这一端）。
+- 全量 **908 OK**（L0 hermetic 908 / skipped=0）。
+
 ## v0.13.58 — 终端状态跨客户端连续（TTL 判据改为「无生命迹象」）+ P0 止血批 + 夹具污染治本
 
 > 09-29 用户要求：**任务执行与前端页面无关，换客户端接上去必须是同一份连续状态**。

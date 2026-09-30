@@ -11,7 +11,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     <link rel="manifest" href="/static/manifest.json">
     <meta name="theme-color" content="#ededed">
-    <link rel="stylesheet" href="/static/vendor/xterm.css?v=949dfd99">
+    <link rel="stylesheet" href="/static/vendor/xterm.css?v=5403ebba">
     <style>
         /* ── v0.9 配色：标准黑白体系（画布 + 内容面 两层），:root 是唯一色板源，全文引用 var() ──
            UI 骨架（画布/内容面/边框/文字/按钮/强调色）全部为中性灰阶，层级靠
@@ -115,7 +115,7 @@
             /* 2026-09-29 修正：CJK 原来只列了 Sarasa / Noto Sans Mono CJK 两族 —— 都是 Linux
                发行版或手工安装的字体，**macOS / Windows 上一个都不存在**，汉字只能靠 generic
                monospace 兜底。DOM 渲染器时代这没问题（浏览器原生字体回退链很完整）；换成
-               WebGL/Canvas 渲染器就不行了：它们把字形光栅化进纹理图集，对「靠 generic
+               WebGL 渲染器就不行了：它把字形光栅化进纹理图集，对「靠 generic
                fallback 兜到的 CJK」处理很差 —— 汉字画成白色方块，而同一行的拉丁字母完全正常
                （xterm 社区同款：siteboon/claudecodeui#822「CJK as black boxes，
                WebGL renderer + Latin-only fontFamily」）。
@@ -1986,17 +1986,16 @@
       render(); setInterval(render, 1000);
     })();
     </script>
-    <script src="/static/vendor/xterm.js?v=046fc128"></script>
-    <!-- xterm addon（版本与 @xterm/xterm 5.5.0 严格对齐：均为 2024-04-05 同批发布）
-         webgl = GPU 渲染；canvas = WebGL 不可用时的回落（本机无物理 GPU / 远程桌面场景实测会走它）
-         两者互斥，运行时只挂一个，见 hub/03-agents-cards.js::termLoadRenderer -->
-    <script src="/static/vendor/addon-webgl.js?v=fe1b29d6"></script>
-    <script src="/static/vendor/addon-canvas.js?v=9a22a826"></script>
-    <script src="/static/vendor/addon-unicode11.js?v=0993663c"></script>
-    <script src="/static/vendor/addon-search.js?v=c696d5be"></script>
-    <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
-    <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
-    <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=0b1f5821"></script>
+    <script src="/static/vendor/xterm.js?v=d7aaaef2"></script>
+    <!-- xterm addon（版本与 @xterm/xterm 6.0.0 严格对齐，见 vendor/README.md 的版本取证表）
+         webgl = GPU 渲染；失败直接落 DOM 渲染（不再有 canvas 中间档，理由见该表）
+         运行时只挂一个，见 hub/03-agents-cards.js::termLoadRenderer -->
+    <script src="/static/vendor/addon-webgl.js?v=d6d59dc9"></script>
+    <script src="/static/vendor/addon-unicode11.js?v=03bb0e47"></script>
+    <script src="/static/vendor/addon-search.js?v=c122e9ae"></script>
+    <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
+    <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
+    <script src="/static/vendor/fit.js?v=25f05100"></script>
+    <script src="/static/hub.js?v=9425453c"></script>
 </body>
 </html>
