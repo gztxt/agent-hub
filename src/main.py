@@ -77,7 +77,12 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.60"   # P2-A：xterm 5.5.0→6.0.0 整组升级 + canvas addon 移除 + WebGL 图集止血
+VERSION = "0.13.61"   # codex 历史不再被 source 白名单漏掉：排除 exec 探针/subagent，收进 vscode 等真实用户会话
+                      #   ↑ v0.13.61：侧栏 agent 名下「最新会话」停在 09-28 的根因 ——
+                      #     sessions_store._t_codex 写死 where source='cli'，而 09-29 起
+                      #     用户在 IDE 扩展里开的会话 source 记为 'vscode' ⇒ 最新会话被整体
+                      #     过滤。改成「排除噪音」（exec 探针 + subagent 子线程）而非白名单，
+                      #     免得 codex 下次新增入口再次静默漏（详见 CHANGELOG v0.13.61）。
                       #   ↑ v0.13.60：xterm 5.5.0 → 6.0.0 整组升级（core + 6 addon），
                       #     canvas addon 随 6.0 移除（peerDeps 仍锁 ^5.0.0，取证见
                       #     static/vendor/README.md），回落链收敛为 webgl → dom；

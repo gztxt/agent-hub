@@ -252,23 +252,40 @@ def _t_hermes(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     return items, "口径：hermes 按 source=cli 全量跳目录（历史多数条目未记 cwd）"
 
 
+#: v0.13.61：codex threads.source 的**排除**集合（不是白名单）。
+#: 起因（09-30 实测）：老代码写死 `source='cli'`，而 09-29 起用户实际在 **vscode/IDE 扩展**
+#: 里开的会话 source 记的是 `vscode` ⇒ 最新会话被整体过滤掉，侧栏 agent 名下的历史停在 09-28。
+#: 白名单会随 codex 每次新增入口（cli/vscode/…）再次静默漏 ⇒ 改成「只排噪音」的排除集：
+#:   - `exec`：**探针**。本仓多处用 `codex exec` 做版本/能力探测，它不是人开的会话（实测 74 条，
+#:     rollout 恒为 45KB 量级的固定探针，first_user_message 是探测指令）。
+#:   - `{"subagent":{...}}`：子代理线程（JSON 串），无独立用户语境，续聊无意义。
+#: 真实用户会话（cli / vscode / 未来任何新入口）一律收进来。
+CODEX_NOISE_SOURCE = ("exec",)
+CODEX_SUBAGENT_PREFIX = '{"subagent":'
+
+
 def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
-    """只列 source='cli'（D5，否则把 codex exec 探针当历史），但**跳目录**（用户 09-22 裁定）。
+    """列**真实用户会话**（排除 exec 探针与 subagent 子线程），**跳目录**（用户 09-22 裁定）。
        实测 updated_at/created_at 为 epoch 秒；
-       `has_user_event` 实测在唯一真会话上为 0 ⇒ 不可当过滤条件。"""
+       `has_user_event` 实测在真会话上也恒为 0 ⇒ 不可当过滤条件。
+       limit 要放宽再查：排除是在 SQL 里做的，命中数可能少于 limit，故多取一些再截断。"""
     db = HOME / ".codex" / "state_5.sqlite"
     if not db.exists():
         return [], "codex 无 state_5.sqlite"
     try:
         with _ro(db) as c:
-            rows = c.execute("select id, title, cwd, updated_at from threads "
-                             "where source='cli' and archived=0 order by updated_at desc limit ?",
-                             (limit,)).fetchall()
+            rows = c.execute(
+                "select id, title, cwd, updated_at, source from threads "
+                "where archived=0 and source not like 'exec%' "
+                "  and source not like '{\"subagent\"%' "
+                "order by updated_at desc limit ?",
+                (max(limit * 3, limit),)).fetchall()
     except Exception as e:  # noqa: BLE001
         return [], f"codex 读取失败：{type(e).__name__}"
     items = [{"agent": "codex", "id": r["id"], "title": mask_title(r["title"] or "") or "未命名会话",
-              "ts": int(r["updated_at"] or 0), "msgs": None, "cwd": r["cwd"] or ""} for r in rows]
-    return items, ("" if items else "codex 无交互式历史（exec 探针不计）")
+              "ts": int(r["updated_at"] or 0), "msgs": None, "cwd": r["cwd"] or ""}
+             for r in rows][:limit]
+    return items, ("" if items else "codex 无交互式历史（exec 探针与子代理线程不计）")
 
 
 def _t_opencode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
