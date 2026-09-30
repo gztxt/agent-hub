@@ -26,6 +26,7 @@ Qdrant sidecar）按本机 NAS 军规有意裁剪。评估全文见
 | 三层记忆中心 L1/L2/L3 + 注入 context | memory_* 子系统 | src/memory.py + db.py（LLM 压缩重建，manual 区隔离）|
 | Hook 遥测端点（覆盖式 upsert + 用量聚合）| agent_http.rs/telemetry_store.rs 口径 | src/hook.py（+Bearer 鉴权补上游缺）|
 | 端口管理（枚举+归属+Agent 标注，**只读无 kill**）| ports.rs | src/ports.py |
+| 资源监控（运行中 Agent 进程 CPU/内存 + **一键结束本机 Agent 进程**，校 `/proc/<pid>/cmdline` 归属）| — | src/resources.py + static/hub/11-resources.js（v0.13.52，kill 口径与上一行**不是同一件事**，见「安全边界」第 1 条）|
 | 项目类型自动识别 + 自定义 Agent 注册 | scan_project_dir | src/sources.py + main.py |
 
 ### 左侧历史会话下拉（v0.13.0，2026-09-22）
@@ -208,6 +209,14 @@ Cloudflare Tunnel 发布、Skill 共享库、L1 自动提取（Hook 采集→LLM
 
 ## 安全边界（与上游的差异，均为有意设计）
 
-1. 不做任意进程起停/kill——NAS 服务归 systemd，遵守「不删改在用工具」约束
+1. **kill 的边界划在「谁的东西」上，不是「一律不做」**：
+   - 端口枚举（`/api/ports`）**只读无 kill**——NAS 上的服务归 systemd/守护方管理，
+     越权杀进程违反本机军规（`src/ports.py` 头注释即此意）。
+   - 但**本机 Agent 自己的进程可一键结束**（`/api/resources/kill`，v0.13.52 起）：
+     资源监控页列出运行中 Agent 的 CPU/内存，支持 SIGTERM/SIGKILL。四道护栏：
+     ① 只对画像归类为 Agent 的进程开放；② 杀前校 `/proc/<pid>/cmdline` 归属，
+     不属于该 Agent 直接 404；③ 目标进程**已不存在视为成功**（可目标状态已达成，
+     不是失败）；④ 前端二次确认 + 写端点鉴权（`writeauth`，fail-closed）。
+   - 一句话：**杀自己的 Agent 可以，杀别人的服务不行。**
 2. telemetry/hook 带鉴权选项——上游零鉴权的补课
 3. 凭据仅在 .env(0600) 与 jcode env 文件，不引入机器名派生加密反模式

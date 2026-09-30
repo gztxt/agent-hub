@@ -1,5 +1,174 @@
 # CHANGELOG
 
+## v0.13.58 — 终端状态跨客户端连续（TTL 判据改为「无生命迹象」）+ P0 止血批 + 夹具污染治本
+
+> 09-29 用户要求：**任务执行与前端页面无关，换客户端接上去必须是同一份连续状态**。
+> 基线 v0.13.57。本版由 `wt/01a0ec66` 合并（10 个提交）。
+
+### ① TTL 判据从「客户端静默」改为「无生命迹象」
+
+实弹取证（`TERM_IDLE_TTL=45s` 隔离实例）发现旧口径把「客户端静默」当死活判据：
+agent 仍在每 2s 产出（`idle_s` 涨到 40s），会话照样被回收，另一端重连直接收到
+**4410（已结束）**——正是用户报的那个现象。
+
+- Session 拆两个时钟：`last_io`（客户端静默，仅展示）/ `last_activity`（会话有生命迹象：
+  客户端交互 **或** pty 产出）
+- `_reap()`：只有「无观看者 **且** pty 完全静默 **且** 超 TTL」才回收。
+  有观看者绝不因静默被杀；pty 在产出也绝不被杀。
+- **推翻旧口径** `test_idle_with_viewer_is_still_reaped`（「开着不动也该收」）：
+  防配额占死改由三道闸承担——进程退出即摘表、`MAX_SESSIONS` 满则拒开、无人观看时 TTL 回收。
+  代价知情接受：开着不动又不退出的会话会占名额，只能由用户点 × 结束。
+- `to_dict` 暴露 `activity_s`；`idle_max_s` 与 `_reap` 同口径（否则 `/health` 假绿）。
+
+### ② P0 止血批（同批合入，8 项）
+
+- P0-1 `last_io` 只认真实交互，心跳不续命（`_touch`/`_touch_bytes` 为唯一判据）
+- P0-2 `_reap` 主动 `waitpid` 探活，子进程自行退出也会被回收
+- P0-3 `BlockingIOError`(EAGAIN) 单独捕获，退避重试而非杀连接
+- P0-4 kill 侧补 `.ccr`/cmdline 佐证，防误杀非 CCR MainThread
+- P0-5 resources 采样与 subprocess 改 `to_thread`，不再阻塞事件循环
+- P0-6 `_api_rate` 加 IP 上界与窗口回收
+- P0-8 `live_titles` 走线程池 + 指纹缓存
+
+### ③ L0 测试夹具污染治本（这条一直压着 prepush 闸门）
+
+实测：夹具根 `~/hub-l0test-fixtures` 累积 **230MB / 2406 个带 `.git` 的目录**（六个测试文件
+各造各的、从不清理）⇒ 项目扫描当成真实项目，本机项目数 **176**（应 ≈44）⇒
+L1 精度闸（≤50）与 prepush 闸门一起红。
+
+- `tests/tiers.py` 新增 `l0_fixture_register/cleanup`，测试退出时删自己的垃圾
+- localprojects：夹具根只在**扫描侧**排（不并进共用的 `EXCLUDE_PATH_PREFIXES`——
+  那会让 cloudcli 合并侧把「真 git 仓」也砍掉，实测当场红）
+- `_under_excluded` 收口「点名要扫的根及其后代豁免」，两处调用同口径
+  （旧代码扫描侧只豁免根自身、合并侧完全不豁免 ⇒ 同一路径凭空消失）
+
+### ④ 测试与实弹
+
+- 新增 `tests/test_term_ttl_activity.py`（10 例）：观看者/产出/静默三态判据
+- 改 2 条与新语义冲突的旧断言（推翻的判据与理由写进 docstring）
+- 新增 3 只实弹探针：`probe_activity_trace.py` / `probe_ttl_live.py` / `probe_ttl_orphan.py`
+- hermetic 814 全绿零跳过（含空 HOME）；host 43 全绿
+- **实弹**（隔离实例 `TERM_IDLE_TTL=45s`，真 WebSocket）：持续产出 72s 会话存活 PASS /
+  `activity_s` 被压住在 12s PASS / 1.8MB 输出 PASS / 换端重连拿到回放 PASS /
+  换端后能继续执行命令 PASS（修前同一探针：重连收到 4410 已结束）
+
+## v0.13.57 — 终端中文画成方块：字体栈补三平台中文字体 + 渲染器自愈/可切换
+
+- 字体栈补 Linux/Windows/macOS 三平台中文字体（此前只有一档，缺哪档就掉回方块字）
+- 渲染器自愈：context loss 后自动重画，不再白屏要手动刷新
+- 渲染器可切换（webgl / canvas / dom），为 v0.13.54 的回落链留人工逃生口
+
+## v0.13.56 — 终端尺寸所有权 claim/update + resize 去抖（paseo 融合 B2）
+
+要防的真问题：桌面正开着 vim（120×40），手机端同一会话的页面在后台被
+`ResizeObserver` 或 `visibilitychange` 唤醒，甩来一个 80×24 ⇒ 桌面的 vim 被压扁。
+用户看到的是「我什么都没做，终端自己乱了」，且极难归因。
+
+**服务端（`src/term.py`）**：
+
+- `claim` = 「我是主人，按我的尺寸来」，**无条件夺权**（含同尺寸也要转移所有权——
+  这条是 paseo 专门写的用例：少了它，端切换后尺寸就再也改不动）
+- `update` = 「我只是几何变了」，**非所有者一律静默忽略**
+- 老客户端没有 intent 字段 ⇒ 缺省 `claim`（与 paseo 同口径），否则一次前后端版本错配
+  就会让尺寸永远改不动；**未知意图按 `update` 保守处理**——绝不让一个看不懂的字段
+  把所有权检查旁路掉
+- 行列 clamp 到合法区间：pty 尺寸是 `struct.pack("HHHH")`，把 `99999` 直接喂给它会抛
+  `struct.error` 打断 WS 收包循环 ⇒「拖一下窗口」变成「终端断开」
+- 所有者断开时交还所有权，否则悬挂 vid 会让所有客户端的 `update` 全部失效
+
+**前端（02/03 分片）**：resize 100ms 去抖（`VERSION` 注释记为「后台那一端偷不走 PTY 尺寸」）；
+`hub.js` 缓存提手随 B2 构建同步。
+
+方案档：`docs/PASEO-FUSION-PLAN-20260929.md`；本版补执行记录 + 版本号对齐。
+
+## v0.13.55 — 终端输出合并 coalescer（5ms 前后沿节流，paseo 融合 B1）
+
+现状：PTY 每吐一块就发一帧 WS（`on_readable` 读一块 → 每观看者各塞一块 → pump 发一块）。
+pty 典型块只有几十~几百字节，`npm run build` / agent 大段输出时会持续高频吐 ⇒ WS 帧洪水；
+手机端解析不过来时队列（`maxsize=2000`）打满，触发「已丢弃 N 字节」——那是**丢内容**，
+不是降帧率。
+
+改法（思路取自 paseo `TerminalOutputCoalescer`，按 Hub 形态重写）：
+
+- **前沿**：距上次刷出 ≥5ms 立刻刷 —— 按键回显延迟不升反降。只留后沿（普通 debounce）
+  会给每次按键回显平白加一个完整窗口，paseo 文档点名这是错的做法。
+- **后沿**：突发期间攒 5ms 一起刷。
+- 部署在「PTY 读回调 → 每观看者队列」之间，即**离 PTY 最近的一层**（挪到更下游
+  只是换了个挨打的地方）。每个观看者一个合并器。
+
+同批落地 **P1-1 保序**（不做就是埋雷）：`[会话结束]` 与 `[process exited]` 都是带外消息，
+发送前必须先 flush 合并器；pump 收尾额外把队列排空（循环已退出，没人再发那些帧），
+否则退出提示会抢在最后一段输出**之前**。
+
+同批修：资源页「结束/强杀」422 —— `killProc` 补 `Content-Type`。`api()` 不设 Content-Type，
+fetch 传字符串 body 默认发 `text/plain` ⇒ FastAPI 解析不出 body ⇒ 三个 `Body(...)` 全 missing
+⇒ 422。写闸门在 handler 前面且已放行，所以日志只见 `POST /api/resources/kill 422`、
+不见 401 —— **极易误判成鉴权问题**。对照（带 token，假 pid=1，未杀任何进程）：
+修前 `422 {"loc":["body","agent_id"],"msg":"Field required"}` → 修后
+`404 "PID not belong to this agent"`。
+
+## v0.13.54 — xterm addon 全家桶补齐（渲染器/宽字符/查找/粘贴，paseo 融合 B4）
+
+借鉴 paseo 终端的 addon 全家桶（方案 `docs/PASEO-FUSION-PLAN-20260929.md` P1-3），
+落盘 `static/vendor/` 走离线加载，版本与 `@xterm/xterm` 5.5.0 严格对齐。
+
+1. **渲染器**：核心只内置 `DomRenderer`（每字符一个 DOM span，大输出与原生终端差一个
+   数量级）。WebGL 优先、Canvas 回落、都失败才留 DOM；另补 `onContextLoss` 重画。
+   CDP 实测（09-29）：`renderer=webgl`。
+2. **Unicode11**：必须在 `open` **之前**挂并激活 `activeVersion='11'`（cell 宽度表在
+   渲染器初始化时固化，之后再改不重算）。需 `allowProposedApi`。CDP 实测 `unicode=11`。
+3. **查找**：`SearchAddon` + Ctrl/Cmd+F 浮层（`absolute`，不占 flex ⇒ 不踩 FitAddon
+   按内容盒算行数的老坑），增量匹配、Enter/Shift+Enter 前后翻、Esc 关闭回焦。
+4. **粘贴（正确性修复，非锦上添花）**：抢在 xterm 原生 paste 前做两件它不做的事——
+   换行归一、把内嵌的 `ESC[201~` **降级成字面量 `[201~`**（否则对端提前结束粘贴模式，
+   其后字节被当普通按键逐条执行 ＝注入面；paseo 同款见 `terminal-paste.ts:27`）。
+   对端未声明 2004 时绝不自己发明包装（会糊一屏字面量）。
+   CDP 实测：开 2004 → `ESC[200~a\rb ESC[201~`；内联终止序列 → `ESC[200~x[201~y ESC[201~`。
+
+同批修两处：
+
+- **资源监控页永远停在「加载中…」**：删掉 `loadResources` 开头的
+  `if (resLoaded && !force) return;`。`go()`（01 分片）是
+  `if (page === "resources" && !resLoaded) { resLoaded = true; loadResources(); }`
+  ——**先置位再调用** ⇒ 首次进页这道内部闸门必然命中，函数空返回：不发请求、
+  不写 hint、控制台零报错。同型 `lpLoaded`/`ghLoaded` 没炸，是因为
+  `loadLocalProjects`/`loadGithubRepos` 内部没有这道闸门（进页只由 `go()` 一处把关
+  是本仓纪律）。真渲染探针（1440/390 两档）：修前 `cards=0 hint=""` ⇒ 修后
+  `cards=15 hint="共 15 个 Agent · 总 CPU 38.1% · 总内存 2290.1 MB"`。
+- **hublog 夹具时间炸弹**：`tests/test_hublog.py` 夹具 `created_at` 原写死
+  `2026-09-27T05:00Z`，而查询窗口是 `now-24h`（`src/hublog.py::_cutoff_iso`）⇒ 09-29 起
+  7 条用例集体转红（`count=0`/`entries=[]`，看着像接口坏），pre-commit 闸门当天恒红。
+  改由 `_ago_iso(minutes)` 相对当下取值。
+
+## v0.13.53 — 三项资源/偏好修复
+
+1. **结束进程时目标已不存在视为成功**（不是失败）。`_kill_pid` 把
+   `ProcessLookupError`/`FileNotFoundError` 一并当失败，但 `OSError` 里混着
+   「进程不存在」与「真的没权限」两种语义，混着判必然误报。改法：进程已不存在
+   （kill 时或读 `/proc` 时）返回 `True`；其余 `OSError`/`PermissionError` 仍返回
+   `False`。权限与归属判定不动。
+2. **收藏/隐藏同步改为「本地为准、首次为空才拉后端」**（`09-local-projects.js` 的
+   `lpSyncPrefs()` 与 `10-github-projects.js` 的 `ghSyncPrefs()` 同理）：本地已有数据
+   就以本地为准，后台静默推送合并（并集），避免刷新/多端丢失收藏。
+3. hublog 夹具时间改为相对当前（写死日期会随日历翻页变红）。
+
+## v0.13.52 — 资源监控页：列出运行中 Agent 进程 CPU/内存，支持一键结束
+
+- **后端**：`src/resources.py` 新增 `/api/resources`（聚合 `/proc` + systemd + docker，
+  按 Agent 画像归类）与 `/api/resources/kill`
+- **前端分片**：`static/hub/11-resources.js`（懒加载、展开进程详情、双按钮 Kill）
+- **主入口**：`static/hub/01-core-boot.js`、`05-chat-and-history.js` 注入懒加载标志与
+  `PAGE_LABELS`
+- **模板**：`templates/index.html` 新增侧栏按钮、页面骨架、Sprite 图标 `i-book`
+- **测试**：`test_ls_guard.py` 纳入 `11-resources.js` 红基线计数；`test_sprite_refs.py`
+  校验 `i-book`
+- 构建：`scripts/build_hubjs.sh` 产物 `hub.js?v=d5714000`
+
+> 口径边界（README「安全边界」第 1 条同源）：**端口管理只读无 kill**
+> （`src/ports.py` 头注释：NAS 上的服务由 systemd/守护方管理，越权杀进程违反本机军规）；
+> 可 kill 的只有**本机 Agent 自己的进程**，且必须校 `/proc/<pid>/cmdline` 归属，
+> kill 前前端二次确认。两者是不同子系统，别混为一谈。
+
 ## v0.13.51 — 漂移按持久化值**写回**（带备份）+ 续聊会话也注入 --model
 
 > 用户 09-28 对 PT-20260928-01 的三项授权全部执行：① 合回主 checkout 上线；

@@ -6,7 +6,7 @@
 ┌─────────────────────────────────────────────────────┐
 │            Agent Hub（智管）                         │
 │         Python FastAPI + 原生 JS（无构建）          │
-│              端口 :3102 (0.0.0.0)                   │
+│          端口 :3102 (:: 双栈，见下「监听口径»)        │
 ├─────────────────────────────────────────────────────┤
 │  Dashboard    │  Agent List  │  Chat  │  Memory  │
 │  (教室视图)   │  (管理面板)   │ (统一对话)│ (记忆中心) │
@@ -29,6 +29,17 @@
          │(记忆中心)│
          └─────────┘
 ```
+
+### 监听口径（2026-09-30 订正，AGENTS.md §5）
+
+`DESIGN.md` 此处原写「端口 :3102 (0.0.0.0)」，**与本机军规矛盾**：启动 HTTP 服务必须绑
+`::`（双栈 IPv6），绑 `0.0.0.0` 是 IPv4 only，外网打不开。
+
+- 真实配置：`.env` 的 `HOST=::`；`run_dualstack.py` 作为 `ExecStart` 兜底
+  （旧 unit 把 .env 的 HOST 完全盖住，改了 .env 也不生效）
+- `src/config.py` 的默认值仍是 `os.getenv("HOST", "0.0.0.0")` —— 那只是**缺省值**，
+  生产以 `.env`／`run_dualstack.py` 为准；影子实例等隔离场景显式传 `HOST=127.0.0.1`
+- 实测：`ss -tlnp | grep 3102` → `LISTEN *:3102`（双栈通吃）
 
 ## 核心模块
 
@@ -67,7 +78,7 @@
 | 层 | 技术 | 版本 |
 |----|------|------|
 | 后端 | Python FastAPI | 0.104+ |
-| 前端 | 原生 JS（`static/hub.js`，无框架无构建）+ 本地 vendor xterm.js/fit.js | - |
+| 前端 | 原生 JS，**无框架无 npm 构建**；真源 `static/hub/*.js` 12 分片 → `scripts/build_hubjs.sh` 拼成产物 `static/hub.js`；终端用本地 vendor xterm 5.5.0 + 7 addon（离线，无 CDN）| - |
 | 数据库 | SQLite | 内置 |
 | 异步 | asyncio + httpx | - |
 | 部署 | 直接运行 | :3102 |
@@ -76,42 +87,160 @@
 
 ```
 ~/agent-hub/
-├── src/
-│   ├── main.py              # FastAPI 入口
-│   ├── config.py            # 配置管理
-│   ├── discovery.py         # Agent 自动发现
-│   ├── registry.py          # Agent 注册表（SQLite）
-│   ├── adapters/
-│   │   ├── base.py          # 抽象基类
-│   │   ├── claude.py        # Claude/CCR 适配器
-│   │   ├── pi.py            # pi 适配器
-│   │   ├── jcode.py         # jcode 适配器
-│   │   └── tdaI.py          # TDAI 适配器
-│   ├── chat.py              # 统一对话路由
-│   ├── memory.py            # 记忆管理
-│   └── scheduler.py         # 定时任务
-├── static/                  # 静态资源
-├── templates/               # HTML 模板
-├── data/
-│   ├── agents.db            # SQLite 数据库
-│   └── logs/                # 日志
-├── agent-hubctl.sh          # 控制脚本
-└── .env                     # 环境变量
+├── src/                          # 43 个平铺模块（无子包，仅 adapters/ 例外，见下）
+│   ├── main.py                   # FastAPI 入口（VERSION 单一版本源 + 路由装配）
+│   ├── config.py                 # 配置管理（读 .env，override=True）
+│   ├── discovery.py              # Agent 自动发现
+│   ├── registry.py               # Agent 注册表（SQLite）
+│   ├── adapters/                 # 唯一的子包：Agent 协议适配器
+│   │   ├── base.py               # 抽象基类
+│   │   ├── openai_compat.py      # claude/jcode → CCR:3456（OpenAI 兼容口径）
+│   │   └── ...                   # pi / TDAI 等
+│   ├── term.py                   # 嵌入式终端：PTY、WS、TTL 回收、尺寸所有权
+│   ├── memory.py / memfed.py / memstats.py / kb.py   # 记忆三层 + 联邦检索
+│   ├── cronjobs.py               # 定时任务（**注意：不是 scheduler.py**）
+│   ├── llm.py / manager.py       # Manager Agent（自然语言指挥官，FCC Anthropic 工具环）
+│   ├── hublog.py / runlog.py     # 日志中心 + 运行日志
+│   ├── sessions_store.py         # 外部 CLI 会话仓库**只读**适配层（不写不删）
+│   ├── sessions_export.py        # 会话导出（默认脱敏）
+│   ├── resources.py / ports.py   # 资源监控（可 kill）/ 端口枚举（**只读无 kill**）
+│   ├── vitals.py / healthx.py / selfattest.py  # 健康自证
+│   ├── writeauth.py              # 写端点统一鉴权（fail-closed）
+│   └── ...                       # 其余平铺模块
+├── static/
+│   ├── hub.js                    # **构建产物**：由 static/hub/*.js 拼出，改分片勿手改
+│   ├── hub/                      # 前端分片真源（12 片，无 08；清单由 tests/test_ls_guard.py 闸门锁）
+│   │   ├── 01-core-boot.js       # 启动、api()、loadAgents、Esc 出口、agentHealth 单一真源
+│   │   ├── 02-nav-and-poll.js    # 侧栏渲染与轮询
+│   │   ├── 03-agents-cards.js    # Agent 卡片（终端渲染器分支在此，改 xterm 必看）
+│   │   ├── 04-terminal-ws.js     # 终端 WS 客户端（尺寸 intent claim/update）
+│   │   ├── 05-chat-and-history.js# 对话与历史会话（含侧栏忙碌点挂载）
+│   │   ├── 06-manager-tasks.js   # Manager 对话、任务、全局 Esc 优先级出口
+│   │   ├── 07-asset-panel.js     # 设置抽屉（模型/GitHub/日志）
+│   │   ├── 09-local-projects.js  # 本机项目
+│   │   ├── 10-github-projects.js # GitHub 项目
+│   │   ├── 11-resources.js       # 资源监控页（懒加载）
+│   │   └── 12-activity.js        # 跨 Agent 活动指示（8s 独立轮询）
+│   └── vendor/                   # xterm 5.5.0 + 7 addon（离线，见 vendor/README.md）
+├── templates/index.html          # 唯一模板：结构 + :root 设计 token（视觉权威源）
+├── tests/                        # L0 hermetic（880 例）+ L1 host + verify_* 真渲染探针
+├── data/                         # 运行时数据（agents.db / logs / term 录放），不入 git
+├── scripts/                      # build_hubjs.sh（分片→hub.js）、run_tests.sh、ctl
+├── run_dualstack.py              # 双栈监听兜底（ExecStart）
+└── .env                          # 环境变量（0600，凭据真源）
 ```
+
+> **订正记录（2026-09-30）**：旧版目录树列的 `chat.py` / `scheduler.py` **都不存在**
+> （统一对话在 `src/manager.py` + `src/llm.py`，定时任务是 `src/cronjobs.py`），
+> 且漏掉了 `src/term.py`（终端是本仓最大子系统）、`static/hub/` 分片化与 `static/vendor/`。
+> 前端「单文件 `static/hub.js`」的说法同样过期：`hub.js` 现在是**构建产物**，
+> 真源是 `static/hub/*.js` 分片（AGENTS.md 军规：主 checkout 只由集成者重建 build 产物）。
 
 ## API 设计
 
+> 2026-09-30 按真实路由重录（旧表只有 9 条且含已不存在的 `/api/docs` 与不存在的
+> `POST /api/tasks`）。实际规模：**95 个 HTTP 端点 + 1 个 WebSocket**（`grep -oE
+> '@(app|router)\.(get|post|put|patch|delete|websocket)\('` 全量取证）。下表按
+> 子系统分组，只列**主干**；分组标题即 `src/` 里的模块名，便于对照源码。
+> 鉴权口径：读端点匿名（与 `/api/agents` 同口径），写端点统一走
+> `src/writeauth.py::decide`（fail-closed：服务端没配口令 ⇒ 503 而不是放行）。
+
+**核心（`main.py`）**
+
 ```
-GET  /api/agents              # 列出所有 Agent（含状态）
-GET  /api/agents/:id          # Agent 详情
-POST /api/agents/:id/chat     # 发送消息
-GET  /api/sessions            # 会话历史汇总
-GET  /api/memory              # 记忆中心
-POST /api/memory/sync         # 同步到 TDAI
-GET  /api/tasks               # 编排任务列表
-POST /api/tasks               # 创建任务
-GET  /api/docs                # 文档索引
-GET  /health                  # 健康检查
+GET    /health                              # 健康自证：version / code_matches_head / vitals / term 状态
+GET    /api/agents                          # 列出所有 Agent（含 vitals 实测 verdict）
+POST   /api/agents                          # 注册自定义 Agent（写）
+DELETE /api/agents/{agent_id}               # 注销（写）
+GET    /api/agents/{agent_id}               # 详情
+POST   /api/agents/detect                   # 重新探测（写）
+POST   /api/agents/{agent_id}/verify        # 实弹验证（写）
+POST   /api/agents/{agent_id}/chat          # 统一对话（非流式）
+POST   /api/agents/{agent_id}/chat/stream   # 统一对话（SSE 流式）
+GET    /api/vitals          POST /api/vitals/sweep   # 健康实测结论（单一异常判据来源）
+GET    /api/models          POST /api/settings/model/{preview,apply}   # 模型设置
+```
+
+**终端（`term.py`）——本仓最大子系统**
+
+```
+WS     /ws/term/{sid}                       # PTY 双向流（5ms 前后沿 coalescer）
+GET    /api/term/sessions                   # 会话列表（前端活动指示的唯一数据源，只认 s.alive）
+POST   /api/term/sessions                   # 开会话（写）
+DELETE /api/term/sessions/{sid}             # 关会话（写）
+GET    /api/term/history/{agent_id}         # 该 Agent 的历史会话
+```
+
+**会话与导出（`sessions_store.py` / `sessions_export.py`）**
+
+```
+GET    /api/sessions                        # hub 自身会话 + 外部 CLI 只读聚合
+GET    /api/sessions/{session_id}/messages
+PATCH  /api/sessions/{session_id}           # 改标题（写）
+DELETE /api/sessions/{session_id}           # 删（写）
+GET    /api/sessions/export                 # 批量导出：**按写端点鉴权**（导出=数据外流），
+                                            # 默认 redact=1 脱敏，命中数在 meta 如实回报
+```
+
+**记忆（`memory.py` / `memfed.py` / `memstats.py` / `kb.py`）**
+
+```
+GET    /api/memory            /api/memory/{l1,l2,l3}      # 三层记忆
+GET    /api/memory/search     /api/memory/context         # 检索与注入
+POST   /api/memory/l1         /api/memory/l1/batch        # 写入（写）
+DELETE /api/memory/l1/{mid}                                 # 删（写）
+PUT    /api/memory/l2         /api/memory/l3              # 改（写）
+POST   /api/memory/l2/rebuild                              # 重建压缩（写）
+GET    /api/memory/fedsources                              # 联邦检索源清单
+```
+
+**资源与端口（`resources.py` / `ports.py`）—— kill 口径不同，别混**
+
+```
+GET    /api/resources                        # 运行中 Agent 进程 CPU/内存
+POST   /api/resources/kill                   # 结束 Agent 进程（写）：校 /proc/<pid>/cmdline 归属，
+                                            # 目标已不存在视为成功，前端二次确认
+GET    /api/ports   /api/ports/{port}        # 端口枚举：**只读无 kill**（NAS 服务归 systemd）
+```
+
+**任务与调度（`tasks.py` / `cronjobs.py`）**
+
+```
+GET    /api/tasks/runs   /api/tasks/{run_id}
+POST   /api/tasks/decompose                   # 拆解（写）
+POST   /api/tasks/{run_id}/{start,retry}      # 启/重试（写）
+DELETE /api/tasks/{run_id}                    # 删（写）
+GET/POST/PUT/DELETE /api/jobs[/{jid}[/run]]   # 定时任务（cronjobs.py）
+POST   /api/scan/run                          # 扫描（写）
+```
+
+**项目与资产（`localprojects.py` / `githubprojects.py` / `ghsettings.py`）**
+
+```
+GET    /api/localprojects                    GET  /api/github/repos  /api/github/sync
+POST   /api/github/clone                      # 写
+GET/POST /api/settings/github/{test,refresh,apply,clear}   # 写
+GET    /api/prefs/{key}   PUT /api/prefs/{key}              # 偏好：读/写
+```
+
+**日志与审计（`hublog.py` / `runlog.py` / `audit.py`）**
+
+```
+GET    /api/hublog   /api/runlog   /api/audit/list
+```
+
+**MCP 网关（`mcpgw.py` / `hubmcp.py`）**
+
+```
+GET    /mcp/{servers,tools,acl,registry}      POST /mcp/{call,acl,servers,servers/probe}
+DELETE /mcp/{acl/{acl_id},servers/{sid}}
+```
+
+**遥测（`hook.py`，Bearer 鉴权，补上游零鉴权的短板）**
+
+```
+GET    /telemetry/events   /telemetry/usage/summary
+POST   /telemetry/events/{source}
 ```
 
 ## 实施计划
