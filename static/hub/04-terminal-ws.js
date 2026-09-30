@@ -296,8 +296,8 @@ async function loadCloudcliProjects() {
       '<br><span class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
       escapeHtml(String(p.path).slice(0, 48)) +
       (p.last_activity ? ' · ' + String(p.last_activity).slice(5, 16).replace('T', ' ') : '') + '</span></p>' +
-      '<button class="btn sm" style="align-self:center" onclick="cloudcliStart(\'' +
-      escapeHtml(String(p.path).replace(/'/g, "\\'")) + '\')" title="在 CloudCLI 开始此项目的新会话">▶ 开始会话</button></div>').join('');
+      '<button class="btn sm" style="align-self:center" onclick="cloudcliStart(' +
+      jsStr(p.path) + ')" title="在 CloudCLI 开始此项目的新会话">▶ 开始会话</button></div>').join('');
     holder.innerHTML = '<div class="hint" style="margin:10px 0 4px">CloudCLI 项目（' + (d.count || 0) + ' 个 · 点「开始会话」直达）</div>' +
       '<div class="tscroll" style="max-height:300px;overflow-y:auto">' + (rows || '<div class="hint">无项目</div>') + '</div>';
   } catch (e) {
@@ -518,7 +518,7 @@ function renderSkillList() {
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
     '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
     '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) + '</span></p>' +
-    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(\'' + escapeHtml(String(s.name || '')).replace(/'/g, "\\'") + '\',\'' + escapeHtml(String(rt || '')) + '\')">查看</button></div>';
+    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(' + jsStr(s.name) + ',' + jsStr(rt) + ')">查看</button></div>';
   }).join('') ||
     '<div class="hint">没有匹配的技能（' + SKILLS.length + ' 总数）</div>';
 }
@@ -542,8 +542,8 @@ async function skillRead(name, route) {
     const cands = (e.payload && e.payload.detail && e.payload.detail.candidates) || [];
     if (e.http === 409 && cands.length && body) {
       body.innerHTML = '<div class="hint">同名多路且指向不同文件，请选一路：</div>' +
-        cands.map(c => '<div class="mem-item" style="cursor:pointer" onclick="skillRead(\'' +
-          escapeHtml(String(name)).replace(/'/g, "\\'") + '\',\'' + escapeHtml(String(c.route || '')) + '\')">' +
+        cands.map(c => '<div class="mem-item" style="cursor:pointer" onclick="skillRead(' +
+          jsStr(name) + ',' + jsStr(c.route) + ')">' +
           '<b>' + escapeHtml(String(c.route || '')) + '</b> <span class="hint">' +
           escapeHtml(String(c.path || '')) + (c.via_symlink ? '（软链）' : '') + '</span></div>').join('');
     } else if (body) {

@@ -74,9 +74,17 @@ function renderResources(data) {
             memory: '<span class="s-badge" style="background:var(--accent);color:var(--on-accent)">记忆</span>'
         }[kind] || '<span class="s-badge"></span>';
 
+        /* P2-D：agent_id / pid 一律 escapeHtml + data-*，不再拼进 inline onclick。
+           两层理由（任一层单独成立就该改）：
+           ① 纪律层——inline onclick 旁路事件委托（本批 P1-17 已把 09/10 两个页面
+              改成 data-* 走委托；inline 会跳过「点完收场」逻辑）。
+           ② 纵深层——id 直接进属性字符串，一个含引号的 id 就能破出属性、加第二个
+              onclick。实测不可利用（agent_id 来自画像白名单、后端输出经净化），
+              但「不可利用」是后端当前的性质，不是前端的保证：纵深该在前端补，
+              否则哪天画像来源放宽（自定义 Agent 名 / 扫到奇怪进程名）就是真漏洞。 */
         html +=
-        '<div class="agent-card" data-agent="' + agentId + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--bg);overflow:hidden">' +
-            '<div class="agent-header" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);cursor:pointer;border-bottom:1px solid var(--divider)" onclick="toggleAgentProcs(\'' + agentId + '\')">' +
+        '<div class="agent-card" data-agent="' + escapeHtml(agentId) + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--bg);overflow:hidden">' +
+            '<div class="agent-header" data-toggle="1" data-agent="' + escapeHtml(agentId) + '" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);cursor:pointer;border-bottom:1px solid var(--divider)">' +
                 kindBadge +
                 '<span class="agent-name" style="flex:1;font-weight:500">' + escapeHtml(agentName) + '</span>' +
                 '<span class="agent-meta" style="font-size:12px;color:var(--text-2)">' +
@@ -99,14 +107,14 @@ function renderResources(data) {
 
         for (const proc of processes) {
             html +=
-                        '<tr data-pid="' + proc.pid + '">' +
+                        '<tr data-pid="' + escapeHtml(proc.pid) + '">' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.pid + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.cpu_percent + '%</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.rss_mb + ' MB</td>' +
                             '<td class="res-cmd" style="padding:4px 8px;border-bottom:1px solid var(--divider);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(proc.cmdline) + '">' + escapeHtml(proc.cmdline) + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider);text-align:center">' +
-                                '<button class="btn sm danger" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGTERM\')" title="优雅结束 (SIGTERM)">结束</button>' +
-                                '<button class="btn sm danger" style="margin-left:4px" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGKILL\')" title="强制结束 (SIGKILL)">强杀</button>' +
+                                '<button class="btn sm danger" data-kill="SIGTERM" data-agent="' + escapeHtml(agentId) + '" data-pid="' + escapeHtml(proc.pid) + '" title="优雅结束 (SIGTERM)">结束</button>' +
+                                '<button class="btn sm danger" style="margin-left:4px" data-kill="SIGKILL" data-agent="' + escapeHtml(agentId) + '" data-pid="' + escapeHtml(proc.pid) + '" title="强制结束 (SIGKILL)">强杀</button>' +
                             '</td>' +
                         '</tr>';
         }
@@ -118,6 +126,32 @@ function renderResources(data) {
         '</div>';
     }
     listEl.innerHTML = html;
+    bindResourceActions(listEl);
+}
+
+/** P2-D：卡片展开 / 结束 / 强杀三条动作的**唯一出口**（事件委托）。
+ *
+ *  为什么不是 inline onclick：
+ *   - inline 属性里的 JS 字符串要求 id 必须是「安全的 JS 字面量」，任何引号都要
+ *     转义层级，转义错了就是 XSS；data-* 只是属性值，escapeHtml 一层就够。
+ *   - 委托是本批 P1-17 定的纪律（inline 旁路收场逻辑），三处动作保持同一出口。
+ *  bind 幂等：容器上打标记，重渲染（采样轮询）不会重复绑。 */
+function bindResourceActions(listEl) {
+    if (!listEl || listEl.dataset.resBound === "1") return;
+    listEl.dataset.resBound = "1";
+    listEl.addEventListener("click", function (e) {
+        const killBtn = e.target.closest("[data-kill]");
+        if (killBtn) {
+            /* stopPropagation 收拢到委托这一处统一做：kill 按钮在可展开的卡片头语义
+               之外，必须不冒泡到头部的展开动作，否则点「结束」会顺手把卡片展开。 */
+            e.stopPropagation();
+            killProc(killBtn.dataset.agent, parseInt(killBtn.dataset.pid, 10),
+                     killBtn.dataset.kill);
+            return;
+        }
+        const head = e.target.closest(".agent-header[data-toggle]");
+        if (head) toggleAgentProcs(head.dataset.agent);
+    });
 }
 
 function toggleAgentProcs(agentId) {
@@ -226,9 +260,13 @@ function checkEmptyList() {
     }
 }
 
-function escapeHtml(s) {
-    return (s || "").replace(/&/g, "\u0026amp;").replace(/</g, "\u0026lt;").replace(/>/g, "\u0026gt;").replace(/"/g, "\u0026quot;").replace(/'/g, "\u0026#39;");
-}
+/* P2-D：此处原有的 escapeHtml **副本**已删除，统一用 01-core-boot.js 的那份。
+   两个理由：
+     ① 同一语义两份实现＝迟早漂（副本里转义表用 \u0026 写码点、正本用字面量，
+        读的人得逐个解码才知道它们等价）；本仓已因「异常判据四处各判各的」吃过
+        一次同型亏（P1-20）。
+     ② 副本有真 bug：`(s || "")` 对 0 / false 会返回空串——pid=0、计数 0
+        都会被渲染成空白。正本用 `String(s == null ? '' : s)`，无此问题。 */
 
 // 供外部调用（如从其它页面跳转）
 window.loadResources = loadResources;

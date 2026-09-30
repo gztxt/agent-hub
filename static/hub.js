@@ -167,6 +167,27 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/** P2-D 密钥纵深：把字符串安全地塞进 **JS 字面量**（inline onclick 用）。
+ *
+ *  为什么需要它：`escapeHtml` 只处理 HTML 上下文。HTML 属性里的 JS 代码
+ * （`onclick="f('…')"`）先按 HTML 解码、再按 JS 解析——两道语境，
+ * 所以 HTML 实体转义**不足以**让任意 id 安全进 JS 字面量：形如
+ * `x&#39;);evil(//` 的 id 经 HTML 解码后就是 `' );evil(//`，能提前闭合参数列表。
+ * 当前所有 id 来源（画像白名单 / 系统标识）都不含引号 ⇒ 实测不可利用；
+ * 这是"上游现在干净"的性质，不是前端的保证，故在 helper 层补齐。
+ *
+ *  与 AGENTS.md「侧栏/菜单内的按钮禁止用 inline onclick」不冲突：本函数
+ *  服务的是**主内容区**（详情抽屉正文、卡片内按钮），那里 inline 合法
+ *  （06 分片 Esc 优先级、01 分片注释原文口径）；侧栏仍一律走 data-* 委托。 */
+function jsStr(s) {
+  /* JSON.stringify 出的是合法 JS 字面量（含双引号与反斜杠转义）；再把
+     < / 与 U+2028/29 转掉：前两个防 </script> 提前收尾与 HTML 解析歧义，
+     后两个在 ES2019 前是非法行分隔符。 */
+  return JSON.stringify(String(s == null ? '' : s))
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 /* ── v0.13.27 三态加载助手（B 统一加载）──────────────────────────────
  * 三中心的 loader 统一走 busy→数据/失败 三态（此前失败只 toast，列表区停旧内容
  * ——用户分不清「没数据」与「还没加载」与「加载挂了」）。遥测页「加载中…」
@@ -529,7 +550,7 @@ function showDetail(id) {
       '</div>' +
       '<div class="hint" style="margin-top:2px">' +
       '<button class="act-btn" style="display:inline-block;padding:2px 8px" ' +
-      'onclick="verifyAgent(\'' + escapeHtml(a.id) + '\')" ' +
+      'onclick="verifyAgent(' + jsStr(a.id) + ')" ' +
       'title="跑一次真实请求（耗 token，只出模型层情报，不改可用性结论）">实测应答</button>' +
       (a.verdict_at ? ' 上次 ' + escapeHtml(String(a.verdict_at).slice(0, 19).replace('T', ' ')) + 'Z' : '') +
       '</div>';
@@ -2590,8 +2611,8 @@ async function loadCloudcliProjects() {
       '<br><span class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
       escapeHtml(String(p.path).slice(0, 48)) +
       (p.last_activity ? ' · ' + String(p.last_activity).slice(5, 16).replace('T', ' ') : '') + '</span></p>' +
-      '<button class="btn sm" style="align-self:center" onclick="cloudcliStart(\'' +
-      escapeHtml(String(p.path).replace(/'/g, "\\'")) + '\')" title="在 CloudCLI 开始此项目的新会话">▶ 开始会话</button></div>').join('');
+      '<button class="btn sm" style="align-self:center" onclick="cloudcliStart(' +
+      jsStr(p.path) + ')" title="在 CloudCLI 开始此项目的新会话">▶ 开始会话</button></div>').join('');
     holder.innerHTML = '<div class="hint" style="margin:10px 0 4px">CloudCLI 项目（' + (d.count || 0) + ' 个 · 点「开始会话」直达）</div>' +
       '<div class="tscroll" style="max-height:300px;overflow-y:auto">' + (rows || '<div class="hint">无项目</div>') + '</div>';
   } catch (e) {
@@ -2812,7 +2833,7 @@ function renderSkillList() {
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
     '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
     '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) + '</span></p>' +
-    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(\'' + escapeHtml(String(s.name || '')).replace(/'/g, "\\'") + '\',\'' + escapeHtml(String(rt || '')) + '\')">查看</button></div>';
+    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(' + jsStr(s.name) + ',' + jsStr(rt) + ')">查看</button></div>';
   }).join('') ||
     '<div class="hint">没有匹配的技能（' + SKILLS.length + ' 总数）</div>';
 }
@@ -2836,8 +2857,8 @@ async function skillRead(name, route) {
     const cands = (e.payload && e.payload.detail && e.payload.detail.candidates) || [];
     if (e.http === 409 && cands.length && body) {
       body.innerHTML = '<div class="hint">同名多路且指向不同文件，请选一路：</div>' +
-        cands.map(c => '<div class="mem-item" style="cursor:pointer" onclick="skillRead(\'' +
-          escapeHtml(String(name)).replace(/'/g, "\\'") + '\',\'' + escapeHtml(String(c.route || '')) + '\')">' +
+        cands.map(c => '<div class="mem-item" style="cursor:pointer" onclick="skillRead(' +
+          jsStr(name) + ',' + jsStr(c.route) + ')">' +
           '<b>' + escapeHtml(String(c.route || '')) + '</b> <span class="hint">' +
           escapeHtml(String(c.path || '')) + (c.via_symlink ? '（软链）' : '') + '</span></div>').join('');
     } else if (body) {
@@ -4870,9 +4891,17 @@ function renderResources(data) {
             memory: '<span class="s-badge" style="background:var(--accent);color:var(--on-accent)">记忆</span>'
         }[kind] || '<span class="s-badge"></span>';
 
+        /* P2-D：agent_id / pid 一律 escapeHtml + data-*，不再拼进 inline onclick。
+           两层理由（任一层单独成立就该改）：
+           ① 纪律层——inline onclick 旁路事件委托（本批 P1-17 已把 09/10 两个页面
+              改成 data-* 走委托；inline 会跳过「点完收场」逻辑）。
+           ② 纵深层——id 直接进属性字符串，一个含引号的 id 就能破出属性、加第二个
+              onclick。实测不可利用（agent_id 来自画像白名单、后端输出经净化），
+              但「不可利用」是后端当前的性质，不是前端的保证：纵深该在前端补，
+              否则哪天画像来源放宽（自定义 Agent 名 / 扫到奇怪进程名）就是真漏洞。 */
         html +=
-        '<div class="agent-card" data-agent="' + agentId + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--bg);overflow:hidden">' +
-            '<div class="agent-header" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);cursor:pointer;border-bottom:1px solid var(--divider)" onclick="toggleAgentProcs(\'' + agentId + '\')">' +
+        '<div class="agent-card" data-agent="' + escapeHtml(agentId) + '" style="border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;background:var(--bg);overflow:hidden">' +
+            '<div class="agent-header" data-toggle="1" data-agent="' + escapeHtml(agentId) + '" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);cursor:pointer;border-bottom:1px solid var(--divider)">' +
                 kindBadge +
                 '<span class="agent-name" style="flex:1;font-weight:500">' + escapeHtml(agentName) + '</span>' +
                 '<span class="agent-meta" style="font-size:12px;color:var(--text-2)">' +
@@ -4895,14 +4924,14 @@ function renderResources(data) {
 
         for (const proc of processes) {
             html +=
-                        '<tr data-pid="' + proc.pid + '">' +
+                        '<tr data-pid="' + escapeHtml(proc.pid) + '">' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.pid + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.cpu_percent + '%</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider)">' + proc.rss_mb + ' MB</td>' +
                             '<td class="res-cmd" style="padding:4px 8px;border-bottom:1px solid var(--divider);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(proc.cmdline) + '">' + escapeHtml(proc.cmdline) + '</td>' +
                             '<td style="padding:4px 8px;border-bottom:1px solid var(--divider);text-align:center">' +
-                                '<button class="btn sm danger" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGTERM\')" title="优雅结束 (SIGTERM)">结束</button>' +
-                                '<button class="btn sm danger" style="margin-left:4px" onclick="event.stopPropagation();killProc(\'' + agentId + '\', ' + proc.pid + ', \'SIGKILL\')" title="强制结束 (SIGKILL)">强杀</button>' +
+                                '<button class="btn sm danger" data-kill="SIGTERM" data-agent="' + escapeHtml(agentId) + '" data-pid="' + escapeHtml(proc.pid) + '" title="优雅结束 (SIGTERM)">结束</button>' +
+                                '<button class="btn sm danger" style="margin-left:4px" data-kill="SIGKILL" data-agent="' + escapeHtml(agentId) + '" data-pid="' + escapeHtml(proc.pid) + '" title="强制结束 (SIGKILL)">强杀</button>' +
                             '</td>' +
                         '</tr>';
         }
@@ -4914,6 +4943,32 @@ function renderResources(data) {
         '</div>';
     }
     listEl.innerHTML = html;
+    bindResourceActions(listEl);
+}
+
+/** P2-D：卡片展开 / 结束 / 强杀三条动作的**唯一出口**（事件委托）。
+ *
+ *  为什么不是 inline onclick：
+ *   - inline 属性里的 JS 字符串要求 id 必须是「安全的 JS 字面量」，任何引号都要
+ *     转义层级，转义错了就是 XSS；data-* 只是属性值，escapeHtml 一层就够。
+ *   - 委托是本批 P1-17 定的纪律（inline 旁路收场逻辑），三处动作保持同一出口。
+ *  bind 幂等：容器上打标记，重渲染（采样轮询）不会重复绑。 */
+function bindResourceActions(listEl) {
+    if (!listEl || listEl.dataset.resBound === "1") return;
+    listEl.dataset.resBound = "1";
+    listEl.addEventListener("click", function (e) {
+        const killBtn = e.target.closest("[data-kill]");
+        if (killBtn) {
+            /* stopPropagation 收拢到委托这一处统一做：kill 按钮在可展开的卡片头语义
+               之外，必须不冒泡到头部的展开动作，否则点「结束」会顺手把卡片展开。 */
+            e.stopPropagation();
+            killProc(killBtn.dataset.agent, parseInt(killBtn.dataset.pid, 10),
+                     killBtn.dataset.kill);
+            return;
+        }
+        const head = e.target.closest(".agent-header[data-toggle]");
+        if (head) toggleAgentProcs(head.dataset.agent);
+    });
 }
 
 function toggleAgentProcs(agentId) {
@@ -5022,9 +5077,13 @@ function checkEmptyList() {
     }
 }
 
-function escapeHtml(s) {
-    return (s || "").replace(/&/g, "\u0026amp;").replace(/</g, "\u0026lt;").replace(/>/g, "\u0026gt;").replace(/"/g, "\u0026quot;").replace(/'/g, "\u0026#39;");
-}
+/* P2-D：此处原有的 escapeHtml **副本**已删除，统一用 01-core-boot.js 的那份。
+   两个理由：
+     ① 同一语义两份实现＝迟早漂（副本里转义表用 \u0026 写码点、正本用字面量，
+        读的人得逐个解码才知道它们等价）；本仓已因「异常判据四处各判各的」吃过
+        一次同型亏（P1-20）。
+     ② 副本有真 bug：`(s || "")` 对 0 / false 会返回空串——pid=0、计数 0
+        都会被渲染成空白。正本用 `String(s == null ? '' : s)`，无此问题。 */
 
 // 供外部调用（如从其它页面跳转）
 window.loadResources = loadResources;

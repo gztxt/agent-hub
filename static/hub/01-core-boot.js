@@ -167,6 +167,27 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/** P2-D 密钥纵深：把字符串安全地塞进 **JS 字面量**（inline onclick 用）。
+ *
+ *  为什么需要它：`escapeHtml` 只处理 HTML 上下文。HTML 属性里的 JS 代码
+ * （`onclick="f('…')"`）先按 HTML 解码、再按 JS 解析——两道语境，
+ * 所以 HTML 实体转义**不足以**让任意 id 安全进 JS 字面量：形如
+ * `x&#39;);evil(//` 的 id 经 HTML 解码后就是 `' );evil(//`，能提前闭合参数列表。
+ * 当前所有 id 来源（画像白名单 / 系统标识）都不含引号 ⇒ 实测不可利用；
+ * 这是"上游现在干净"的性质，不是前端的保证，故在 helper 层补齐。
+ *
+ *  与 AGENTS.md「侧栏/菜单内的按钮禁止用 inline onclick」不冲突：本函数
+ *  服务的是**主内容区**（详情抽屉正文、卡片内按钮），那里 inline 合法
+ *  （06 分片 Esc 优先级、01 分片注释原文口径）；侧栏仍一律走 data-* 委托。 */
+function jsStr(s) {
+  /* JSON.stringify 出的是合法 JS 字面量（含双引号与反斜杠转义）；再把
+     < / 与 U+2028/29 转掉：前两个防 </script> 提前收尾与 HTML 解析歧义，
+     后两个在 ES2019 前是非法行分隔符。 */
+  return JSON.stringify(String(s == null ? '' : s))
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
 /* ── v0.13.27 三态加载助手（B 统一加载）──────────────────────────────
  * 三中心的 loader 统一走 busy→数据/失败 三态（此前失败只 toast，列表区停旧内容
  * ——用户分不清「没数据」与「还没加载」与「加载挂了」）。遥测页「加载中…」
@@ -529,7 +550,7 @@ function showDetail(id) {
       '</div>' +
       '<div class="hint" style="margin-top:2px">' +
       '<button class="act-btn" style="display:inline-block;padding:2px 8px" ' +
-      'onclick="verifyAgent(\'' + escapeHtml(a.id) + '\')" ' +
+      'onclick="verifyAgent(' + jsStr(a.id) + ')" ' +
       'title="跑一次真实请求（耗 token，只出模型层情报，不改可用性结论）">实测应答</button>' +
       (a.verdict_at ? ' 上次 ' + escapeHtml(String(a.verdict_at).slice(0, 19).replace('T', ' ')) + 'Z' : '') +
       '</div>';
