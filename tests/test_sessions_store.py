@@ -178,6 +178,35 @@ class TestRealStores(unittest.TestCase):
         self.assertIn(row["id"], [i["id"] for i in d["items"]],
                       "最新真实会话必须出现在历史里（白名单 source 会漏）")
 
+    def test_listed_codex_session_is_resumable(self):
+        """v0.13.62 不变量：**列表能列出来的历史，必须点得进去**（同源闸门）。
+
+        09-30 事故：v0.13.61 只把 _t_codex 的 source 白名单换成排除集，列表侧放行了
+        IDE 扩展（source='vscode'）开的会话，但 _exists_on_disk 仍写死 `source='cli'`
+        ⇒ 点「续聊」必 404 `session_id 不在实盘清单内`。列表与校验各写一套过滤口径，
+        就是这个半边修复的由来。故本例拿列表自己的结果去问 resume_argv。"""
+        d = ss.list_history("codex", CWD, 20)
+        if not d["items"]:
+            self.skipTest("本机无真实 codex 会话")
+        for it in d["items"][:5]:
+            with self.subTest(sid=it["id"]):
+                argv = ss.resume_argv("codex", it["id"], it["cwd"] or CWD)
+                self.assertEqual(argv, ["codex", "resume", it["id"]])
+
+    def test_codex_noise_source_still_rejected(self):
+        """反向闸：排除集不能被顺手放宽成「什么都收」—— exec 探针/子代理仍须 404。"""
+        import sqlite3
+        db = Path.home() / ".codex" / "state_5.sqlite"
+        if not db.exists():
+            self.skipTest("无 ~/.codex/state_5.sqlite（非本机形态）")
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
+            row = c.execute("select id from threads where archived=0 and ("
+                            "source like 'exec%' or source like '{\"subagent\"%') limit 1").fetchone()
+        if not row:
+            self.skipTest("本机无 exec 探针/子代理线程")
+        with self.assertRaises(ValueError):
+            ss.resume_argv("codex", row[0], CWD)
+
     def test_hermes_note_declares_scope(self):
         d = ss.list_history("hermes", "/home/gztxt", 3)
         self.assertTrue(d["note"], "hermes 不按 cwd 过滤，note 必须写明口径")

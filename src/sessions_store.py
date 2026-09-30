@@ -264,6 +264,22 @@ CODEX_NOISE_SOURCE = ("exec",)
 CODEX_SUBAGENT_PREFIX = '{"subagent":'
 
 
+def _codex_real_user_sql(where: str) -> Tuple[str, tuple]:
+    """codex「真实用户会话」的**唯一** SQL 判据 —— 列表与续聊校验共用。
+
+    09-30 事故的教训：v0.13.61 把列表侧换成排除集，校验侧却还写死 `source='cli'`，
+    两处各写一份字面量就必然再次走偏（列表放行 ⇒ 点不动 ⇒ 404）。
+    ⇒ 这里返回 `(where 片段, 绑定参数)`，调用方只需把自己的 id 条件 AND 进来。
+    噪音判据仍只能落在 threads.source：exec 探针的标题**就是真实用户提问**。"""
+    frags, params = [], []
+    for n in CODEX_NOISE_SOURCE:
+        frags.append("source not like ?")
+        params.append(n + "%")
+    frags.append("source not like ?")
+    params.append(CODEX_SUBAGENT_PREFIX + "%")
+    return (" and " + " and ".join(frags) if frags else ""), tuple(params)
+
+
 def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     """列**真实用户会话**（排除 exec 探针与 subagent 子线程），**跳目录**（用户 09-22 裁定）。
        实测 updated_at/created_at 为 epoch 秒；
@@ -272,14 +288,14 @@ def _t_codex(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     db = HOME / ".codex" / "state_5.sqlite"
     if not db.exists():
         return [], "codex 无 state_5.sqlite"
+    real, real_params = _codex_real_user_sql("")      # 谓词参数在前、limit 在后，顺序即 ? 的顺序
     try:
         with _ro(db) as c:
             rows = c.execute(
                 "select id, title, cwd, updated_at, source from threads "
-                "where archived=0 and source not like 'exec%' "
-                "  and source not like '{\"subagent\"%' "
-                "order by updated_at desc limit ?",
-                (max(limit * 3, limit),)).fetchall()
+                "where archived=0" + real +
+                " order by updated_at desc limit ?",
+                real_params + (max(limit * 3, limit),)).fetchall()
     except Exception as e:  # noqa: BLE001
         return [], f"codex 读取失败：{type(e).__name__}"
     items = [{"agent": "codex", "id": r["id"], "title": mask_title(r["title"] or "") or "未命名会话",
@@ -389,8 +405,14 @@ def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
         return bool(_sql_one(HOME / ".hermes" / "state.db",
                              "select 1 from sessions where id=? and source='cli'", (sid,)))
     if agent_id == "codex":
+        # v0.13.62：与 _t_codex **同一套**排除集，不再写死 source='cli'。
+        # 半边修复的代价（09-30 实测）：v0.13.61 只改了列表侧，IDE 扩展（source='vscode'）
+        # 开的会话能列出来却点不动，POST /api/term/sessions 必 404。
+        # 判据只能取自 threads.source：exec 探针的标题**就是真实用户提问**（见上）。
+        real, real_params = _codex_real_user_sql("")
         return bool(_sql_one(HOME / ".codex" / "state_5.sqlite",
-                             "select 1 from threads where id=? and source='cli' and archived=0", (sid,)))
+                             "select 1 from threads where id=? and archived=0" + real,
+                             (sid,) + real_params))
     if agent_id == "opencode":
         return bool(_sql_one(OPENCODE_DB,
                              "select 1 from session where id=? and (parent_id is null or parent_id='')"
