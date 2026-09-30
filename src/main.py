@@ -77,7 +77,20 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.62"   # 历史「点得进去」：列表与续聊校验共用同一套 codex source 判据
+VERSION = "0.13.63"   # 终端滚轮「无法上翻 / 到不了页顶」：xterm 6.0 的 scrollSensitivity 仍取默认 1
+                      #   6.0 的 consumeWheelEvent 里有 `if (|deltaY| < 50) r *= 0.3` 再
+                      #   Math.floor 取整 ⇒ 标准一格滚轮（deltaY=120、行高 24px）只走
+                      #   120/24*0.3=1.5 → 1~2 行。CDP 真派发实测：sens=1 → 2.1 行/格、
+                      #   3 → 6.2、5 → 10.5、10 → 20.8（严格线性，与 deltaY 不成比例）。
+                      #   2000 行 scrollback 从底部滚到顶要 ~940 格 ⇒ 体感就是「滚不动」。
+                      #   A/B 实测 5.5.0 与 6.0.0 行为一致 ⇒ 非升级引入；5.5 按 deltaY/行高
+                      #   走（自然 5 行/格），6.0 的 0.3 折把体验砍到 1/5。
+                      #   修法：Terminal 构造显式 scrollSensitivity: 5（对齐自然值），
+                      #   端到端实测滚到顶 1979 行只需 190 格（-80%），Alt/Ctrl/Shift 仍走
+                      #   fastScrollSensitivity(=5) 不丢快速滚动。
+                      #   注：滚动条「看不见」是 6.0 Auto 档设计（hover 才显、离开 500ms 淡出），
+                      #   真渲染量到 opacity=1 / pointer-events=auto，非缺陷，故不动样式。
+                      #   ↑ v0.13.62：历史「点得进去」——列表与续聊校验共用同一套 codex source 判据
                       #   ↑ v0.13.62：v0.13.61 的半边修复收尾 ——
                       #     列表侧放了 vscode 会话，校验侧仍写死 source='cli' ⇒ 点「续聊」
                       #     必 404「session_id 不在实盘清单内」（列表能看见却点不动）。

@@ -1,3 +1,76 @@
+## v0.13.63 — 终端滚轮「无法上翻 / 滚动不到页顶」：xterm 6.0 的 scrollSensitivity 从没被显式设过
+
+> 由 `wt/01a0f0c4` 施工（PT-20260930-07）。用户报障「agent 终端页面，桌面浏览器里
+> 也是无法上翻或者滚动到页顶」。
+
+### 根因（CDP 真派发滚轮量出来的，不是推断）
+
+**不在 CSS、也不在浮层遮挡，而是一个从没显式设过的构造参数。**
+
+xterm 6.0 的 `consumeWheelEvent` 里有这么一段：
+
+    Math.abs(e.deltaY) < 50 && (r *= .3)          // 随后 Math.floor 取整
+
+默认 `scrollSensitivity = 1`。于是一格标准滚轮（deltaY=120、行高 24px）只走
+`120/24 * 0.3 = 1.5` → 取整 **1~2 行**。真渲染实测（2000 行 scrollback、24 行视口、
+10 格滚动取平均）：
+
+    scrollSensitivity =  1  ⇒  2.1 行/格
+                     =  3  ⇒  6.2
+                     =  5  ⇒ 10.5
+                     = 10  ⇒ 20.8          严格线性
+
+注意它**与 deltaY 的大小完全不成比例**：deltaY=-40 / -120 / -360 走的都是 2 行
+（< 50 那档的 0.3 折把三档全拍平了）。从底部滚到顶 1979 行需要约 **940 格**，
+体感上就是「滚不动」。API 侧一切正常（`scrollLines(-31)` 精确走 31 行、
+`scrollToTop()` 真的到 viewportY=0），所以问题只在**滚轮输入**这一条路上。
+
+**A/B 实测 5.5.0 与 6.0.0 默认配置行为一致（都 ~2 行/格）⇒ 这不是 6.0 升级引入的回归。**
+5.5 是按 `deltaY/行高` 走的，自然值 5 行/格；6.0 的 0.3 折恰好把体验砍到 1/5。
+原来只是"本来就偏慢"，升级后被放大成"滚不动"。
+
+### 修法
+
+`static/hub/03-agents-cards.js` 的 `new window.Terminal({…})` 显式加 `scrollSensitivity: 5`
+—— 与「不按 6.0 打折时的自然值」对齐，不臆造新手感。`Alt`/`Ctrl`/`Shift` 仍走
+`fastScrollSensitivity`（默认 5），快速滚动能力不受影响。
+
+### 滚动条为什么"看不见"：是设计，不是缺陷（故不动样式）
+
+6.0 用 VSCode 式自绘滚动条替代了 5.5 的原生 `.xterm-viewport` 滚动，档位默认
+`Auto`（核心里 `vertical: 1` 硬编码，非构造参数可调）：`_onMouseOver` ⇒ 常态 `visible`，
+`_onMouseLeave` 后 500ms 淡出。slider 背景色由 `theme.scrollbarSliderBackground` 驱动
+（前景色 20% alpha），且样式是 `open()` 时**运行时注入**到 `#termEl` 里的 `<style>`。
+
+真渲染量到的事实：
+
+    加载后未动鼠标    cls="invisible scrollbar vertical fade"  opacity=0  pe=none
+    鼠标移入终端      cls="visible scrollbar vertical"          opacity=1  pe=auto
+    停留 1.4s 后     仍 visible（mouseIsOver 保持 ⇒ 不被 hide）
+    移出终端 1.2s 后 回到 invisible（越过 500ms 隐藏超时）
+
+⇒ 桌面浏览器里把鼠标放进终端，滚动条是**正常显示且可拖动**的。原计划里的
+"加 CSS 强制常显"因此**撤销**：那会把 xterm 有意做的自动隐藏破坏掉，且因为注入
+`<style>` 同特异性、注入点在 head 之后，静态 CSS 还得靠加载顺序硬压，脆而不值。
+本闸门改断言"hover 后可见"（S7），若日后有人把样式改坏会红。
+
+### 验收
+
+- L0 静态 `tests/test_term_scroll_sensitivity.py` **6 例**：参数钉住且 ≥ 5、没顺手调小
+  快速滚动、**vendor 里那段 0.3 折仍在**（换版本后逼人重量一遍）、分片与 `hub.js`
+  产物对账（改分片忘重建 = 改了等于没改）、模板 `?v=` 提手 == 产物 md5、版本注释记着根因。
+- L2 真渲染 `tests/verify_term_scroll.py` **7/7 PASS**：生效值 = 5、**10.4 行/格**
+  （修前 2.1）、线性关系成立、**真滚轮从 1979 行到顶只花 190 格**（-80%，
+  修前约 940）、视口首行是 banner 而非 `L1xxx`、hover 后滚动条 opacity=1/pe=auto。
+- L0-hermetic **914 OK 零跳过**（908 + 新增 6）、L1-host 47 OK。
+- 15 轮取证探针归入 `tests/probe/`（`probe_scroll2…15`），结论不留在聊天记录里。
+
+### 顺带记一笔
+
+`?v=` 提手由产物内容派生（`scripts/build_hubjs.sh`），所以"改了分片没重建"在 URL 上
+**看不出来**——本次就先踩了一次：探针量到 `scrollSensitivity` 仍是 1。补了
+`test_built_hubjs_matches_shard` 与 `test_template_token_matches_hubjs_md5` 两道对账。
+
 ## v0.13.62 — 历史「看得见、点不进去」：v0.13.61 半边修复的收尾
 
 > 由 `wt/01a0f090` 施工。用户报障「点击历史会话记录还是无法拉起，显示续聊失败」。

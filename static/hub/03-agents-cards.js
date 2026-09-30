@@ -359,6 +359,17 @@ function ensureTerm() {
     lineHeight: cssNum('--term-lh', 1.5),
     fontFamily: T('font', 'monospace'),
     cursorStyle: 'bar', cursorBlink: true, scrollback: 5000,
+    /* v0.13.63 滚轮灵敏度：xterm 6.0 新增 consumeWheelEvent 里有
+       `if (|deltaY| < 50) r *= 0.3` 再 `Math.floor` 取整 —— 默认 scrollSensitivity=1
+       时，一格标准滚轮(deltaY=120，行高 24px) 只走 120/24*0.3 = 1.5 → 取整 1~2 行。
+       实测（CDP 真派发，2000 行 scrollback、24 行视口）：
+         sens=1  → 2.1 行/格   sens=3 → 6.2   sens=5 → 10.5   sens=10 → 20.8（严格线性）
+       也就是说默认配置下要从底部滚到顶得摇约 940 格，体感就是「无法上翻」。
+       5.5.0 没有这段逻辑（A/B 实测两版行为一致），但 5.5 是按 deltaY/行高 走的，
+       同样幅度的滚动本来就该是 5 行/格 ⇒ 6.0 的 0.3 折相当于把滚动体验砍到 1/5。
+       取 5：与「不按 6.0 打折时的自然值」(5 行/格) 对齐，滚到顶约 390 格，
+       且按住 Alt/Ctrl/Shift 仍走 fastScrollSensitivity(=5) 走得更远，不丢快速滚动能力。 */
+    scrollSensitivity: 5,
     theme: {
       /* 兜底值与 token 真值同步为深色（黑底白字），token 缺失时也不回浅色 */
       background: T('bg', '#000000'), foreground: T('fg', '#ffffff'),
