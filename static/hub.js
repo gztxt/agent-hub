@@ -340,6 +340,23 @@ async function pollHealth() {
   try {
     const d = await api('/health');
     setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));
+    // P1-19：把 code_stale / needs_restart 兑到顶栏。纯 additive —— 圆点颜色仍只看
+    // status（代码没重启不等于服务坏了，这是 /health 自己的设计意图，别在这里改口径）。
+    const staleEl = $('hStale');
+    if (staleEl) {
+      // 字段名以 src/selfattest.py 的 snapshot() 为准：needs_restart 才是本体，
+      // code_stale 只是兼容别名，且「不可判定」时被压成 False —— 那种情况
+      // 另有 code_stale_reason 说明，所以只在明确为 true 时才提示。
+      const needRestart = d && d.needs_restart === true;
+      if (needRestart) {
+        staleEl.innerHTML = '<span class="stale-tag" title="' +
+          escapeHtml('运行中的代码与磁盘不一致（启动于 ' + ((d && d.git_sha_boot) || '?') +
+                      '，当前磁盘 ' + ((d && d.git_sha_now) || '?') +
+                      '）。改动要重启 hub 才生效。') + '">需重启</span>';
+      } else {
+        staleEl.innerHTML = '';
+      }
+    }
   } catch (e) { setHealthDot('r', 'Hub 不可达：' + e.message); }
 }
 
@@ -4182,14 +4199,14 @@ function lpRowHtml(p, i) {
               (p.cloudcli ? '<span class="tag">cc</span>' : '');
   const acts = '<span class="nav-acts" style="display:inline-flex;gap:2px;align-self:center">' +
     '<span class="act-btn" style="' + (starred ? 'color:var(--warn,#d90)' : '') + '"' +
-    ' onclick="event.stopPropagation();lpToggleStar(' + i + ')"' +
+    ' data-lp-star="' + i + '"' +
     ' title="' + (starred ? '取消收藏' : '收藏——置顶排序') + '">' + ico('star') + '</span>' +
-    '<span class="act-btn" onclick="event.stopPropagation();lpToggleHide(' + i + ')"' +
+    '<span class="act-btn" data-lp-hide="' + i + '"' +
     ' title="' + (hidden ? '取消隐藏' : '隐藏——不再显示（可勾选顶部「显示隐藏」找回）') + '">' +
     ico('eye') + '</span></span>';
   return '<div class="mem-item' + on + (hidden ? ' lp-hidden-row' : '') + '" data-i="' + i +
     '" style="gap:6px;cursor:pointer' + (hidden ? ';opacity:.45' : '') + '"' +
-    ' onclick="lpSelect(' + i + ')"' +
+    ' data-lp-row="' + i + '"' +
     ' title="' + escapeHtml(p.path) + '">' +
     '<p style="min-width:0">' + (starred ? '<span style="color:var(--warn,#d90)">★ </span>' : '') +
     '<b>' + escapeHtml(p.name) + '</b>' + src +
@@ -4302,6 +4319,28 @@ async function lpStart() {
     setTimeout(() => termConnect(d.session.id, agent, { user: true }), 100);
   } catch (e) { toast('新建会话失败：' + e.message, 'err'); }
 }
+
+/* ── P1-17（2026-09-30）：行内动作按钮改事件委托，撤掉 inline onclick ──────────
+   为什么必须改：inline `onclick` 旁路事件委托（浮层唯一性红线第 2 条配套条款）。
+   行内按钮一旦自己 onclick，整段「点完收场」逻辑就被跳过 —— 抽屉/浮层开着的
+   情况下点收藏或隐藏，浮层留在原地，第二个浮层会把正文和第一个一起压住。
+   委托是**唯一出口**：所有分支都从这里过，stopPropagation 也在这一处统一做，
+   不依赖每个渲染点记得写。 */
+(function () {
+  var box = document.getElementById('lpList');
+  if (!box) return;
+  box.addEventListener('click', function (ev) {
+    var t = ev.target;
+    while (t && t !== box) {
+      var ds = t.dataset || {};
+      if (ds.lpStar != null) { ev.stopPropagation(); lpToggleStar(Number(ds.lpStar)); return; }
+      if (ds.lpHide != null) { ev.stopPropagation(); lpToggleHide(Number(ds.lpHide)); return; }
+      if (ds.lpRow != null)  { lpSelect(Number(ds.lpRow)); return; }
+      t = t.parentNode;
+    }
+  });
+})();
+
 /* ── GitHub 项目页（v0.13.31）────────────────────────────────────────
  * 分片头注释（军规：分片源，不是 build 产物；产物在 static/hub.js 由
  * scripts/build_hubjs.sh 按字典序拼接，直接改产物会被 test_hubjs_split 判红）。
@@ -4408,14 +4447,14 @@ function ghRowHtml(r, i) {
       escapeHtml(String(r.local.path).slice(0, 72)) + '</span>' : '';
   const acts = '<span class="nav-acts" style="display:inline-flex;gap:2px;align-self:center">' +
     '<span class="act-btn" style="' + (starred ? 'color:var(--warn,#d90)' : '') + '"' +
-    ' onclick="event.stopPropagation();ghToggleStar(' + i + ')"' +
+    ' data-gh-star="' + i + '"' +
     ' title="' + (starred ? '取消收藏' : '收藏——置顶排序') + '">' + ico('star') + '</span>' +
-    '<span class="act-btn" onclick="event.stopPropagation();ghToggleHide(' + i + ')"' +
+    '<span class="act-btn" data-gh-hide="' + i + '"' +
     ' title="' + (hidden ? '取消隐藏' : '隐藏——不再显示（可勾选顶部「显示隐藏」找回）') + '">' +
     ico('eye') + '</span></span>';
   return '<div class="mem-item' + on + '" data-i="' + i +
     '" style="gap:6px;cursor:pointer' + (hidden ? ';opacity:.45' : '') + '"' +
-    ' onclick="ghSelect(' + i + ')"' +
+    ' data-gh-row="' + i + '"' +
     ' title="' + escapeHtml(r.full_name || '') + '">' +
     '<p style="min-width:0">' + (starred ? '<span style="color:var(--warn,#d90)">★ </span>' : '') +
     '<b>' + escapeHtml(r.name || '') + '</b>' + tags +
@@ -4593,6 +4632,28 @@ async function ghStart() {
     if (btn && ghSel != null && GH[ghSel]) btn.disabled = false;
   }
 }
+
+/* ── P1-17（2026-09-30）：行内动作按钮改事件委托，撤掉 inline onclick ──────────
+   为什么必须改：inline `onclick` 旁路事件委托（浮层唯一性红线第 2 条配套条款）。
+   行内按钮一旦自己 onclick，整段「点完收场」逻辑就被跳过 —— 抽屉/浮层开着的
+   情况下点收藏或隐藏，浮层留在原地，第二个浮层会把正文和第一个一起压住。
+   委托是**唯一出口**：所有分支都从这里过，stopPropagation 也在这一处统一做，
+   不依赖每个渲染点记得写。 */
+(function () {
+  var box = document.getElementById('ghList');
+  if (!box) return;
+  box.addEventListener('click', function (ev) {
+    var t = ev.target;
+    while (t && t !== box) {
+      var ds = t.dataset || {};
+      if (ds.ghStar != null) { ev.stopPropagation(); ghToggleStar(Number(ds.ghStar)); return; }
+      if (ds.ghHide != null) { ev.stopPropagation(); ghToggleHide(Number(ds.ghHide)); return; }
+      if (ds.ghRow != null)  { ghSelect(Number(ds.ghRow)); return; }
+      t = t.parentNode;
+    }
+  });
+})();
+
 /** 资源监控页（v0.13.52）——列出运行中 Agent 的进程资源，支持 Kill。
  *
  *  v0.13.54（2026-09-29 报障「资源页面还是无法加载」的真身）：删掉原第 5 行

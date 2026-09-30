@@ -201,6 +201,11 @@
         .hdot.g { background: var(--st-running); animation: pulse 2s infinite; }
         .hdot.y { background: var(--st-installed); }
         .hdot.r { background: var(--st-error); }
+        /* P1-19：code_stale 提示。后端一直在 /health 里算这个字段，前端此前零消费
+           ⇒ 「改了代码没重启」这件事只有知情者知道，普通用户看到的是「我改了怎么没变化」。
+           刻意不并进 status：代码没重启 ≠ 服务坏了（main.py 注释里的设计意图）。 */
+        .stale-tag { font-size: var(--fs-xs); color: var(--warn); border: 1px solid var(--warn-border);
+                     background: var(--warn-soft); border-radius: 4px; padding: 0 5px; cursor: help; }
 
         /* ── 左侧手风琴导航 + 右侧操作区（v0.7.0：20 个实体全部收拢进左栏）── */
         .shell { display: flex; flex: 1; overflow: hidden; }
@@ -876,6 +881,7 @@
         <h1 class="brand" title="Agent Hub"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h1>
         <div class="hstats">
             <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
+            <span id="hStale"></span>
             <span id="hAgents">Agents: -</span>
             <span id="hErrors"></span>
         </div>
@@ -1975,6 +1981,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=95308462"></script>
     <script src="/static/vendor/addon-web-links.js?v=f9287ac8"></script>
     <script src="/static/vendor/fit.js?v=26a74b2a"></script>
-    <script src="/static/hub.js?v=98d7ea85"></script>
+    <script src="/static/hub.js?v=a712583d"></script>
 </body>
 </html>

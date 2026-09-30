@@ -340,6 +340,23 @@ async function pollHealth() {
   try {
     const d = await api('/health');
     setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));
+    // P1-19：把 code_stale / needs_restart 兑到顶栏。纯 additive —— 圆点颜色仍只看
+    // status（代码没重启不等于服务坏了，这是 /health 自己的设计意图，别在这里改口径）。
+    const staleEl = $('hStale');
+    if (staleEl) {
+      // 字段名以 src/selfattest.py 的 snapshot() 为准：needs_restart 才是本体，
+      // code_stale 只是兼容别名，且「不可判定」时被压成 False —— 那种情况
+      // 另有 code_stale_reason 说明，所以只在明确为 true 时才提示。
+      const needRestart = d && d.needs_restart === true;
+      if (needRestart) {
+        staleEl.innerHTML = '<span class="stale-tag" title="' +
+          escapeHtml('运行中的代码与磁盘不一致（启动于 ' + ((d && d.git_sha_boot) || '?') +
+                      '，当前磁盘 ' + ((d && d.git_sha_now) || '?') +
+                      '）。改动要重启 hub 才生效。') + '">需重启</span>';
+      } else {
+        staleEl.innerHTML = '';
+      }
+    }
   } catch (e) { setHealthDot('r', 'Hub 不可达：' + e.message); }
 }
 

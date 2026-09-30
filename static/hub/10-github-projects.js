@@ -104,14 +104,14 @@ function ghRowHtml(r, i) {
       escapeHtml(String(r.local.path).slice(0, 72)) + '</span>' : '';
   const acts = '<span class="nav-acts" style="display:inline-flex;gap:2px;align-self:center">' +
     '<span class="act-btn" style="' + (starred ? 'color:var(--warn,#d90)' : '') + '"' +
-    ' onclick="event.stopPropagation();ghToggleStar(' + i + ')"' +
+    ' data-gh-star="' + i + '"' +
     ' title="' + (starred ? '取消收藏' : '收藏——置顶排序') + '">' + ico('star') + '</span>' +
-    '<span class="act-btn" onclick="event.stopPropagation();ghToggleHide(' + i + ')"' +
+    '<span class="act-btn" data-gh-hide="' + i + '"' +
     ' title="' + (hidden ? '取消隐藏' : '隐藏——不再显示（可勾选顶部「显示隐藏」找回）') + '">' +
     ico('eye') + '</span></span>';
   return '<div class="mem-item' + on + '" data-i="' + i +
     '" style="gap:6px;cursor:pointer' + (hidden ? ';opacity:.45' : '') + '"' +
-    ' onclick="ghSelect(' + i + ')"' +
+    ' data-gh-row="' + i + '"' +
     ' title="' + escapeHtml(r.full_name || '') + '">' +
     '<p style="min-width:0">' + (starred ? '<span style="color:var(--warn,#d90)">★ </span>' : '') +
     '<b>' + escapeHtml(r.name || '') + '</b>' + tags +
@@ -289,3 +289,25 @@ async function ghStart() {
     if (btn && ghSel != null && GH[ghSel]) btn.disabled = false;
   }
 }
+
+/* ── P1-17（2026-09-30）：行内动作按钮改事件委托，撤掉 inline onclick ──────────
+   为什么必须改：inline `onclick` 旁路事件委托（浮层唯一性红线第 2 条配套条款）。
+   行内按钮一旦自己 onclick，整段「点完收场」逻辑就被跳过 —— 抽屉/浮层开着的
+   情况下点收藏或隐藏，浮层留在原地，第二个浮层会把正文和第一个一起压住。
+   委托是**唯一出口**：所有分支都从这里过，stopPropagation 也在这一处统一做，
+   不依赖每个渲染点记得写。 */
+(function () {
+  var box = document.getElementById('ghList');
+  if (!box) return;
+  box.addEventListener('click', function (ev) {
+    var t = ev.target;
+    while (t && t !== box) {
+      var ds = t.dataset || {};
+      if (ds.ghStar != null) { ev.stopPropagation(); ghToggleStar(Number(ds.ghStar)); return; }
+      if (ds.ghHide != null) { ev.stopPropagation(); ghToggleHide(Number(ds.ghHide)); return; }
+      if (ds.ghRow != null)  { ghSelect(Number(ds.ghRow)); return; }
+      t = t.parentNode;
+    }
+  });
+})();
+
