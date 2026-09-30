@@ -1,3 +1,37 @@
+## v0.13.62 — 历史「看得见、点不进去」：v0.13.61 半边修复的收尾
+
+> 由 `wt/01a0f090` 施工。用户报障「点击历史会话记录还是无法拉起，显示续聊失败」。
+
+### 根因（实测复现，非推断）
+
+v0.13.61（PT-20260930-03）把 `sessions_store._t_codex` 的 `source='cli'` 白名单换成了
+排除集，**只改了列表侧**；续聊前的存在性校验 `_exists_on_disk` 里那条
+`where id=? and source='cli' and archived=0` 原封未动。
+
+于是形成半边修复：列表放行了 IDE 扩展开的会话（`threads.source='vscode'`），
+点下去却被校验判 404。实盘复现（`~/.codex/state_5.sqlite`，source 分布 cli 7 / vscode 10 /
+exec 75 / subagent 5）：
+
+    POST /api/term/sessions  {"agent_id":"codex","session_id":"01a0f084-…"}
+    → {"detail":"session_id 不在实盘清单内"}          # 但这条正在侧栏历史里显示
+
+journal 里 09-30 当天 4 次 404 与 200 相间，正是这个分叉（新建会话不带 session_id ⇒ 200）。
+
+### 修法
+
+- 校验侧改用与列表**同一套**排除集（`exec` 探针 + `{"subagent":…}` 子代理仍拒）。
+- 抽 `_codex_real_user_sql()` 返回 `(where 片段, 绑定参数)` 作为**唯一判据真源**，
+  列表与校验各调一次。两处各写一份 SQL 字面量，正是这次走偏的直接原因。
+- 反向闸照旧：噪音来源仍 404（`test_codex_noise_source_still_rejected`）。
+
+### 验收
+
+- 新增 `test_listed_codex_session_is_resumable`：**拿列表自己的结果去问 `resume_argv`**，
+  把「列表能列出来的必须点得进去」锁成不变量。
+- 变异测试：精确复刻 09-30 现场（列表=排除集、校验=白名单）⇒ 5 例红；反向放宽成全收
+  ⇒ 噪音闸红；还原后全绿。
+- L0-hermetic 908 OK 零跳过、L1-host 47 OK。
+
 # CHANGELOG
 
 ## v0.13.61 — codex 最新会话不显示：source 白名单漏掉 IDE 扩展入口
