@@ -208,8 +208,11 @@ def execute(sql: str, params: tuple = ()) -> int:
 
 
 def execute_script(sql: str) -> None:
+    """executescript 会先隐式 commit 当前事务再执行脚本，末尾不 commit 时
+    后续连接看不到已执行语句的效果（读不到 / 关进程丢失）⇒ 显式补 commit。"""
     with _lock:
         _conn.executescript(sql)
+        _conn.commit()
 
 
 def upsert_telemetry(source: str, session_id: str, event: str,

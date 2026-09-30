@@ -45,9 +45,13 @@ PROFILE_CHARS = int(os.getenv("MEMORY_PROFILE_CHARS", "1200"))
 def _local_l1(q: str, limit: int) -> list:
     # `layer='L1'` 不是多余过滤：`list_l1` 一直按 layer='L1' 取数，而检索路此前把全表混入
     # 融合，两个端点口径不一致（同一个库给两个答案）。09-24 独立复核发现。
+    # LIKE 的通配符 % / _ 未转义时，用户查 "50%" 会匹配全表、查 "a_b" 会命中 "axb"
+    # ⇒ 检索结果与查询词无关。转义 + 显式 ESCAPE 是唯一正解（加 \ 本身也需转义）。
+    pat = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     rows = db.query(
-        "SELECT * FROM memories WHERE status='active' AND layer='L1' AND content LIKE ? "
-        "ORDER BY updated_at DESC LIMIT ?", (f"%{q}%", limit))
+        "SELECT * FROM memories WHERE status='active' AND layer='L1' "
+        "AND content LIKE ? ESCAPE '\\' "
+        "ORDER BY updated_at DESC LIMIT ?", (pat, limit))
     for r in rows:
         r["source"] = "local"
     return rows

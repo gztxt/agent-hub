@@ -147,14 +147,29 @@ VERSION = "0.13.58"   # 终端状态跨客户端连续（TTL 判据=无生命迹
                       #   「VERSION 与清 code_stale 随下次后端改动同批」⇒ 本次一并 bump。
                       #   上一版（v0.13.20 FCC 退役收尾 / v0.13.19 P3 工具注册表 + P4 资产面板）明细见 CHANGELOG.md。
 
+#: 常驻后台任务统一登记处。裸 create_task 不持引用 ⇒ 事件循环只持弱引用，
+#: GC 可能在任意时刻回收掉这些循环任务（表现为「跑着跑着某功能静默停摆」），
+#: 且 shutdown 时无法 cancel，进程退出要等事件循环超时。
+_bg_tasks: set = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
 app = FastAPI(title="Agent Hub", version=VERSION)
 
 
 def _parse_cors_origins() -> list:
     """CORS_ORIGINS 逗号分隔解析；异常/为空时退化为仅回环来源（不放松默认安全）"""
-    raw = os.getenv(
-        "CORS_ORIGINS",
-        "http://192.168.5.102:3102,http://127.0.0.1:3102,http://100.117.232.62:3102")
+    # 原默认值写死了三个内网 IP。换个网段（Tailscale 重新分配、或搬到别的 LAN）就静默失效：
+    # 页面能开但所有写端点 400 CORS，用户只会看到「按钮点了没反应」。
+    # 改为 env 驱动、**默认只给回环**（更严，且本机自用不受影响），跨网访问显式配 CORS_ORIGINS。
+    # 绝不放宽到 "*"：allow_credentials=True 时浏览器会直接拒绝通配来源。
+    raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:3102,http://localhost:3102,http://[::1]:3102")
     try:
         origins = [o.strip() for o in raw.split(",") if o.strip()]
         for o in origins:
@@ -987,12 +1002,12 @@ async def startup():
     tasks_mod.set_context(
         chat_fn=lambda a, m, s=None, mo=None, tr=None: _chat_dispatch(a, m, s, mo, tr),
         agent_ids_fn=lambda: [c["id"] for c in discovery.all_configs()])
-    asyncio.create_task(tasks_mod.sweep_stale_tasks())
-    asyncio.create_task(vitals_loop())
-    asyncio.create_task(model_drift_loop())   # 配置漂移巡检（CCR 重启会把模型改回旧值）
-    asyncio.create_task(prov_loop())   # 代码溯源（工作区脏度）刷新
+    _spawn(tasks_mod.sweep_stale_tasks())
+    _spawn(vitals_loop())
+    _spawn(model_drift_loop())   # 配置漂移巡检（CCR 重启会把模型改回旧值）
+    _spawn(prov_loop())   # 代码溯源（工作区脏度）刷新
     # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
-    asyncio.create_task(term_mod.reap_loop())
+    _spawn(term_mod.reap_loop())
     mcpgw_mod.ensure_schema()
     cronjobs_mod.ensure_schema()
     cronjobs_mod.set_context(
@@ -1023,6 +1038,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    for t in list(_bg_tasks):
+        t.cancel()
+    if _bg_tasks:
+        await asyncio.gather(*_bg_tasks, return_exceptions=True)
+        _bg_tasks.clear()
     if _embed_proxy is not None:
         await _embed_proxy.stop()
     term_mod.kill_all()

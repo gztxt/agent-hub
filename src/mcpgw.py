@@ -236,8 +236,15 @@ class AclIn(BaseModel):
 
 @router.post("/mcp/acl")
 async def add_acl(body: AclIn, request: Request):
-    aid = db.query("SELECT id FROM mcp_servers WHERE id=? OR name=?",
-                   (body.server_id, body.server_id))[0]["id"] if body.server_id else None
+    aid = None
+    if body.server_id:
+        rows = db.query("SELECT id FROM mcp_servers WHERE id=? OR name=?",
+                        (body.server_id, body.server_id))
+        # 空列表时 [0] 抛 IndexError ⇒ 500，且看不出是"传了个不存在的 server"；
+        # 语义上就是 404，调用方可据此区分参数错与内部故障。
+        if not rows:
+            raise HTTPException(404, f"mcp server 不存在: {body.server_id}")
+        aid = rows[0]["id"]
     db.execute("INSERT INTO mcp_acl(agent_id,server_id,tool_pattern,allow) VALUES(?,?,?,?)",
                (body.agent_id, aid, body.tool_pattern, 1 if body.allow else 0))
     db.log_asset_event("mcp_acl", str(aid or "*"), "bind", writeauth.actor_of(request),

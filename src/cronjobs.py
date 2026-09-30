@@ -10,6 +10,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -189,6 +190,7 @@ async def _tick_loop():
     while True:
         try:
             now = datetime.now()
+            due = []
             for job in db.query("SELECT * FROM jobs WHERE enabled=1"):
                 try:
                     base = (datetime.fromisoformat(job["last_run"])
@@ -197,9 +199,17 @@ async def _tick_loop():
                             else now.replace(second=0, microsecond=0))
                     nxt = croniter(job["cron"], base).get_next(datetime)
                     if nxt <= now:
-                        await _fire(job)
+                        due.append(job)
                 except Exception:  # noqa: BLE001
                     continue
+            # 并发触发 + 异常隔离：串行 await 时一个 job 抛错会拖住本轮其余 job 的调度，
+            # 且异常被 continue 吞掉、无日志，事后无从判断是哪个 job 没跑。
+            if due:
+                res = await asyncio.gather(*(_fire(j) for j in due), return_exceptions=True)
+                for job, r in zip(due, res):
+                    if isinstance(r, BaseException):
+                        print(f"[cron] job {job.get('name') or job.get('id')} 触发失败: {r!r}",
+                              file=sys.stderr)
         except Exception:  # noqa: BLE001
             pass
         await asyncio.sleep(TICK_S)

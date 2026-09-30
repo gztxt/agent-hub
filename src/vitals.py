@@ -489,7 +489,9 @@ class Vitals:
     def _save(self):
         try:
             STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            tmp = STATE_PATH.with_suffix(".json.tmp")
+            # tmp 名带 pid+线程 id：并发 sweep 各写各的 tmp，os.replace 才是唯一落盘点。
+            # 固定名 .json.tmp 时两个线程互相 truncate/write ⇒ 落盘 JSON 偶发残缺。
+            tmp = STATE_PATH.with_suffix(f".json.tmp.{os.getpid()}.{threading.get_ident()}")
             tmp.write_text(json.dumps(
                 {"by_sha": self._by_sha, "latest": self._latest, "rt": self._rt,
                  "last_sweep": self.last_sweep, "saved_at": time.time()},

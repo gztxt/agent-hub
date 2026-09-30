@@ -18,15 +18,24 @@
 
 import asyncio
 import os
+import re
 import signal
 import subprocess
 import time
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 
 import profiles
 import hublog
+
+@lru_cache(maxsize=256)
+def _proc_re(rx: str):
+    """进程匹配正则预编译并缓存。原实现每次遍历进程都 __import__("re").compile(rx)，
+    资源采集与「结束进程」两处各有一个循环，进程数上百时是纯浪费（且两处重复编译）。"""
+    return re.compile(rx)
+
 
 router = APIRouter(tags=["resources"])
 
@@ -194,7 +203,7 @@ async def _collect_agent_resources() -> List[dict]:
             pid = pr["pid"]
             ok = False
             for rx in proc_patterns:
-                pat = __import__("re").compile(rx)
+                pat = _proc_re(rx)
                 if pat.search(pr["comm"]) or pat.search(pr["cmdline"]):
                     # MainThread 这类通用 comm 需 cmdline 佐证（与 profiles.detect_status 同口径）
                     if rx == "MainThread":
@@ -332,7 +341,7 @@ async def kill_resource(
     for pr in procs:
         ok = False
         for rx in proc_patterns:
-            pat = __import__("re").compile(rx)
+            pat = _proc_re(rx)
             if pat.search(pr["comm"]) or pat.search(pr["cmdline"]):
                 # MainThread 这类通用 comm 需 cmdline 佐证（与采集侧、profiles.detect_status 同口径）
                 if rx == "MainThread":
