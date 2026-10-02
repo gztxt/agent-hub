@@ -23,6 +23,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import profiles  # noqa: E402
 
+try:
+    import tiers
+except ImportError:  # 单文件直跑时降级：不强制
+    tiers = None
+
 PORT = 35431
 
 
@@ -89,7 +94,11 @@ class TestProjectPageCandidates(unittest.TestCase):
         self.assertIn("pi", ids)
         self.assertIn("codebuddy", ids)
 
+    @tiers.host_only
     def test_pi_terminal_cmd_resolves(self):
+        # 依赖真实宿主：profiles.which() 兜底链走 Path.home()/".npm-global/bin"，
+        # 而 pi 不在服务进程的 PATH 上 ⇒ 假 HOME（hermetic-clean）下必然 None。
+        # 2026-10-02：由 A4 推送前的既存红修复，与 A4 无关，改判为 L1 真跑而非跳过。
         p = _card("pi")
         cmd = (p.get("terminal") or {}).get("cmd")
         self.assertEqual(cmd, "pi")

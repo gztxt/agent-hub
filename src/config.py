@@ -49,7 +49,14 @@ class Config:
         self.hook_auth_token = os.getenv("HOOK_AUTH_TOKEN", "")
         
         # 数据路径
-        self.data_dir = Path(os.getenv("DATA_DIR", Path.home() / "agent-hub" / "data"))
+        # 2026-10-02：默认值由 ~/agent-hub/data 改为**仓库相对** data/，与同仓
+        # memindex.DB_PATH（__file__/../data）同源。此前默认写死在迁移前的旧项目路径，
+        # 而 config.__init__ 紧接着就 mkdir(parents=True) ⇒ 任何未加载 .env 的进程
+        # （临时脚本 / 子代理 / 裸跑 pytest）都会**静默把第二个数据根重建出来**，
+        # 且 rebuild 出来的空壳长得跟真数据根一模一样，专治"看不见的复发"。
+        # 生产无行为变化：.env:21 的 DATA_DIR 仍优先生效。
+        _repo_data = Path(__file__).resolve().parent.parent / "data"
+        self.data_dir = Path(os.getenv("DATA_DIR", _repo_data))
         self.log_dir = Path(os.getenv("LOG_DIR", self.data_dir / "logs"))
         
         # 确保目录存在
