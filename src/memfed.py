@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+import memindex
 import sessions_store
 import tdai_client
 
@@ -267,6 +268,33 @@ def _rg_item(source_id: str, line: str) -> Optional[dict]:
     }
 
 
+#: A4 投影层（memindex FTS）可加速的三路。**默认行径不含它们**（memory.FED_FAST_SOURCES
+#: 只列 local,tdai,claude_mem,workbuddy_memory,claude_projects），所以它们只在调用方
+#: 显式 `sources=` 点名时才进 `want` ⇒ 「显式才走 FTS」这条边界由白名单天然保证，
+#: 不靠本模块再判一次「是不是显式的」（那样会多出一套真相）。
+#: ⚠️ 放量是 A4 之外的独立一步（规格 §八 裁定 1：三路探针各 ≤200ms 且 G13 全绿才提请）。
+_PROJ_TARGETS = ("pi_sessions", "codex_sessions", "archived_sessions")
+
+
+def _search_proj(source_id: str, q: str, limit: int, timeout: float) -> Dict:
+    """走 memindex FTS 投影；**任何降级信号一律回退 rg**（fail-closed，绝不静默返空）。
+
+    降级信号一律落在 `fallback` 键上（`short_query` / `no_index` / `low_disk` /
+    `corrupt` / `query_error`），不是 `ok=False`——`ok` 描述的是「有没有索引可用」，
+    两者不同义，混在一起会让前端分不清「源坏了」和「该走 rg 了」。
+    回退时把原因挂到 `proj_fallback` 出站，不静默：否则用户只会看到「还是那么慢」。
+    """
+    t0 = time.monotonic()
+    r = memindex.search(q, limit=limit, sanitize=_sanitize_content,
+                        sources=(source_id,))
+    fb = r.get("fallback")
+    if fb:
+        out = _search_rg_text(source_id, q, limit, timeout)
+        out["proj_fallback"] = fb
+        return out
+    return r
+
+
 def _search_rg_text(source_id: str, q: str, limit: int, timeout: float) -> Dict:
     t0 = time.monotonic()
     paths, glob = _RG_TARGETS[source_id]
@@ -313,6 +341,12 @@ def _probe_one(source_id: str) -> Dict:
             return {"ok": False, "count": 0,
                     "note": tdai_client.scrub(f"{type(e).__name__}")[:80],
                     "ms": round((time.monotonic() - t0) * 1000, 1)}
+    if source_id in _PROJ_TARGETS:
+        # 投影源不跑 `rg --files`（O(文件数) 的老毛病）：读 meta，毫秒级
+        p = memindex.probe()
+        return {"ok": bool(p.get("ok")), "count": p.get("count", 0),
+                "note": "proj:" + str(p.get("note") or p.get("error") or "")[:70],
+                "ms": p.get("ms")}
     paths, glob = _RG_TARGETS.get(source_id, ([], None))
     alive = [p for p in paths if os.path.exists(p)]
     if not alive:
@@ -361,7 +395,9 @@ def _build_tasks(q: str, limit: int, want: set) -> Dict:
         if src.kind == "sqlite_fts":
             tasks[sid] = asyncio.to_thread(_search_claude_mem, q, limit)
         elif src.kind == "rg_text":
-            tasks[sid] = asyncio.to_thread(_search_rg_text, sid, q, limit, src.timeout_s)
+            # 三路慢源改走投影层（默认行径不含它们，见 _PROJ_TARGETS 注释）
+            fn = _search_proj if sid in _PROJ_TARGETS else _search_rg_text
+            tasks[sid] = asyncio.to_thread(fn, sid, q, limit, src.timeout_s)
     return tasks
 
 

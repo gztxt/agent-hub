@@ -4,11 +4,17 @@
 （`Ran 71 tests ... OK`），而其中相当一部分断言的是**这台 NAS 上恰好存在的目录形态**
 —— 换台机器（或干净 CI runner）它们必然红，于是"能不能上 CI"这个问题一直没有答案。
 
-| 层 | 判据 | 换机行为 | 数量（09-23） |
+| 层 | 判据 | 换机行为 | 数量（2026-10-02 实测） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | 265 |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | 35 |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | 29 |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **983** |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **50** |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **42**（文件数，非用例数） |
+
+> 计数口径（写下来防后人重蹈“表里数字没来源”）：983/50 来自 `run_tests.sh hermetic` 与
+> `run_tests.sh host` 的 `[tier] ran=` 行；两者相加 1033 = 收集器对账报的
+> `unittest=1033 = pytest=1033`，即**下面那张表与实际收集集一致**，没有“表里有、套件不收”。
+> L2 42 是 `tests/verify_*.py tests/probe_*.py` 的**文件数**，它不被 unittest 收，故与前两行不同量纲。
+> 上一版表里的 265/35/29 是 09-23 的数，**已按实测定稿，不再沿用旧数**。
 
 ## 怎么跑
 
@@ -29,6 +35,16 @@ venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（L0+
 
 ## 新测试该放哪一层
 
+0. A4 索引投影层（`src/memindex.py`）的闸门是**现成样板**，但它同时是**分层放错的教材**：
+   - `tests/test_memindex_proj.py`（G9~G17，33 例）全在 `tempfile` 里造夹具、**与真 `rg` 逐条对拍**
+     ⇒ **L0**，且 `hermetic-clean`（空 HOME）下同样成立（对拍用的是 `rg` 二进制不是网络）。
+   - `tests/test_memindex_glob.py` 的 **G18（3 例）是 L0**，**G19（3 例）是 L1**——
+     G19 `enumerate_corpus(proj_specs())` 读本机真目录，已打 `@tiers.host_only`。
+     初版把 G19 也放进 L0 且没打 host 标，结果 `hermetic-clean` 下 10 例集体报红，
+     而失败文案恰好是「投影为 0 个文件」——**与该闸门要抓的真 bug 字面同形**。
+     教训：分层放错的代价不是「报红」，是「报出一个与真故障无法区分的红」，人只会当成目录没了。
+   两条值得照抄的写法：**用真 rg 对拍**（而非断言硬编码清单）、**红向用例自带对照组**
+   （`test_g15_不脱敏就会泄密_对照组` 那种）。
 1. 能用 `tempfile` 造出前提 ⇒ **L0**（首选）。例：`test_staticguard.py` 全部在临时目录里造
    `static/`、兄弟目录 `static_evil/`、软链、`.bak` 件。
 2. 必须读这台机器的真实仓库 ⇒ **L1**，打 `@tiers.host_only`（class 或 method 都行）。
