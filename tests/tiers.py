@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import ast
 import os
 import unittest
 from pathlib import Path
@@ -69,6 +70,89 @@ def missing_host_paths() -> list:
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+# ── 收集器对账（2026-10-02，PT-20261002-10）──────────────────────────────
+#: 事故形态：闸门写成**模块级 pytest 风格** `def test_x()` ⇒ `unittest discover`
+#: **收不到** ⇒「标准套件全绿」与「新闸门真的跑过」变成两件事（本批实测：
+#: `pytest tests/` 975 vs `run_tests.sh all` 961，差的 14 条正是这种写法）。
+#: 下面三个函数把这条口径变成机器判：① 写出来的必须收得进 ② 每个文件都得有份
+#: ③ 两个收集器例数对得上（换个 runner 不掉例）。同族前例：vitals_loop 函数头丢失、
+#: 前端 TDZ、test_asset_audit 的缩进错位 —— 都是「代码存在 ≠ 会被执行」。
+
+STANDARD_PATTERN = "test_*.py"
+
+
+def standard_test_files(root: Path | None = None) -> list:
+    """标准层（L0+L1）的测试文件清单。"""
+    d = (root or repo_root()) / "tests"
+    return sorted(p for p in d.glob(STANDARD_PATTERN) if p.is_file())
+
+
+def _base_name(node) -> str:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Subscript):
+        return _base_name(node.value)
+    return ""
+
+
+def module_level_test_functions(root: Path | None = None) -> list:
+    """标准层里 **unittest discover 收不到** 的 test_ 函数。
+
+    判据只管**模块顶层的** ``def test_*`` —— 那种写法 pytest 收、unittest 不收，
+    无条件成立（2026-10-02 本批事故形态：14 条 ⇒ 961 vs 975）。
+
+    ★ 为什么**不**在语法上判「非 TestCase 类里的 test_*」：试过，**误报 216 条**。
+    仓里的常规写法是 ``class TestTransport(TdaiBase)`` ——``TdaiBase`` 是本模块里
+    另一个 ``unittest.TestCase`` 子类的别名，unittest 照收不误（实测 17/10/22 例）。
+    基类别名一多，语法推断必然假红，而**假红的闸门比没有闸门更坏**（会逼人改断言）。
+    类级差异改由**例数对账**兜（unittest vs pytest，只收不跑）——那是运行期事实，
+    没有推断余地。嵌在函数里的那种由 ``tests/test_asset_audit.py`` 的
+    ``TestGateSelfCheck`` 负责，三者合起来才封死。
+    """
+    bad = []
+    for p in standard_test_files(root):
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name.startswith("test_"):
+                bad.append("%s:%d 模块级 %s()" % (p.name, node.lineno, node.name))
+    return bad
+
+
+def unittest_collected_count(root: Path | None = None) -> int:
+    """unittest discovery 在标准层收进多少例。"""
+    d = (root or repo_root()) / "tests"
+    return unittest.TestLoader().discover(str(d), pattern=STANDARD_PATTERN).countTestCases()
+
+
+def file_collected_count(fname: str, root: Path | None = None) -> int:
+    """单个文件被 unittest 收进多少例（0 ⇒ 这个文件是死的）。"""
+    d = (root or repo_root()) / "tests"
+    return unittest.TestLoader().discover(str(d), pattern=fname).countTestCases()
+
+
+def pytest_collected_count(root: Path | None = None) -> tuple:
+    """``pytest --collect-only`` 数一遍，返回 ``(例数, 理由)``；跑不了就返回 (None, 理由)。
+
+    只收集不执行（收集约 2s），所以当对账用很便宜；**不拿它跑用例** ——
+    那会让同一批用例跑两遍、两个例数并排，入库时反而看不出哪个是真口径。
+    """
+    import re
+    import shutil
+    import subprocess
+    import sys
+    if shutil.which("pytest") is None:
+        return None, "本机没装 pytest ⇒ 没法对账（装上 pytest 后这条会生效）"
+    r = subprocess.run([sys.executable, "-m", "pytest", "tests", "--collect-only", "-q"],
+                       cwd=str(root or repo_root()), capture_output=True, text=True, timeout=300)
+    m = re.search(r"(\d+) tests? collected", r.stdout)
+    if not m:
+        return None, "pytest 输出里找不到 collected 计数（rc=%d）" % r.returncode
+    return int(m.group(1)), "pytest --collect-only"
 
 
 # ── L0 夹具收尾（v0.13.58）───────────────────────────────────────────────────

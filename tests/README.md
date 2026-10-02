@@ -17,9 +17,13 @@ bash scripts/run_tests.sh hermetic         # 只 L0，以"零跳过"为闸
 bash scripts/run_tests.sh hermetic-clean   # L0 + 把 HOME 换成空目录 ⇒ 真模拟干净 runner
 bash scripts/run_tests.sh all              # L0 + L1（本机全量）
 bash scripts/run_tests.sh host             # 只 L1
+bash scripts/run_tests.sh pytest           # 整层交 pytest 跑（对账用途，标准入口不用它）
 bash scripts/run_tests.sh probe verify_p1_backend.py http://127.0.0.1:3199
-venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（97 例，L0+L1 混在一起）
+venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（L0+L1 混在一起）
 ```
+
+`hermetic`/`host`/`all` 跑完都会附一步**收集器对账**：`unittest` 收进几例 vs `pytest`
+收进几例，不等即红（只 `--collect-only`，约 2s，不拿 pytest 跑用例）。
 
 强制开关：`HUB_HOST_TESTS=1|0` 覆盖自动探测（探测判据＝上面六个宿主路径是否**全部**存在）。
 
@@ -31,8 +35,15 @@ venv/bin/python -m unittest discover -s tests -p "test_*.py"   # 老口径（97 
 3. 需要一个在跑的 hub ⇒ **L2**，命名 `verify_*.py` / `probe_*.py`，`HUB_BASE`/首参给地址，
    并**自带红-绿对照**（同一份探针打改前/改后两棵树，别只给一个绿灯）。
 
-## 两条硬规矩（都对应过真实事故）
+## 三条硬规矩（都对应过真实事故）
 
+- **闸门必须写进 `unittest.TestCase`（模块顶层裸 `def test_*` 收不到）**：
+  `unittest discover` 只收 TestCase 子类，模块级 pytest 风格函数它**看不见** ⇒
+  "标准套件全绿"与"新闸门跑过了"变成两句话。2026-10-02 实测踩中：
+  `pytest tests/` 975 例、`run_tests.sh all` 961 例，差额正是 14 条裸函数闸门，
+  而报告里"961 全绿"并不假 —— 它只是没覆盖本批。现由
+  `tests/test_tier_collector_parity.py` 三条闸门封死（裸函数为 0 / 每个文件都有份 /
+  两个收集器例数相等），每条都带**自证样本**，避免元闸门自己恒绿。
 - **不 import `src.main`**：它一 import 就跑 lifespan —— 开真库 `data/agents.db`、起后台
   探针任务、绑端口。单测碰它等于碰生产数据。需要测路由里的判据时，把判据抽成纯函数
   （见 `src/staticguard.py`：正是为此从路由里抽出来的）。

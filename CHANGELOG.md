@@ -38,8 +38,27 @@ T2b 同步收紧为「松手再滑 **≥3 行**」并在红时打印产品侧 `i
     scripts/run_tests.sh all → 961（L0 914 + L1 47，unittest discover）
 
 差额 **14** 恰为本批 `test_term_touch_authurl.py` 的 14 条**模块级 pytest 风格**用例
-——`unittest discover` 收不进来 ⇒ **标准回归套件目前不跑这 14 条**（需另用 pytest 跑）。
-本条为已知缺口，未在本批修复（口径改动属设计决定）。
+——`unittest discover` 收不进来 ⇒ **标准回归套件当时不跑这 14 条**（需另用 pytest 跑）。
+
+**已于同日修复**（不改版本号，纯测试基础设施；两个方向都做了）：
+
+1. `test_term_touch_authurl.py` 的 14 条搬进 `TestTermTouchAuthUrlGates` ——
+   **只改归属与缩进，28 条 assert 逐字未变**（已用 `ast.unparse` 前后比对取证）；
+   `node --check` 那条按仓内同族写法（`test_export_button.py` 等）补了缺 node 时的显式跳过。
+2. `run_tests.sh` 兼跑 pytest：新增 `pytest` 模式；`hermetic`/`host`/`all` 跑完自动做
+   **收集器对账**（`unittest` 收进 N 例 vs `pytest --collect-only` 收进 N 例，不等即红、
+   退出码 2）。**只收不跑** —— 拿 pytest 跑用例会让同一批跑两遍、两个例数并排。
+
+另建 `tests/test_tier_collector_parity.py` 三条仓级闸门（每条都带自证样本，防元闸门恒绿）：
+① 标准层无 unittest 收不到的模块级裸函数 ② 每个 `test_*.py` 至少贡献 1 例
+③ 两个收集器例数相等。
+
+> 判据边界（取证后收窄）：① 曾连带管「非 TestCase 类里的 test_*」，**误报 216 条** ——
+> 仓里常规写法是 `class TestTransport(TdaiBase)`，`TdaiBase` 是同模块另一 TestCase
+> 子类的别名，unittest 照收（实测 17/10/22 例）。**假红的闸门比没有闸门更坏**（会逼人
+> 改断言求绿），故类级差异交给 ③ 兜（运行期事实，无推断余地）。
+
+现口径：`run_tests.sh all` = **L0 934 + L1 47 = 981**，与 `pytest tests/` 的 981 一致。
 
 ## v0.13.63 — 终端滚轮「无法上翻 / 滚动不到页顶」：xterm 6.0 的 scrollSensitivity 从没被显式设过
 

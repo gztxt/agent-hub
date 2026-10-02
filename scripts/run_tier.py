@@ -70,6 +70,36 @@ def _run(tests, label, stream=sys.stderr):
     return res, len(res.skipped), len(tests)
 
 
+def _parity() -> int:
+    """收集器对账：unittest 收进几例 vs pytest 收进几例，必须相等。
+
+    为什么要在**分层跑完之后**再做：`run_tests.sh all` 只跑 L0+L1，而 pytest 一次
+    收全标准层 —— 两边例数不等就说明有 test_ 只有某个 runner 收得到（2026-10-02 实测：
+    模块级 pytest 风格闸门 14 条 ⇒ 961 vs 975，标准套件压根没跑本批闸门却报全绿）。
+    只做 `--collect-only`（约 2s），**不拿 pytest 跑用例** —— 那会同一批跑两遍、
+    两个例数并排，入库时反而看不出哪个是真口径。详见 tests/tiers.py 同名段。
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    import tiers  # noqa: E402
+    bad = tiers.module_level_test_functions()
+    if bad:
+        print("[tier] ❌ 标准层有 unittest 收不到的 test_（标准套件里它们不会执行）：")
+        for b in bad:
+            print("        " + b)
+        return 2
+    n_unit = tiers.unittest_collected_count()
+    n_pytest, why = tiers.pytest_collected_count()
+    if n_pytest is None:
+        print("[tier] ⚠ 收集器对账跳过：%s（unittest=%d 例已跑）" % (why, n_unit))
+        return 0
+    if n_unit != n_pytest:
+        print("[tier] ❌ 收集器对账：unittest=%d ≠ pytest=%d ⇒ 有用例只被一个 runner 收进来"
+              % (n_unit, n_pytest))
+        return 2
+    print("[tier] ✅ 收集器对账：unittest=%d = pytest=%d（%s）" % (n_unit, n_pytest, why))
+    return 0
+
+
 def main(argv):
     tier = (argv[0] if argv else "all").lower()
     fake_home = "--fake-home" in argv
@@ -112,6 +142,7 @@ def main(argv):
                 rc = max(rc, 2)
         if tier == "all" and host:
             print("[tier] （L1 已随 all 一起跑过；单独看：run_tier.py host）")
+        rc = max(rc, _parity())
         return rc
     finally:
         if fake_home and saved_home:
