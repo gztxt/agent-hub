@@ -45,6 +45,18 @@ journalctl --user --since "-10min" --no-pager | grep -iE 'hub-facade|hub_memory'
 
 ---
 
+> **若重启后 pi-web 没自己起来**（自救命令，优先用这个，不要手杀）：
+>
+> ```bash
+> systemctl --user restart pi-web.service    # 禁 pkill / killall
+> ss -ltn | grep 30141                       # 期望 LISTEN
+> journalctl --user -u pi-web.service -n 40 --no-pager
+> ```
+>
+> `pi-web.service` 的 main pid 就是承载本会话的那个进程（restart 会**终止本会话**）。
+
+---
+
 ## 二、纪律（上一会话踩过的，别再踩）
 
 1. **探活同一判据最多 2 次**；2 次无结论就以 FAIL / 未实证 上报停手，**禁第三次重试与轮询**。
