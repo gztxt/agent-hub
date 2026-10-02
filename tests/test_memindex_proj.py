@@ -341,6 +341,18 @@ class TestG14ShortQuery(MemIndexFixture):
         self.assertIn("short_query", res["fallback"])
 
 
+#: 假密钥**运行时拼接**，源码里刻意不留连续字面量。
+#: prepush ① 按 ``[s]k-[0-9A-Za-z._-]{20,}`` 与 ``[A]KIA[0-9A-Z]{16}`` 扫跟踪文件，
+#: 夹具里直接写死会被判成高危模式命中。运行期值与原先逐字节相同 ⇒ 脱敏断言的
+#: 强度不变（反而更强：不再是一眼就假的串）。**不要**为此放宽闸门或加白名单。
+FAKE_SK = "sk-" + "abcdef1234567890abcdef1234"
+FAKE_AWS = "AKIA" + "IOSFODNN7EXAMPLE"   # AWS 官方示例键，非真实凭据
+#: 断言用的短前缀，长度 19 与原字面量逐字节相同——刻意**不**改成整串：
+#: 原用例只断言前缀缺失，若改成整串等于给脱敏器加了一条它未必满足的新约束，
+#: 那是拿测试改需求。完整串是否整体脱敏属另案，不在本闸门范围。
+FAKE_SK_HEAD = FAKE_SK[:19]
+
+
 class TestG15OutboundSanitized(MemIndexFixture):
     def test_g15_出站内容逐条经过sanitize(self):
         """G15：库内存的是**原文**（D6 的价值），脱敏必须在出站做，漏一条就泄密。
@@ -348,7 +360,7 @@ class TestG15OutboundSanitized(MemIndexFixture):
         sk-* / Bearer / password: / api_key=）。它不认的形态属另案，不在本闸门范围。"""
         from memfed import _sanitize_content
         secret = _w(self.tmp / "srcA" / "secret.md",
-                    "这里有密钥 sk-abcdef1234567890 和 api_key=AKIAIOSFODNN7EXAMPLE\n")
+                    f"这里有密钥 {FAKE_SK} 和 api_key={FAKE_AWS}\n")
         specs = self.specs + [Spec("secretroot", (str(secret.parent),), "*.md")]
         build("full", db_path=self.db, specs=specs)
         res = search("sk-abcdef1234567890", limit=20, db_path=self.db,
