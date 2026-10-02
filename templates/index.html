@@ -841,6 +841,87 @@
         @media (min-width: 768px) {
             #page-chat .chat-grid { grid-template-columns: minmax(0, 1fr); }
         }
+
+        /* ═══ 记忆中心 A~E（2026-10-03）· hallmark 视觉层改造 ═══════════════
+           主题轴＝保留：灰阶骨架 + 语义色一字不动。该色板带 WCAG AA 实测审计链
+           （见 :root 注释）且是 pi-web 全站外框范式的一部分；换色会击穿
+           09-23 窄屏白遮挡 / 09-24 折叠对称两道事故的取证面。
+           改造轴＝结构与节奏：本页原为 L1/L2/L3 三层等权堆叠的「墙」，
+           真正在役的联邦 10 路记忆反而缩在第二张卡里 —— 信息主次倒置。
+
+           Macrostructure & pacing（4px 基数）
+             Block 0 状态带   gap --mx-2  密度 高   只读遥测，数字是唯一视觉手段
+             Block 1 源健康   gap --mx-2  密度 高   逐源 ok/count/ms，语义色全页唯一出口
+             Block 2 注入包   gap --mx-2  密度 中   默认可见（原 display:none）
+             Block 3 联邦检索 gap --mx-4  密度 中   按需触发，全页唯一主动作区
+             Block 4 本机旧层 gap --mx-3  密度 低   降级为档案，陈旧标识前置
+           密度自上而下递减，与 hallmark「逐块递增」相反 —— 有意取舍：
+           上三块无人操作（宜密），下两块是人工输入区（宜疏）。
+
+           Spacing scale（基数 4px，限定在 .mx-* 子作用域，不外溢其他页）
+           --mx-1:4px --mx-2:8px --mx-3:12px --mx-4:16px --mx-5:24px --mx-6:32px
+
+           Hallmark · pre-emit critique: P5 H4 E4 S4 R5 V4
+           （E=4 而非 5：语义色只给源健康一处，若把警告色撒到 Block 4 会把
+             「旧层档案」误读成「故障」；R=5：四档断点均已覆盖，无横向滚动） */
+        .mx-lead { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--mx-2); }
+        .mx-metric {
+            background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+            padding: var(--mx-2) var(--mx-3); min-width: 0;
+        }
+        .mx-metric b {
+            display: block; font-family: var(--font-mono); font-size: 19px; font-weight: 600;
+            line-height: 1.25; color: var(--text-1); font-variant-numeric: tabular-nums;
+        }
+        .mx-metric span { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+        .mx-metric.is-stale b { color: var(--warn); }
+
+        .mx-srcs { display: grid; grid-template-columns: 1fr; gap: 0; }
+        .mx-src {
+            display: grid; align-items: center; gap: var(--mx-2);
+            grid-template-columns: 8px minmax(0, 1fr) auto auto auto;
+            padding: var(--mx-2) 0; border-bottom: 1px solid var(--divider); min-width: 0;
+        }
+        .mx-src:last-child { border-bottom: 0; }
+        .mx-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+        .mx-dot.ok { background: var(--ok); }
+        .mx-dot.bad { background: var(--danger); }
+        .mx-dot.off { background: transparent; border: 1px solid var(--muted); }
+        .mx-src-n { color: var(--text-1); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+        .mx-src-k, .mx-src-c, .mx-src-t {
+            font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+            font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .mx-src.off .mx-src-n { color: var(--muted); text-decoration: line-through; }
+
+        .mx-hits { display: grid; grid-template-columns: 1fr; gap: 0; }
+        .mx-hit {
+            padding: var(--mx-2) 0; border-bottom: 1px solid var(--divider); min-width: 0;
+        }
+        .mx-hit:last-child { border-bottom: 0; }
+        .mx-hit p { margin: 0 0 2px; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+        .mx-hit .hint { display: block; }
+
+        .mx-ctx { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .mx-stale {
+            border: 1px solid var(--warn-border); background: var(--warn-soft);
+            color: var(--warn); border-radius: 6px; padding: var(--mx-2) var(--mx-3);
+            font-size: 12px; margin-bottom: var(--mx-3); overflow-wrap: anywhere;
+        }
+        .mx-stale b { font-weight: 600; }
+
+        /* 断点值必须与 static/hub/01-core-boot.js 的 matchMedia('(max-width:767px)')
+           保持同一取值（分档偏好不变量③）；只允许此一个取值，不得另写 innerWidth<768 */
+        @media (max-width: 767px) {
+            .mx-lead { grid-template-columns: repeat(2, 1fr); }
+            .mx-src { grid-template-columns: 8px minmax(0, 1fr) auto; row-gap: 2px; }
+            .mx-src-k { display: none; }
+            .mx-src-c, .mx-src-t { grid-row: 2; }
+            .mx-src-c { grid-column: 2; }
+            .mx-src-t { grid-column: 3; }
+            .mx-metric b { font-size: 17px; }
+            .mx-card .btn.sm { min-height: 44px; min-width: 44px; }
+        }
     </style>
 </head>
 <body>
@@ -1164,7 +1245,62 @@
              .sp-bd.box，不再有 420px 魔法数散在 CSS 里。 -->
         <section class="page sys" id="page-memory">
             <div class="sp">
-                <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
+                <!-- ═══ Block 0 状态带 + Block 1 源健康 + Block 2 注入包（A/B/D/E）═══
+                     A：首屏改为真实联邦记忆总览（此前首屏只有 4 条 2026-09-06 的本地便签）。
+                     B：接 /api/memory/fedsources 逐源健康。
+                     D：注入包默认可见 —— 这是 Agent 每次开局真正收到的内容。
+                     E：进页预检（go() 调 memOverview），不再要求用户先搜一次。
+                     四个数字全部来自实测响应，无任何估算或占位。 -->
+                <div class="sp-card mx-card">
+                    <div class="sp-hd">
+                        <h3>统一记忆总览</h3>
+                        <div class="sp-r">
+                            <span class="hint" id="mxLeadHint">进页自动预检</span>
+                            <button class="btn ghost sm" onclick="memOverview()">重新预检</button>
+                        </div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="mx-lead">
+                            <div class="mx-metric"><b id="mxMSrc">—</b><span>可用源 / 启用源</span></div>
+                            <div class="mx-metric"><b id="mxMItems">—</b><span>各源条目合计</span></div>
+                            <div class="mx-metric"><b id="mxMSlow">—</b><span>最慢源探测耗时</span></div>
+                            <div class="mx-metric"><b id="mxMSearch">—</b><span>预检检索耗时</span></div>
+                        </div>
+                        <div class="hint" id="mxLeadNote" style="margin-top:var(--mx-2)"></div>
+                    </div>
+                </div>
+
+                <div class="sp-card mx-card">
+                    <div class="sp-hd">
+                        <h3>源健康</h3>
+                        <div class="sp-r"><span class="hint" id="mxSrcHint">/api/memory/fedsources</span></div>
+                    </div>
+                    <div class="sp-bd box"><div id="mxSrcList" class="mx-srcs"><div class="hint" style="padding:var(--mx-2) 0">预检中…</div></div></div>
+                </div>
+
+                <div class="sp-card mx-card">
+                    <div class="sp-hd">
+                        <h3>预检命中</h3>
+                        <div class="sp-r"><span class="hint">固定探针词「记忆」· 按时间倒序 · 非「近期新增」语义</span></div>
+                    </div>
+                    <div class="sp-bd box"><div id="mxHits" class="mx-hits"><div class="hint" style="padding:var(--mx-2) 0">预检中…</div></div></div>
+                </div>
+
+                <div class="sp-card mx-card" id="ctxPanel">
+                    <div class="sp-hd">
+                        <h3>注入上下文包</h3>
+                        <div class="sp-r">
+                            <span class="hint">/api/memory/context · 快路 5 源 · Agent 开局实际收到的内容</span>
+                            <button class="btn ghost sm" onclick="memCtxPreview()">刷新</button>
+                        </div>
+                    </div>
+                    <div class="sp-bd"><pre class="code mx-ctx" id="ctxBody">进页预检中…</pre></div>
+                </div>
+
+                <!-- ═══ Block 3 联邦检索：全页唯一主动作区（原样保留）═══ -->
+                <div class="sp-card mx-card">
+                    <div class="sp-hd">
+                        <h3>联邦检索</h3>                <!-- v0.13.27 E 缺口：联邦检索入口（6 路 RRF）——此前只在资产面板有简陋入口，
                      记忆中心页只有 L1 LIKE。按需触发（进页不自动跑：防埋点污染+防无谓联邦开销）。
                      v0.13.28：源 6→10（补 claude_projects/grok/hermes/workbuddy 四家）。 -->
                 <div class="sp-card">
@@ -1204,9 +1340,19 @@
                     </div>
                     <div class="sp-bd box"><div id="memFedResults" class="sp-list">输入关键词开始联邦检索</div></div>
                 </div>
-                <div class="sp-card">
+                <!-- ═══ Block 4 本机旧层档案（C：L1/L2/L3 降为次要 + 陈旧标识）═══
+                     病根不是数据坏了，是这三层与在役的联邦 10 路是**两套东西**：
+                     L1 是 hub 自有 SQLite 的演示便签，L2 由它压缩而来，L3 从未写入。
+                     所以「用 LLM 重建」只会反复压缩那 4 条旧便签 —— 修不了陈旧显示。
+                     本块保留全部原有写入口（不删功能），但排序降到末位并前置实测口径。 -->
+                <div class="sp-card mx-card">
                     <div class="sp-hd">
-                        <h3>分层记忆</h3>
+                        <h3>本机旧层档案</h3>
+                        <div class="sp-r"><span class="hint">L1 便签（可写）· L2 近 30 天压缩 · L3 长期画像（草稿→确认制）</span></div>
+                    </div>
+                    <div class="sp-bd">
+                        <div class="mx-stale" id="mxStale">本机旧层实测口径加载中…</div>
+                        <div class="sp-grid">
                         <div class="sp-r"><span class="hint">L1 便签（可写）· L2 近 30 天压缩 · L3 长期画像（草稿→确认制）</span></div>
                     </div>
                     <div class="sp-bd">
@@ -1250,10 +1396,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
-                <div class="sp-card" id="ctxPanel" style="display:none">
-                    <div class="sp-hd"><h3>注入上下文包</h3><div class="sp-r"><span class="hint">/api/memory/context</span></div></div>
-                    <div class="sp-bd"><pre class="code" id="ctxBody"></pre></div>
                 </div>
             </div>
         </section>
@@ -2004,6 +2146,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=59aa0e83"></script>
+    <script src="/static/hub.js?v=5800a141"></script>
 </body>
 </html>

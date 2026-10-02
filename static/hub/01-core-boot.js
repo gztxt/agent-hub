@@ -352,7 +352,7 @@ function go(page) {
   lsSet('hub.page', page);  // T9：记忆上次所在页，刷新后回落
   renderNav();            // v0.7：同步左侧手风琴（实体/系统项的选中态）
   renderPageCrumb(page);  // v0.7：系统页面包屑（实体页由 renderModeBar 接管）
-  if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
+  if (page === 'memory' && !memLoaded) { memLoaded = true; memOverview(); loadMemories(); loadDoc('l2'); loadDoc('l3'); }
   if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）

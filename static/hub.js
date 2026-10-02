@@ -352,7 +352,7 @@ function go(page) {
   lsSet('hub.page', page);  // T9：记忆上次所在页，刷新后回落
   renderNav();            // v0.7：同步左侧手风琴（实体/系统项的选中态）
   renderPageCrumb(page);  // v0.7：系统页面包屑（实体页由 renderModeBar 接管）
-  if (page === 'memory' && !memLoaded) { memLoaded = true; loadMemories(); loadDoc('l2'); loadDoc('l3'); }
+  if (page === 'memory' && !memLoaded) { memLoaded = true; memOverview(); loadMemories(); loadDoc('l2'); loadDoc('l3'); }
   if (page === 'skills' && !skillsLoaded) { skillsLoaded = true; loadSkills(); loadSkillBudget(); }
   if (page === 'kb' && !kbLoaded) { kbLoaded = true; loadKbStatus(); kbBrowse(); }
   if (page === 'localprojects' && !lpLoaded) { lpLoaded = true; loadLocalProjects(); }   // v0.13.30 本机项目页（09 分片）
@@ -2844,6 +2844,7 @@ async function loadMemories() {
       '<p>' + escapeHtml(m.content) + '<br><span class="hint">' + escapeHtml(m.source || '') + ' · ' + (m.created_at || '').slice(0, 10) + '</span></p>' +
       '<button class="btn sm danger" onclick="delMemory(' + m.id + ')">' + ico('x') + '</button></div>').join('') ||
       '<div class="hint">空空如也。可手动添加，或由指挥官/外部 Hook 写入。</div>';
+    memStaleNote(d.memories || []);   // C：用实测口径刷新「本机旧层档案」陈旧标识
   } catch (e) {
     CENTER_HEALTH.memory = 'err';
     boxFail('memList', e, 'loadMemories');   // 失败上屏（不再只 toast——列表区停旧内容=分不清挂没挂）
@@ -2867,8 +2868,104 @@ async function loadDoc(lv) {
     const d = await api('/api/memory/' + lv);
     $(lv + 'content').value = d.content || '';
     $(lv + 'manual').value = d.manual || '';
+    memStaleNote(window.__mxL1Rows || []);   // C：L2/L3 也参与陈旧口径
   } catch (e) { /* 首次为空 */ }
 }
+
+/* ═══ 记忆中心 A~E（2026-10-03）· 全部读实测响应，无估算、无占位数字 ═══ */
+const MX_PROBE_Q = '记忆';
+const MX_FAST_SOURCES = 'local,tdai,claude_mem,workbuddy_memory,claude_projects';
+
+function mxSet(id, v) { const e = $(id); if (e) e.textContent = v; }
+function mxMs(v) { return (v === null || v === undefined) ? '—' : (Math.round(v * 10) / 10) + ' ms'; }
+
+async function memOverview() {
+  // ── B 源健康 ──
+  try {
+    const d = await api('/api/memory/fedsources');
+    const srcs = d.sources || [];
+    const enabled = (typeof d.enabled === 'number') ? d.enabled : srcs.filter(s => s.enabled).length;
+    const okN = srcs.filter(s => s.probe && s.probe.ok).length;
+    const items = srcs.reduce((n, s) => n + ((s.probe && typeof s.probe.count === 'number') ? s.probe.count : 0), 0);
+    const times = srcs.filter(s => s.probe && s.probe.ok && typeof s.probe.ms === 'number').map(s => s.probe.ms);
+    mxSet('mxMSrc', okN + '/' + enabled);
+    mxSet('mxMItems', items.toLocaleString('zh-CN'));
+    mxSet('mxMSlow', times.length ? mxMs(Math.max.apply(null, times)) : '—');
+    mxSet('mxSrcHint', '注册 ' + srcs.length + ' 路 · 可用 ' + okN + ' 路 · 停用 ' + srcs.filter(s => !s.enabled).length + ' 路');
+    mxSet('mxLeadHint', '预检于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }));
+    $('mxSrcList').innerHTML = srcs.map(s => {
+      const p = s.probe || {};
+      const cls = !s.enabled ? 'off' : (p.ok ? 'ok' : 'bad');
+      return '<div class="mx-src ' + (s.enabled ? '' : 'off') + '">' +
+        '<span class="mx-dot ' + cls + '" title="' + (s.enabled ? (p.ok ? '可用' : '不可用') : '已停用') + '"></span>' +
+        '<span class="mx-src-n">' + escapeHtml(s.label || s.id) + '</span>' +
+        '<span class="mx-src-k">' + escapeHtml(s.kind || '') + '</span>' +
+        '<span class="mx-src-c">' + (typeof p.count === 'number' ? p.count.toLocaleString('zh-CN') + ' 条' : '—') + '</span>' +
+        '<span class="mx-src-t">' + (typeof p.ms === 'number' ? mxMs(p.ms) : (p.note ? escapeHtml(String(p.note)) : '—')) + '</span>' +
+        '</div>';
+    }).join('') || '<div class="hint">注册表为空</div>';
+  } catch (e) {
+    $('mxSrcList').innerHTML = '<div class="hint">源健康预检失败：' + escapeHtml(e.message) + '</div>';
+    mxSet('mxLeadNote', '源健康预检失败，其余指标照常');
+  }
+  // ── E 预检命中 ──
+  try {
+    const r = await api('/api/memory/search?q=' + encodeURIComponent(MX_PROBE_Q) + '&limit=6');
+    mxSet('mxMSearch', (typeof r.took_ms === 'number' ? mxMs(r.took_ms) : '—'));
+    const ms = (r.memories || []).slice().sort((a, b) =>
+      String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const eng = (r.engine || '').split('|')[0];
+    mxSet('mxLeadNote', '预检命中 ' + ms.length + ' 条 · 引擎 ' + escapeHtml(eng || '—') +
+      ' · 后端 ' + ((r.backends || []).length) + ' 路' + ((r.degraded || []).length ? ' · 降级 ' + escapeHtml((r.degraded || []).join(',')) : ''));
+    $('mxHits').innerHTML = ms.map(m =>
+      '<div class="mx-hit"><p>' + escapeHtml((m.content || '').slice(0, 220)) + '</p>' +
+      '<span class="hint">' + escapeHtml(m.source || '') + ' · ' + escapeHtml(String(m.created_at || '').slice(0, 10)) +
+      ' · ' + escapeHtml(m.type || '') + '</span></div>').join('') ||
+      '<div class="hint">探针词无命中（这本身是有效信息：说明该词在当前源里没有内容）</div>';
+  } catch (e) {
+    $('mxHits').innerHTML = '<div class="hint">预检检索失败：' + escapeHtml(e.message) + '</div>';
+  }
+  memCtxPreview();
+}
+
+async function memCtxPreview() {
+  const body = $('ctxBody');
+  if (!body) return;
+  try {
+    const d = await api('/api/memory/context?sources=' + encodeURIComponent(MX_FAST_SOURCES));
+    /* 实测形状（2026-10-03）：fed.sources 是**数字**不是数组（对数字取 .length ⇒ undefined）；
+       总字符数在顶层 d.chars，fed.chars 只是联邦段贡献量（可为 0）；
+       d.context 才是正文（无 d.text）。三处都按实测取，不猜。 */
+    const fed = d.fed || {};
+    const nSrc = (typeof fed.sources === 'number') ? fed.sources : ((fed.sources || []).length || 0);
+    const failed = fed.failed || [];
+    const head = '快路请求 ' + MX_FAST_SOURCES.split(',').length + ' 路 · 命中 ' + nSrc + ' 路 · 注入 ' +
+      (typeof d.chars === 'number' ? d.chars : '—') + ' 字符（联邦段 ' +
+      (typeof fed.chars === 'number' ? fed.chars : '—') + '）· 墙钟 ' + mxMs(d.took_ms) +
+      (failed.length ? '\n注意：本次失败 ' + failed.length + ' 路 → ' + failed.join(', ') : '') +
+      ((d.degraded || []).length ? '\n注意：降级 → ' + d.degraded.join(', ') : '') +
+      '\n\n';
+    body.textContent = head + (d.context || JSON.stringify(d).slice(0, 4000));
+  } catch (e) {
+    body.textContent = '注入包预检失败：' + e.message;
+  }
+}
+
+/* C：陈旧标识 —— 只报实测到的量，绝不写「已更新」这类无据结论 */
+function memStaleNote(rows) {
+  window.__mxL1Rows = rows;
+  const el = $('mxStale'); if (!el) return;
+  const l2 = ($('l2content') && $('l2content').value || '').trim();
+  const l3 = ($('l3content') && $('l3content').value || '').trim();
+  const dates = rows.map(r => String(r.created_at || '').slice(0, 10)).filter(Boolean).sort();
+  const newest = dates.length ? dates[dates.length - 1] : '无';
+  el.classList.toggle('is-stale', dates.length > 0 && dates[dates.length - 1] < MX_STALE_BEFORE);
+  el.innerHTML = '本机旧层与在役联邦记忆是<b>两套独立存储</b>：L1 共 <b>' + rows.length + '</b> 条，最新 <b>' +
+    newest + '</b>；L2 自动内容 <b>' + l2.length + '</b> 字符（仅由 L1 压缩而来）；L3 人工确认区 <b>' + l3.length +
+    '</b> 字符。在役记忆以上方「源健康 / 注入上下文包 / 联邦检索」为准 —— 点「用 LLM 重建」只会重新压缩这 ' +
+    rows.length + ' 条旧便签，不会更新此处显示。';
+}
+const MX_STALE_BEFORE = '2026-09-07';
 async function saveDoc(lv) {
   const body = {};
   if (lv === 'l3') body.content = $(lv + 'content').value;
