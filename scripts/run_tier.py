@@ -104,6 +104,20 @@ def main(argv):
     tier = (argv[0] if argv else "all").lower()
     fake_home = "--fake-home" in argv
     saved_home = os.environ.get("HOME")
+    saved_memdb = os.environ.get("MEMINDEX_DB")
+
+    # 2026-10-02：L0 hermetic 层的**投影隔离**，对所有会跑 L0 的档位生效
+    # （不只 --fake-home）。原先 memindex.DB_PATH 是仓库相对硬编码、无注入口，
+    # 于是 L0 用例会去读**生产那份 1.6 GiB 真实索引**——用例把临时语料根
+    # rmtree 掉后投影照样答得出来（ok=True），隔离性被静默破坏，而且是假绿：
+    # 红会逼人看，假绿只会沉淀成“已通过”。real-HOME 档同样中招（6 例失败）。
+    # 钉到不存在的路径后 probe 返回 no_index，_search_proj 按 fail-closed
+    # 契约回退 rg ⇒ 6 例恢复原语义，且 L0 重新满足“无宿主依赖”的定义。
+    if tier in ("hermetic", "all"):
+        _anchor = Path(saved_home or str(Path.home()))
+        os.environ["MEMINDEX_DB"] = str(_anchor / "hub-l0test-fixtures" / "no-such-memindex.db")
+        print("[tier] 已把 memindex 投影钉到不存在的路径（L0 不读生产索引）")
+
     if fake_home:
         # 假 HOME 必须落在 ~/hub-l0test-fixtures 下、**不能落 /tmp**：
         # v0.13.31 P1 扫描闸把 /tmp 整前缀剔除（EXCLUDE_PATH_PREFIXES），假 HOME
@@ -147,6 +161,11 @@ def main(argv):
     finally:
         if fake_home and saved_home:
             os.environ["HOME"] = saved_home
+        # 还原投影落位，避免本进程后续逻辑（如被当库 import）继承了夹具值
+        if saved_memdb is None:
+            os.environ.pop("MEMINDEX_DB", None)
+        else:
+            os.environ["MEMINDEX_DB"] = saved_memdb
 
 
 if __name__ == "__main__":

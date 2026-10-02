@@ -44,6 +44,29 @@ SCHEMA_VERSION = 1
 #: 索引落位。**派生数据**——不是第二权威副本，各源仍各自权威，删了可重建。
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "memindex.db"
 
+
+def default_db_path() -> Path:
+    """解析索引落位。**惰性**读取环境变量——模块级常量在 import 时求值，
+    而 hermetic 夹具是 run_tier.py 在 import 之后才设的，写死常量它看不到。
+
+    取值优先级：
+      1. ``MEMINDEX_DB``  测试/旁路专用，直接指到 .db 文件本身
+      2. ``DATA_DIR``     与全应用同一真源，取其下的 memindex.db
+      3. 仓库相对 ``data/``（原行为，兜底）
+
+    2026-10-02：原先此处是无注入口的硬编码，后果是 hermetic 层（假 HOME）下的
+    用例仍会去读**生产那份 1.6 GiB 真实索引**——用例把临时语料根 rmtree 掉后
+    投影照样答得出来，隔离性被静默破坏且是假绿（比红更坏：红逼人看，假绿只会
+    沉淀成"已通过"的错觉）。故开此覆盖口。
+    """
+    env = os.getenv("MEMINDEX_DB")
+    if env:
+        return Path(env)
+    data_dir = os.getenv("DATA_DIR")
+    if data_dir:
+        return Path(data_dir) / "memindex.db"
+    return Path(__file__).resolve().parent.parent / "data" / "memindex.db"
+
 #: 分块目标长度（字符）。约 1000：再大则命中窗口精度下降，再小则 chunk 数与索引体积线性上���。
 CHUNK_TARGET_CHARS = 1000
 
@@ -358,7 +381,7 @@ def disk_free_bytes(path: Optional[Path] = None) -> int:
     trimafs 按目录树配额 ⇒ `df /fs` 读 186G 而 `df /fs/1000/ftp/技术文档` 读 30G。
     量错路径 ⇒ 「可用 > 8G」恒真 ⇒ 闸门虚设 ⇒ 建库撞配额留半截库。
     """
-    target = Path(path) if path else DB_PATH.parent
+    target = Path(path) if path else default_db_path().parent
     target = _nearest_existing(target)
     st = os.statvfs(str(target))
     return st.f_bavail * st.f_frsize
@@ -422,7 +445,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 
 
 def connect(db_path: Optional[Path] = None, readonly: bool = False) -> sqlite3.Connection:
-    p = Path(db_path) if db_path else DB_PATH
+    p = Path(db_path) if db_path else default_db_path()
     if readonly:
         try:
             return sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=1.0)
@@ -520,7 +543,7 @@ def build(scope: str = "full", db_path: Optional[Path] = None,
     绝不自动删索引（D4）。`specs` 只给测试注入夹具用，生产走 proj_specs()。
     """
     t0 = time.monotonic()
-    db_path = Path(db_path) if db_path else DB_PATH
+    db_path = Path(db_path) if db_path else default_db_path()
     rep = enumerate_corpus(specs)
     br = BuildReport(scope=scope, files=len(rep.entries),
                      bytes_corpus=rep.bytes_total,
@@ -678,7 +701,7 @@ def search(q: str, limit: int = 10, db_path: Optional[Path] = None,
     if is_short_query(q):
         return {"ok": True, "count": 0, "items": [], "fallback": "short_query",
                 "ms": round((time.monotonic() - t0) * 1000, 3)}
-    db_path = Path(db_path) if db_path else DB_PATH
+    db_path = Path(db_path) if db_path else default_db_path()
     if not db_path.exists():
         return {"ok": False, "count": 0, "items": [], "fallback": "no_index",
                 "error": "索引不存在", "ms": round((time.monotonic() - t0) * 1000, 3)}
@@ -735,7 +758,7 @@ def probe(db_path: Optional[Path] = None) -> Dict:
     """健康探针。**不跑 `rg --files`**（那是 O(文件数) 的老毛病），
     改读 meta：索引覆盖 N 文件 / M chunk / 最后构建于 T。"""
     t0 = time.monotonic()
-    db_path = Path(db_path) if db_path else DB_PATH
+    db_path = Path(db_path) if db_path else default_db_path()
     if not db_path.exists():
         return {"ok": False, "count": 0, "note": "索引不存在（查询走 rg）",
                 "ms": round((time.monotonic() - t0) * 1000, 1)}
