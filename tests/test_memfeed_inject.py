@@ -22,10 +22,21 @@
    只钉「已翻」的话，有人把 2.5s 的 archived_sessions 也加进去照样绿）。
 4. **G6 = 只读**。联邦源全是别的 agent 的私有资产，这段代码有了写能力就是越界。
 
-关于 G3 的夹具手法：只把 `memfed._search_rg_text` 包一层 `time.sleep` 后**再调真实现**，
-不伪造返回值——被测的仍是真 `search_fed` 的墙钟逻辑与真适配器的检索结果。
+关于 G3 的夹具手法：把 `memfed._search_rg_text` **与** `memfed._search_proj` 各包一层
+`time.sleep` 后**再调真实现**，不伪造返回值——被测的仍是真 `search_fed` 的墙钟逻辑与真适配器的
+检索结果。
+
+为什么**两个都要包**（2026-10-02 踩过的坑，PT-20261002-11）：A4 把 pi_sessions /
+codex_sessions / archived_sessions 三路慢源改走投影层，`_build_tasks` 的派发是
+`fn = _search_proj if sid in _PROJ_TARGETS else _search_rg_text`。只补 rg 适配器 ⇒ 这三路的
+补丁被**绕开** ⇒ 源不慢不炸 ⇒ 墙钟断言假红（当时 4 条红就是这么来的，而生产逻辑实测是对的）。
+更阴的是 `run_tier.py` 把 `MEMINDEX_DB` 钉到不存在路径，`_search_proj` 必走 fallback 回 rg，
+补丁才「碰巧」生效 ⇒ 同一个缺陷在两种跑法下两张面孔（独立跑红 / L0 跑绿）。
+所以统一走 `_patch_search()` 补两条路径，并加 `TestA4RoutingGuard` 钉死派发表达式本身。
 """
+import ast
 import asyncio
+import contextlib
 import inspect
 import pathlib
 import re
@@ -108,6 +119,46 @@ async def _fake_scenario_ls(timeout_s=None):
     return {"ok": True, "entries": [{"path": "scene_blocks/x.md"}]}
 
 
+@contextlib.contextmanager
+def _patch_search(make_wrapper):
+    """同时补 `_search_proj` 与 `_search_rg_text`（两条路径都要）。
+
+    `make_wrapper(real)` 收到**该路径自己的**真实现，返回包了它的替身；
+    退出时两个都还原。补错函数名会让补丁静默失效，而断言只在「源没慢」时红，
+    很容易被误读成生产缺陷——所以这个 helper 是本文件唯一的补入口，别再手写单路径。
+    """
+    saved = {k: getattr(memfed, k) for k in ("_search_proj", "_search_rg_text")}
+    try:
+        memfed._search_proj = make_wrapper(saved["_search_proj"])
+        memfed._search_rg_text = make_wrapper(saved["_search_rg_text"])
+        yield
+    finally:
+        for k, v in saved.items():
+            setattr(memfed, k, v)
+
+
+class TestA4RoutingGuard(unittest.TestCase):
+    """守**夹具**本身（AST 级，与本仓 `vitals_loop` 那条同类护栏同形）。
+
+    为什么要守它：跑一遍是绿的**证明不了**派发形态没变——L0 钉死 `MEMINDEX_DB` 时，
+    `_search_proj` 必走 fallback，任何「补丁补错函数名」的夹具都会绿。2026-10-02 那 4 条红
+    就是这么藏起来的。所以这里钉表达式：派发必须仍是
+    `_search_proj if sid in _PROJ_TARGETS else _search_rg_text`。
+    派发形态一旦变（例如再加一路投影、或改成字典查表），这里先红，提示夹具要重审。
+    """
+
+    def test_build_tasks_dispatches_proj_targets_to_search_proj(self):
+        tree = ast.parse(inspect.getsource(memfed._build_tasks))
+        pairs = [(n.body.id, n.orelse.id) for n in ast.walk(tree)
+                 if isinstance(n, ast.IfExp) and isinstance(n.body, ast.Name)
+                 and isinstance(n.orelse, ast.Name)]
+        self.assertIn(
+            ("_search_proj", "_search_rg_text"), pairs,
+            "派发形态变了（现在 %r）——夹具的 _patch_search 要跟着重审，"
+            "否则墙钟/降级这 4 条会静默退化成 A4-OFF 路径的绿" % (pairs,))
+        self.assertTrue(set(memfed._PROJ_TARGETS), "_PROJ_TARGETS 空了：投影路名存实亡")
+
+
 class _Case(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="l0inject-case-"))
@@ -178,14 +229,10 @@ class TestG1FedReachesInjection(_Case):
     def test_unreturned_sources_are_announced_in_segment(self):
         """真没拿到的源必须**写在段里**：模型看到只有 2 路时得知道另外几路的下落，
         否则它会以为「这就是全部」——这正是本次要消灭的静默丢弃的换皮。"""
-        real = memfed._search_rg_text
-        memfed._search_rg_text = lambda *a, **k: (time.sleep(1.6), real(*a, **k))[1]
-        try:
-            # CONTEXT_TIMEOUT_S 默认 1.2s < 1.6s ⇒ pi_sessions 必进预算外
+        # CONTEXT_TIMEOUT_S 默认 1.2s < 1.6s ⇒ pi_sessions 必进预算外
+        with _patch_search(lambda real: (lambda *a, **k: (time.sleep(1.6), real(*a, **k))[1])):
             r = C.get("/api/memory/context",
                       params={"q": "注入通道", "sources": "claude_mem,pi_sessions"})
-        finally:
-            memfed._search_rg_text = real
         self.assertEqual(r.status_code, 200)
         d = r.json()
         self.assertIn("pi_sessions", d["fed"]["skipped_budget"])
@@ -203,18 +250,15 @@ class TestG1FedReachesInjection(_Case):
 
 class TestG3WallClock(_Case):
     def test_slow_source_marked_skipped_budget_fast_one_survives(self):
-        real = memfed._search_rg_text
+        def make_slow(real):
+            def slow(sid, q, limit, timeout_s):
+                time.sleep(0.6)                   # 只加慢，结果仍由真实现产出
+                return real(sid, q, limit, timeout_s)
+            return slow
 
-        def slow(sid, q, limit, timeout_s):
-            time.sleep(0.6)                       # 只加慢，结果仍由真实现产出
-            return real(sid, q, limit, timeout_s)
-
-        memfed._search_rg_text = slow
-        try:
+        with _patch_search(make_slow):
             out = asyncio.run(memfed.search_fed(
                 "注入通道", 5, {"claude_mem", "pi_sessions"}, wall_s=0.15))
-        finally:
-            memfed._search_rg_text = real
         self.assertEqual(out["pi_sessions"]["error"], memfed.SKIPPED_BUDGET)
         self.assertFalse(out["pi_sessions"]["ok"])
         self.assertEqual(out["pi_sessions"]["count"], 0)
@@ -230,13 +274,9 @@ class TestG3WallClock(_Case):
             self.assertNotEqual(r.get("error"), memfed.SKIPPED_BUDGET)
 
     def test_injection_endpoint_never_raises_on_slow_sources(self):
-        real = memfed._search_rg_text
-        memfed._search_rg_text = lambda *a, **k: (time.sleep(2.5), real(*a, **k))[1]
-        try:
+        with _patch_search(lambda real: (lambda *a, **k: (time.sleep(2.5), real(*a, **k))[1])):
             r = C.get("/api/memory/context",
                       params={"q": "注入通道", "sources": "claude_mem,pi_sessions"})
-        finally:
-            memfed._search_rg_text = real
         self.assertEqual(r.status_code, 200, "预算超时不得变成 5xx")
         d = r.json()
         self.assertIn("pi_sessions", d["degraded"])
@@ -245,13 +285,10 @@ class TestG3WallClock(_Case):
     def test_one_source_raising_does_not_sink_others(self):
         def boom(*a, **k):
             raise RuntimeError("夹具炸源")
-        real = memfed._search_rg_text
-        memfed._search_rg_text = boom
-        try:
+
+        with _patch_search(lambda real: boom):
             r = C.get("/api/memory/context",
                       params={"q": "注入通道", "sources": "local,tdai,claude_mem,pi_sessions"})
-        finally:
-            memfed._search_rg_text = real
         self.assertEqual(r.status_code, 200)
         d = r.json()
         self.assertIn("pi_sessions", d["degraded"])
