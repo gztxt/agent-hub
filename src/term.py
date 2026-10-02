@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import pty
+import re
 import secrets
 import shlex
 import signal
@@ -22,6 +23,7 @@ import time
 import uuid
 import fcntl
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -50,6 +52,81 @@ _WRITE_RETRY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR})
 # 单次 EIO 就回收是错的——见 _reap_once 的注释（EIO 也可能是对端刚写完最后一个
 # 字节的瞬时态）。这里给 3 次连续确认，配合 REAP 间隔，最坏多占 3 分钟配额。
 _REAP_EOF_CONFIRM = 3
+
+# ── auth_url 旁路（P2/P3，v0.13.64）────────────────────────────────────────
+# 为什么要在**服务端**做：URL 出现在 pty 输出字节流里，而前端拿到的是「已经过
+# 一轮 JSON/WS 封装」的数据；更关键的是要看到未渲染的原始行，才能把被终端宽度
+# 折断的 URL 拼回来（见 _scan_urls 的跨行拼接）。
+URL_SCAN_MAX = 16384      # 扫描窗口上限（16KB）。够覆盖一屏多行，不会无界增长
+URL_MIN_LEN = 20          # 短于此不像真的登录 URL（避免把 http://x 这类噪声弹出去）
+# ANSI/VT 转义序列：CSI（含私有参数 ?>）、OSC（到 BEL 或 ST）、单字符 ESC 序列。
+# OSC 尤其要紧 —— 很多 CLI 用 OSC 把超链接写进输出（OSC 8 ; url ; text ST），
+# 不剥掉就会把 "8;;https://..." 当成 URL 弹出去。
+_ANSI_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"      # OSC ... BEL / ST
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"                # CSI（含 ?private）
+    r"|\x1b[@-Z\\-_]"                          # 两字符转义
+)
+# URL 尾随标点：终端输出里 URL 常直接跟句号/括号，去掉才是真 URL。
+_URL_TRAIL = "()[]{}<>.,;:!?'\""
+_URL_RE = re.compile(r"https?://[^\s\x1b\x07<>\"'`\\]+")
+# 「合法 URL 字符」整行：用于判断下一行是否只是上一行 URL 的折行续接。
+_URL_CONT_CHARS = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    "-._~:/?#[]@!$&'()*+,;=%")
+
+
+def strip_ansi(text: str) -> str:
+    """剥掉 ANSI/VT 转义序列（纯函数，供单测直接喂值）。
+
+    不剥会有两个真后果：① OSC 8 超链接协议里的 URL 被当正文扫出来（弹一堆假链接）；
+    ② 光标定位/清行序列（\\x1b[2J、\\x1b[H）混在 URL 里，URL 就拼不完整。
+    """
+    return _ANSI_RE.sub("", text)
+
+
+def _normalize_url(raw: str) -> Optional[str]:
+    """清洗并校验单个 URL；不合格返回 None（调用方据此不播）。
+
+    只放行 http/https —— pty 输出里的 file://、javascript: 之类一律不往浏览器送。
+    两头都要剥标点：输出里 URL 经常被夹在 " (...)" 或 "<...>" 里，只 rstrip 的话
+    前面那个 '(' 会留在串首，urlparse 直接解析不出 scheme ⇒ 整条被丢掉。
+    """
+    u = raw.strip().strip(_URL_TRAIL)
+    if len(u) < URL_MIN_LEN:
+        return None
+    try:
+        p = urlparse(u)
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not p.netloc:
+        return None
+    return u
+
+
+def _scan_urls(buf: str) -> List[str]:
+    """从（已剥 ANSI 的）输出窗口里提取候选 URL，含**跨行拼接**（纯函数）。
+
+    为什么必须处理跨行：终端按列宽硬折，一个长 URL 会被劈成两行显示，
+    正则逐行匹配只能拿到半截（"https://auth.example.com/verify?code=abc123"
+    会被截成 ".../verify?code=abc123" 恰好或干脆缺尾巴）⇒ 半截 URL 打不开。
+    做法：行内匹配到开头后，若后续行**整行都是合法 URL 字符**，就续接到上一行。
+    """
+    out: List[str] = []
+    lines = buf.split("\n")
+    for i, line in enumerate(lines):
+        for m in _URL_RE.finditer(line):
+            out.append(m.group(0))
+    # 跨行续接：把「上一行 URL 的残段 + 下一整行合法字符行」拼成一条候选。
+    for i in range(len(lines) - 1):
+        head, nxt = lines[i].strip(), lines[i + 1].strip()
+        if not head or not nxt:
+            continue
+        if not _URL_RE.search(head):
+            continue
+        if nxt and all(ch in _URL_CONT_CHARS for ch in nxt) and not nxt.startswith("http"):
+            out.append(head + nxt)
+    return out
 
 
 # 内存耗尽时 bun/JSC 会**主动** abort：ASSERTION FAILED: MemoryExhaustion →
@@ -154,6 +231,12 @@ class Session:
         self.exit_status = None  # waitpid 原始 status；解出人话见 describe_exit()
         self.hub_killed = False  # True = 这次是 hub 自己动的手（点 × / TTL / 服务退出）
         self.resume_of = ""     # v0.13.0：非空 = 由某条磁盘历史续聊而来
+        # v0.13.64 auth_url 旁路（P2/P3）：扫 pty 输出里的登录 URL，带外发给前端开浏览器。
+        # 手机上跑 `claude setup-token` 原本只能肉眼抄 URL。
+        # url_buf = 只存**剥过 ANSI** 的文本滚动窗口（URL 可能被折行，见 _scan_urls）；
+        # announced = 已播过的 URL，**会话级**共享（换端重连不重播，同端也不刷屏）。
+        self.url_buf = ""
+        self.announced_urls: set = set()
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
     def to_dict(self):
@@ -754,6 +837,34 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             sess.dropped[vid] = sess.dropped.get(vid, 0) + len(payload)
 
     sess.coalescers[vid] = _OutputCoalescer(_enqueue)
+
+    # ── auth_url 旁路（P2/P3，v0.13.64）──────────────────────────────────
+    # 挂在 pump 里而非 on_readable：on_readable 是 add_reader 回调，只认 PTY 没有 ws，
+    # 而旁路帧要**逐观看者**发（照抄上游单 session.ws 会退回到"多观看者互相偷字节"）。
+    # 关键约束：旁路帧走 send_text 独立通道，**绝不能** put 进 vq —— 那条队列是
+    # 输出字节流，混进 JSON 会让 xterm 把 {"type":...} 当字符画到屏幕上。
+    async def _scan_auth_urls(data: bytes) -> None:
+        try:
+            sess.url_buf = (sess.url_buf + strip_ansi(
+                data.decode("utf-8", errors="replace")))[-URL_SCAN_MAX:]
+            for raw in _scan_urls(sess.url_buf):
+                u = _normalize_url(raw)
+                if not u or u in sess.announced_urls:
+                    continue
+                sess.announced_urls.add(u)
+                # auto 只对「明确在催你点浏览器」的场景开；默认给按钮。
+                # 自动开在手机上必被浏览器拦（无用户手势），反而让人以为功能坏了。
+                low = sess.url_buf.lower()
+                auto = any(k in low for k in ("open this url", "press enter to open",
+                                              "continue in your browser", "open_url:"))
+                try:
+                    await ws.send_text(json.dumps(
+                        {"type": "auth_url", "url": u, "auto": bool(auto)}))
+                except Exception:  # noqa: BLE001
+                    return    # WS 已断，别再扫了
+        except Exception:  # noqa: BLE001
+            return          # 旁路功能绝不能拖垮终端主链路
+
     # 回放最近输出（重连不白屏）
     if sess.ring:
         try:
@@ -783,6 +894,7 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             except Exception:  # noqa: BLE001
                 # WS 已断开：pump 退场，由收尾 try 兜底
                 break
+            await _scan_auth_urls(data)   # 旁路：登录 URL 带外播报（不改画面）
             if not sess.alive:
                 break
         # 收尾：捕获 WS 已断开的情况（手机重连/切网络 → 客户端 1006），不再把异常抛回 event loop

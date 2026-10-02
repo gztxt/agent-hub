@@ -827,6 +827,14 @@
             .mem-grid { grid-template-columns: minmax(0, 1fr) !important; }
             .panel { padding: 12px; }
             .toolbar input:not([type=checkbox]) { min-width: 140px; }   /* v0.13.35：同样排除勾选框 */
+
+            /* v0.13.64 终端触摸层（P1）：只碰 touch-action，不给 #termEl / .term-body
+               加任何 padding/inset —— 父层多 1px 就会让 FitAddon 多算一行、底部被裁掉
+               （见上方 720 行铁律）。`pan-y` = 纵向手势交给我们自己的惯性滚动处理，
+               横向仍交浏览器；不加 `none` 是因为 xterm 自己要处理横向选择。 */
+            #termEl { touch-action: pan-y; -webkit-tap-highlight-color: transparent; }
+            /* 捏合缩放字号时禁止浏览器页面级缩放，否则整个页面（含顶栏）一起变形 */
+            #termEl.tterm-pinch { touch-action: none; }
         }
         /* 实体列表的隐藏已上提到 .chat-side 基础规则（宽窄屏一律不内嵌），
            此处只剩宽屏的单列栅格修正 */
@@ -1996,6 +2004,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=ccf5bdd8"></script>
+    <script src="/static/hub.js?v=61dd9775"></script>
 </body>
 </html>

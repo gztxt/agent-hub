@@ -161,6 +161,36 @@ function termConnecting(on, ws) {
    回放落在隐藏态时先挂着（termHealPending），等 termRepaint() 在重新可见时补做。 */
 let termHealPending = false;
 function termHealBlank() { termHealPending = true; setTimeout(termHealNow, 250); }
+
+/* ── v0.13.64 auth_url 旁路消费（P2）──────────────────────────────────────
+   场景：手机上跑 `claude setup-token` / 任何 OAuth 登录，登录 URL 只出现在
+   pty 输出里。窄屏上那串 URL 要靠肉眼抄 —— 又长又断行，抄错一个字符就白跑。
+   这里把 URL 提成**可点按钮**：一眼可按，按完直接开浏览器。
+   为什么默认不自动开：现代浏览器只允许「用户手势内」window.open，程序性调用
+   会被拦成弹窗 ⇒ 用户看到的是"点了没反应"，比不给按钮更糟。
+   服务端 auto=true（输出里明说 "press enter to open" 之类）才自动开。 */
+function termAuthUrl(url, auto) {
+  const safe = String(url || '');
+  if (!/^https?:\/\//i.test(safe)) return;     // 双保险：只放行 http/https
+  /* 画面上也留一行可复制的纯文本：按钮被拦、或用户想手动拷时仍有出路。
+     刻意用 OSC 8 之外的方式（普通可见文本）—— 它要"看得见"，不是隐藏超链接。 */
+  const note = '\r\n\x1b[95m[登录链接] ' + safe + '\x1b[0m\r\n';
+  try { if (term) term.write(note); } catch (e) {}
+  const open = () => { try { window.open(safe, '_blank', 'noopener'); } catch (e) { toast('请手动复制上面的链接', 'err'); } };
+  /* toast() 的签名是 (msg, cls)，**没有** onClick 参数（01-core-boot.js:157）——
+     早先这里多传了个 open 当第三参，函数会静默忽略 ⇒ 按钮点不动。这里显式
+     把 toast 节点改成可点，而不是给 toast() 硬加参数（那会波及其余 40+ 调用方）。 */
+  try {
+    const el = toast('检测到登录链接，点此打开 ↗', 'info');
+    if (el) {
+      el.style.cursor = 'pointer';
+      el.style.textDecoration = 'underline';
+      el.addEventListener('click', open);
+      el.title = safe;
+    }
+  } catch (e) { open(); }
+  if (auto) open();
+}
 /* 数「视口内」的空行 —— 必须从 viewportY 起算，不能从缓冲区第 0 行起算。
    buffer.active.getLine(0) 是**绝对坐标**，即 scrollback 的最老一行；
    一旦屏上有历史（输出超过一屏、或用户滚动过），0..rows-1 读到的是早滚出屏幕的旧行，
@@ -428,6 +458,9 @@ function ensureTerm() {
   setTimeout(() => termRepaint(), 150);
   termFindBind();
   termPasteBind();
+  /* 触摸层最后挂：它要读 term.options（字号/行高）做手势换算，构造完才有意义。
+     内部自带 touch 判定，桌面端这行是空操作。 */
+  if (typeof termTouchBind === 'function') termTouchBind();
 }
 
 /* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
@@ -534,6 +567,7 @@ document.addEventListener('keydown', e => {
 
 function termDetach() {
   termRcCancel();          // 用户显式离开 ⇒ 任何在排的重连一律作废，不许把会话拖回来
+  termTouchReset();        // 清掉残留手势态（否则新会话第一次滑动就"自己动了"）
   termHbStop();
   termRcAttempt = 0;
   termInputWarned = false;
@@ -606,6 +640,18 @@ function termConnect(sid, agent, opts) {
     const raw = typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data);
     /* 心跳回执只喂看门狗，不进画面、也不占「首帧=回放」那次判定 */
     if (typeof raw === 'string' && termIsHb(raw)) { termHbReply(ws); return; }
+    /* v0.13.64 auth_url 旁路（P2）：服务端把登录 URL 以 JSON 文本帧带外送来。
+       必须**在写进画面之前**拦掉 —— 否则 {"type":"auth_url",...} 会被 xterm 当正文
+       画到屏幕上（这正是旁路通道存在的理由：绝不污染输出流）。
+       同理不能占用 replayFrame 那次判定：它是画面帧，不是控制帧。 */
+    if (typeof raw === 'string' && raw.charCodeAt(0) === 123 /* { */) {
+      let m = null;
+      try { m = JSON.parse(raw); } catch (e) { m = null; }
+      if (m && m.type === 'auth_url' && typeof m.url === 'string') {
+        termAuthUrl(m.url, !!m.auto);
+        return;
+      }
+    }
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
