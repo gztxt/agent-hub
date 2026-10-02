@@ -339,13 +339,20 @@ def _probe_one(source_id: str) -> Dict:
 
 # ── 对外入口：并发检索 / 源清单 ───────────────────────────────────────
 
-async def search_fed(q: str, limit: int, want: set) -> Dict[str, Dict]:
-    """并发调各启用源。返回 {source_id: result}；调用方（memory.py）把 ok 的进 RRF。
+#: 墙钟超时专用的错误标记。与真故障同路进 backends[]/degraded（不静默），
+#: 但字样可区分——「预算不够」和「源炸了」是两种处置，不该混成一句。
+SKIPPED_BUDGET = "skipped_budget"
 
-    同步实现 + asyncio.to_thread 并发：rg/sqlite 都是阻塞 IO，事件循环不能被卡死。
-    每源超时由各自实现承担（rg subprocess timeout / sqlite connect timeout），
-    这里不再叠一层 wait_for——两层超时会让超时原因变模糊（是 rg 慢还是 gather 慢）。
-    """
+
+def _pack(r) -> Dict:
+    """单源结果归一：异常也归一路 ok=False（绝不让单源异常掀掉整次检索）。"""
+    if isinstance(r, BaseException):
+        return {"ok": False, "count": 0, "items": [],
+                "error": tdai_client.scrub(f"{type(r).__name__}: {r}")[:160]}
+    return r
+
+
+def _build_tasks(q: str, limit: int, want: set) -> Dict:
     tasks = {}
     for sid in want:
         src = REGISTRY.get(sid)
@@ -355,17 +362,55 @@ async def search_fed(q: str, limit: int, want: set) -> Dict[str, Dict]:
             tasks[sid] = asyncio.to_thread(_search_claude_mem, q, limit)
         elif src.kind == "rg_text":
             tasks[sid] = asyncio.to_thread(_search_rg_text, sid, q, limit, src.timeout_s)
+    return tasks
+
+
+async def search_fed(q: str, limit: int, want: set,
+                     wall_s: Optional[float] = None) -> Dict[str, Dict]:
+    """并发调各启用源。返回 {source_id: result}；调用方（memory.py）把 ok 的进 RRF。
+
+    同步实现 + asyncio.to_thread 并发：rg/sqlite 都是阻塞 IO，事件循环不能被卡死。
+    每源超时由各自实现承担（rg subprocess timeout / sqlite connect timeout），
+    这里不再叠一层 wait_for——两层超时会让超时原因变模糊（是 rg 慢还是 gather 慢）。
+
+    `wall_s`（v0.13.62 D1）：**调用方级的墙钟**，与各源自带 timeout 是两层不同语义——
+      · `wall_s is None` ⇒ 原 gather 路径，行为与本函数引入以来逐字节一致（既有 27 例 L0 钉着）；
+      · 给定值 ⇒ `asyncio.wait(timeout=wall_s)`，预算内完成的照常收集，超预算的记
+        `error=SKIPPED_BUDGET`。为什么需要：注入通道坐在会话起始链路上（v2 设计唯一
+        被完整采纳的约束），而实测最慢三路 rg 要 1.9~2.5s、archived 要扫 5622 个文件，
+        没有墙钟就等于把开局卡死在记忆检索后面。
+
+    超预算者**不取消**：`asyncio.to_thread` 不可取消，线程会按各源自带 timeout 自行收尾；
+    这里只给它们挂一个 done_callback 取走异常引用，否则 asyncio 会在 GC 时抛
+    `exception was never retrieved` 刷屏（假故障）。
+    """
+    tasks = _build_tasks(q, limit, want)
     if not tasks:
         return {}
     keys = list(tasks.keys())
-    results = await asyncio.gather(*[tasks[k] for k in keys], return_exceptions=True)
+    if wall_s is None:
+        results = await asyncio.gather(*[tasks[k] for k in keys], return_exceptions=True)
+        return {k: _pack(r) for k, r in zip(keys, results)}
+
+    futs = {k: asyncio.ensure_future(tasks[k]) for k in keys}
+    await asyncio.wait(futs.values(), timeout=wall_s)
     out: Dict[str, Dict] = {}
-    for k, r in zip(keys, results):
-        if isinstance(r, BaseException):
-            out[k] = {"ok": False, "count": 0, "items": [],
-                      "error": tdai_client.scrub(f"{type(r).__name__}: {r}")[:160]}
+    for k, f in futs.items():
+        if f.done():
+            # 必须取 f.result()：f.exception() 在「没抛异常」时返回 None，
+            # 而 None 会一路冒充成「这一路没跑」（2026-10-02 首版就踩了这个，
+            # 被 tests/test_memfeed_inject.py 的 G1/G3 当场抓住）。
+            try:
+                r = f.result()
+            except BaseException as e:      # 单源异常归一路，不掀掉整次检索
+                r = e
+            out[k] = _pack(r)
         else:
-            out[k] = r
+            # 不取消（to_thread 不可取消），但必须取走异常引用，否则 GC 时 asyncio
+            # 会抛 `exception was never retrieved` 刷屏——那是假故障。
+            f.add_done_callback(lambda ff: None if ff.cancelled() else ff.exception())
+            out[k] = {"ok": False, "count": 0, "items": [],
+                      "error": SKIPPED_BUDGET, "ms": None}
     return out
 
 

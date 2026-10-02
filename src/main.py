@@ -77,7 +77,23 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.64"   # 终端移动端三零件（借鉴 cloudcli 行为规格，不复制其 AGPL 代码）：
+VERSION = "0.13.65"   # 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）：
+                      #   病根实测：/api/memory/context 收了 9 路联邦源 ID、过白名单校验不报 400，
+                      #     却在函数体里被静默丢弃 ⇒ 回包 backends 只有 tdai_profile/local，
+                      #     fed.sources=0、正文 1585 字符、联邦段完全缺席。HTTP 200 无异常无告警
+                      #     （本仓反复警告的「全指标绿而功能层已死」同族）。
+                      #   D1  src/memory.py：注入包接联邦 + 第 4 段（预算内轮转取，未返回/失败的
+                      #     逐路点名写进段里，不静默丢弃）；src/memfed.py：search_fed 加**可选**
+                      #     wall_s 墙钟（默认 None＝既有 27 例语义逐字不变），超预算记 skipped_budget
+                      #     且不取消（to_thread 不可取消）——坐在会话起始链路上，宁可少一路也不能卡死开局。
+                      #   D1.5 /api/memory/search 与前端兜底默认由 local,tdai 升到快路联邦集
+                      #     （memory.FED_FAST_SOURCES 单一真源）；慢三路 pi/codex/archived 实测
+                      #     rg 1.9~2.5s 且必然超时 ⇒ 不进默认，等 A4 索引投影。
+                      #   src/hubmcp.py：hub_memory_context 开 sources 口子（空串取唯一真源），
+                      #     工具层不抄第二份默认字符串。
+                      #   闸门 tests/test_memfeed_inject.py（L0 16 例 G1~G8，含 AST 零写与
+                      #     「预算掐掉的源必须写在段里」）。**生产重启未执行**（沿用禁重启边界）。
+                      # 上一版 v0.13.64 后端：终端移动端三零件（借鉴 cloudcli 行为规格，不复制其 AGPL 代码）：
                       #   P1 触摸层 static/hub/13-term-touch.js：惯性滚 / 长按选区 / 双指缩放，
                       #     宽屏不绑定；P2/P3 src/term.py：auth_url 逐观看者旁路 + ANSI 去重，
                       #     API 只收 agent_id、命令取画像白名单（不退化为 bash -c）。

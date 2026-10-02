@@ -377,7 +377,11 @@ async function memFedSearch() {
   boxBusy('memFedResults', '联邦检索中…');
   const badges = $('memFedBadges');
   try {
-    const d = await api('/api/memory/search?q=' + encodeURIComponent(q) + '&sources=' + encodeURIComponent(sources || 'local,tdai'));
+    /* v0.13.65 D1.5：全不选时的兜底从 local,tdai 升到快路联邦集，与后端
+     memory.FED_FAST_SOURCES 逐字一致（workbuddy 47 / claude_mem 148 / claude_projects
+     261ms 三个实测快源）；慢三路（pi/codex/archived）不默认开——实测 rg 超时
+     1.9~2.5s，默认带上等于每次检索都等 3s。等 A4 索引投影落地后再扩。 */
+    const d = await api('/api/memory/search?q=' + encodeURIComponent(q) + '&sources=' + encodeURIComponent(sources || 'local,tdai,claude_mem,workbuddy_memory,claude_projects'));
     if (hint) hint.textContent = (d.count || 0) + ' 条 · ' + (d.took_ms || '?') + 'ms · ' + (d.engine || 'none');
     /* 逐路徽标：绿=ok 有命中 / 黄=ok 零命中 / 红=挂了（点名，不糊成绿） */
     if (badges) badges.innerHTML = fedBadges(d);

@@ -1,3 +1,74 @@
+## v0.13.65 — 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）
+
+> 方案 `docs/superpowers/specs/2026-10-02-unified-memory-injection-design.md`（未跟踪文件，本批一并入库）。
+> **⚠️ 生产重启未执行**（沿用「禁重启生产」边界）⇒ 本批**尚未在生产生效**，`/health` 的
+> `code_matches_head` 在重启前会判 stale。切换命令已写好待用户点头。
+
+### 病根（实测，非推断）
+
+`GET /api/memory/context` 收了 `sources` 里 9 路联邦源 ID、**过白名单校验不报 400**，
+然后在函数体里被静默丢弃 —— 实测回包 `backends` 只有 `tdai_profile` 与 `local`，
+`fed.sources=0`、正文 1585 字符、联邦段完全缺席，`took_ms` 6~21ms。
+HTTP 200、无异常、无告警：本仓反复警告的「全指标绿而功能层已死」同族。
+而 `/api/memory/search` 早已接 memfed ⇒ **「搜索能聚合、注入不能」是分裂的根源**。
+
+### 本批
+
+- **D1 能力** `src/memfed.py`：`search_fed` 加**可选** `wall_s`（默认 `None`＝既有 27 例语义逐字不变）；
+  给定值走 `asyncio.wait(timeout=)`，超预算记 `error=skipped_budget` 并**不取消**
+  （`asyncio.to_thread` 不可取消，只挂 done_callback 取走异常引用防 GC 刷 `exception was never retrieved`）。
+- **D1 能力** `src/memory.py`：注入包接联邦，新增第 4 段「其他 Agent 记忆」。
+  按**轮转**取而非先 RRF 再截断 —— 先 RRF 会让多命中的源独占名额；轮转保证每路都轮到、
+  预算不够时「均匀地被砍」而不是「整路消失」。被预算掐掉/检索失败的逐路**点名写进段里**。
+- **D1.5 默认**：`/api/memory/search` 与前端兜底由 `local,tdai` 升到 `memory.FED_FAST_SOURCES`
+  （**单一真源**，工具层不抄第二份默认字符串）。取值来自 2026-10-02 实测并联墙钟：
+  workbuddy 47 / claude_mem 148 / claude_projects 261ms。**慢三路不进默认**（见下）。
+- **工具面** `src/hubmcp.py`：`hub_memory_context` 开 `sources` 口子（空串 ⇒ 取 `FED_FAST_SOURCES`）；
+  `hub_memory_search` **不改**（显式召回工具，广度优先）。
+
+### 为何慢三路不进默认（0.13.62 的教训在 0.13.65 复用）
+
+`pi_sessions` 1894ms / `codex_sessions` 2028ms / `archived_sessions` 2506ms（要扫 5622 个文件）——
+三路在源自身 `timeout_s=1.8` 下**必然超时**。把它们硬塞进默认行径 = 每次开局等 3s。
+根因是 9 路里**只有 `claude_mem` 有真索引（FTS5）**，其余每次对整棵树跑 `rg` ⇒ O(文件数) 无索引。
+根治方案 = A4 索引投影层（设计已落 `docs/superpowers/specs/2026-10-02-memindex-a4-design.md`，本批未开）。
+
+### 实测（逐项 PASS，命令与输出见下）
+
+| 项 | 结果 |
+|---|---|
+| `scripts/run_tests.sh hermetic` | **PASS** — ran=950 skipped=0 failures=0 errors=0 |
+| `scripts/run_tests.sh host` | **PASS** — ran=47 skipped=0 failures=0 errors=0 |
+| 收集器对账 | **PASS** — unittest=997 = pytest=997 |
+| `tests.test_memfeed_inject`（G1~G8） | **PASS** — 16 例 |
+| `static/hub.js` 与 `static/hub/*.js` 同步态 | **PASS** — 拼接结果逐字节相等 |
+| `templates/index.html` 的 `?v=` | **PASS** — `59aa0e83` == md5(static/hub.js)[:8] |
+| 影子树探针 `hub_memory_context()` | **PASS** — 17ms/1585 字符/`fed.sources=0` → 230ms/快路 5 源全 ok/含联邦段 |
+| **生产生效** | **未执行**（禁重启生产，待授权） |
+
+**禁把 SKIP 当 PASS**：G3 用真 `search_fed` + 真慢源（sleep 夹具），不是把 fake 的
+`skipped_budget` 字符串塞回去自证；`run_tests.sh hermetic` 要求零跳过，本批实测 `skipped=0`。
+
+### 回滚
+
+```bash
+cd /fs/1000/ftp/技术文档/agent-hub
+git checkout a640c0b -- src/hubmcp.py src/memfed.py src/memory.py src/main.py \\
+                        static/hub.js static/hub/04-terminal-ws.js templates/index.html
+cp src/memory.py.bak-20261002_172241-fix-ver-label src/memory.py   # 若走备份路径
+```
+
+### 两条元教训
+
+1. **YAGNI 砍掉的那一层恰好是唯一有收益的一层**：原稿以「不改 MCP 工具面」为理由砍掉它，
+   理由是「diff 小」——但它不影响 D1 自身的测试结果，只影响 **claude/codex 能不能拿到
+   联邦记忆**。2026-10-02 实测推翻并已实现（设计第七节已加横幅留档）。
+2. **不动端点默认 ≠ 不翻默认行径**：D1 只接通 `/api/memory/context` 的**能力**，
+   闸门 G4 明确钉住「端点默认不翻」；真正翻的是 `/api/memory/search` 与前端兜底。
+   分步的意义是一次只动「能力」或「默认」一件事，出问题能二分定位。
+
+---
+
 ## v0.13.64 — 终端移动端三零件（借鉴 cloudcli 行为规格）+ 惯性尾巴被逐帧取整吞掉的修复
 
 > 方案 `docs/TERM-MOBILE-IMPROVE-PLAN-20261001.md`（授权执行），台账 PT-20261002-10。

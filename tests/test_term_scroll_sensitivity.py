@@ -93,12 +93,18 @@ class TestScrollSensitivityPinned(unittest.TestCase):
                          % (m.group(1), tok))
 
     def test_version_comment_records_root_cause(self):
-        # 版本钉随版本号走（10-02 bump 0.13.63→0.13.64 时同步）：它是一道**随行闸门**，
+        # 版本钉随版本号走（10-02 bump 0.13.64→0.13.65 时同步）：它是一道**随行闸门**，
         # 逼迫 bump 的人回头看根因注释还在不在，而不是让上一版的注释默默过期。
-        self.assertIn('VERSION = "0.13.64"', MAIN_PY)
-        seg = MAIN_PY[MAIN_PY.index('VERSION = "0.13.64"'):][:2400]
-        for kw in ("scrollSensitivity", "0.3", "行/格"):
-            self.assertIn(kw, seg, "版本注释里丢了 %s —— 半年后没人知道为什么是 5" % kw)
+        #
+        # 0.13.65 的根因关键字换成本批的：注入端点收了 9 路联邦源 ID、过白名单不报 400，
+        # 却在函数体里被静默丢弃（回包 fed.sources=0、联邦段完全缺席）——那是「全指标绿
+        # 而功能层已死」。旧批（scrollSensitivity 钉 5 / 行/格）的根因注释**仍完整保留在
+        # main.py 里**（已实测：scrollSensitivity×2、行/格×2、惯性尾巴、ttResidPx 各在位），
+        # 本闸门只跟当前版本号走，不承担跨版本归档职责。
+        self.assertIn('VERSION = "0.13.65"', MAIN_PY)
+        seg = MAIN_PY[MAIN_PY.index('VERSION = "0.13.65"'):][:2400]
+        for kw in ("fed.sources=0", "skipped_budget", "全指标绿而功能层已死"):
+            self.assertIn(kw, seg, "版本注释里丢了 %s —— 半年后没人知道为什么注入默认不收窄" % kw)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from typing import Optional
 import tdai_client
 import memfed
 import kb as kb_mod
+import memory as memory_mod
 from mcp.server.mcpserver import MCPServer
 
 HUB_URL = os.getenv("HUB_MCP_SELF_URL", "http://127.0.0.1:3102")
@@ -97,7 +98,13 @@ def hub_memory_search(q: str, limit: int = 10,
     返回命中的记忆条目 + 逐路健康度；这是找回本机历史决策与约束的首选工具。
     **看到 count=0 请继续读 degraded / backends**：只有它们能区分「真没有这条记忆」
     与「上游挂了」——两者对外都是空结果，但含义完全相反。
-    只想查权威库时显式传 sources="local,tdai"（更快）；sources 写错直接 400 不静默空结果。"""
+    只想查权威库时显式传 sources="local,tdai"（更快）；sources 写错直接 400 不静默空结果。
+
+    默认**不**收窄成快路集（与 hub_memory_context 相反）：这是显式召回工具，广度优先。
+    2026-10-02 实测单次墙钟 448ms（查询 "CCR"），但多词中文查询实测到过 3.2s 且三路
+    rg 超时（pi/codex/archived 1.9~2.5s）——所以在**交互卡顿可容忍**的场景显式传
+    sources 收窄，在**要全量**的场景才用默认。A4 索引投影落地前，rg 逐文件扫描是慢源
+    的主要成本。"""
     if limit > 50:
         limit = 50
     data = _get("/api/memory/search", q=q, limit=limit, sources=sources)
@@ -126,10 +133,26 @@ def hub_memory_search(q: str, limit: int = 10,
 
 
 @server.tool()
-def hub_memory_context() -> str:
-    """获取开局上下文包（L3 画像 + L2 工作记忆 + 相关 L1 事实）。新会话初始化时先调它，
-    避免在不知道本机约定与约束的情况下动手。返回含 `degraded`：为真表示这一包**不完整**。"""
-    data = _get("/api/memory/context", max_chars=5000)
+def hub_memory_context(sources: str = "") -> str:
+    """获取开局上下文包（L3 画像 + L2 工作记忆 + 相关 L1 事实 + **其他 Agent 记忆的联邦段**）。
+    新会话初始化时先调它，避免在不知道本机约定与约束的情况下动手。
+
+    默认 sources 走**快路联邦集**（`local,tdai` + claude_mem/workbuddy_memory/claude_projects），
+    而不是端点原来的 `local,tdai` —— 2026-10-02 实测：默认口径整包 `fed.sources=0`、
+    正文 1585 字符、联邦段**完全缺席**，也就是说 claude/codex 的开局包看不到任何别家
+    agent 的记忆（而它们恰恰是本机 6 路 CLI 里最会沉淀约定的一路）。改快路口径后同一次
+    真实请求 230ms 走完，5 个联邦源全 ok。
+    慢三路（pi_sessions/codex_sessions/archived_sessions，实测 rg 1.9~2.5s）**不在默认里**，
+    等 A4 索引投影落地后再议。
+
+    只要权威库：显式传 `sources="local,tdai"`（更快，但无联邦段）。
+    sources 写错直接 400 不静默空结果。返回含 `degraded`（为真＝这一包**不完整**）与
+    `fed`：逐源 `done` / `skipped_budget` / `failed` —— 只看正文分不清「别家没这条记忆」
+    与「别家的源被预算掐了或挂了」，两者对外都是"没有相关内容"。"""
+    # 空串 ⇒ 用端点侧的 FED_FAST_SOURCES（唯一真源在 memory.py）：
+    # 工具层不抄一份字符串，否则又多一处会各自漂移的默认值。
+    data = _get("/api/memory/context", max_chars=5000,
+                sources=sources or memory_mod.FED_FAST_SOURCES)
     if "error" in data:
         return json.dumps(data, ensure_ascii=False)
     # 不再对 JSON 字符串硬截 [:6000]：那会截出**非法 JSON** 交给调用方，

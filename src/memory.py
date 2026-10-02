@@ -16,7 +16,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -40,6 +40,16 @@ RRF_K = 60
 CONTEXT_TIMEOUT_S = float(os.getenv("MEMORY_CONTEXT_TIMEOUT", "1.2"))
 #: 权威 persona 很長（实测数千字），给注入包留固定占比，不要把 L2/L1 挤光。
 PROFILE_CHARS = int(os.getenv("MEMORY_PROFILE_CHARS", "1200"))
+#: v0.13.65 D1.5：**检索端**默认开启的快路联邦集。取值不是猜的——2026-10-02 实测
+#: `/api/memory/search?sources=<全9路>` 单轮并联墙钟 3.2s，逐路 ms：
+#: workbuddy 47 / claude_mem 148 / claude_projects 261 / grok 593 / workspace 583
+#: / hermes 1961 / pi_sessions 1894(超时) / codex_sessions 2028(超时)
+#: / archived_sessions 2506(超时，要扫 5622 个文件)。
+#: 为何不含后三路：默认行径上烧 3s 且三路必然超时——它们等 A4 的索引投影，不在这里硬开。
+#: 为何 claude_mem 在列：9 路里**只有它有真索引**（sqlite FTS5），其余是每次全树 rg。
+FED_FAST_SOURCES = "local,tdai,claude_mem,workbuddy_memory,claude_projects"
+#: 注入段里单条记忆的截断长度（与 pi 扩展 fmtMem 的 160 字同口径，跨入口看起来一致）。
+FED_ITEM_CHARS = 160
 
 
 def _local_l1(q: str, limit: int) -> list:
@@ -205,7 +215,7 @@ async def delete_l1(mid: int, request: Request):
 @runlog.track("mem.search")
 async def search_memory(request: Request,
                         q: str = Query(min_length=1), limit: int = Query(default=10, le=50),
-                        sources: str = Query(default="local,tdai"),
+                        sources: str = Query(default=FED_FAST_SOURCES),
                         episodic: int = Query(default=0, ge=0, le=20)):
     """记忆检索：本地 L1（LIKE）与 TDAI 权威库（语义）**并联**后 RRF 融合。
 
@@ -373,6 +383,63 @@ async def rebuild_l2(request: Request):
             "updated_at": doc["updated_at"]}
 
 
+def _fed_section(fed_results: Dict[str, Dict], fed_want: set,
+                 top: int, max_chars: int):
+    """把联邦结果压成注入包的第 4 段。返回 (lines, done, skipped_budget, failed, chars)。
+
+    为什么**轮转**取而不是先 RRF 再截断：先 RRF 会让某个命中多的源（archived_sessions
+    权重 0.4 但扫 5622 文件、极易多命中）独占名额，其他路一条露不出脸；轮转保证每路
+    都按注册表序（= 权重降序）轮到，预算不够时也是「均匀地被砍」而不是「整路消失」。
+    """
+    done: list = []
+    skipped: list = []
+    failed: list = []
+    pools: list = []
+    for sid in _FED_TAIL:
+        if sid not in fed_want:
+            continue
+        r = fed_results.get(sid) or {}
+        if r.get("ok"):
+            done.append(sid)
+            items = r.get("items") or []
+            if items:
+                pools.append((sid, items))
+        elif r.get("error") == memfed.SKIPPED_BUDGET:
+            skipped.append(sid)
+        else:
+            failed.append(sid)
+
+    labels = {s.id: s.label for s in memfed.REGISTRY.values()}
+    lines: list = []
+    used = 0
+    if pools:
+        depth = max(len(items) for _, items in pools)
+        stop = False
+        for i in range(min(top, depth)):
+            for sid, items in pools:
+                if i >= len(items):
+                    continue
+                it = items[i] if isinstance(items[i], dict) else {}
+                text = str(it.get("content") or it.get("title") or "")[:FED_ITEM_CHARS]
+                if not text.strip():
+                    continue
+                line = f"- [{labels.get(sid, sid)}] {text}"
+                if used + len(line) + 1 > max_chars:
+                    stop = True
+                    break
+                lines.append(line)
+                used += len(line) + 1
+            if stop:
+                break
+    # 预算与故障都**写在段里**：模型看到「只有 2 路」时得知道另外 7 路的下落，
+    # 否则它会以为「这就是全部」——这正是本次修复要消灭的静默丢弃的换皮。
+    if skipped:
+        lines.append(f"- （另有 {len(skipped)} 路未在时间预算内返回：{', '.join(skipped)}）")
+    if failed:
+        lines.append(f"- （另有 {len(failed)} 路检索失败：{', '.join(failed)}）")
+    return lines, done, skipped, failed, used
+
+
 # ── 注入通道 ──────────────────────────────────────────────────────────
 
 @router.get("/api/memory/context")
@@ -380,7 +447,9 @@ async def rebuild_l2(request: Request):
 async def injection_context(request: Request, q: Optional[str] = None,
                             max_chars: int = Query(default=6000, le=20000),
                             sources: str = Query(default="local,tdai"),
-                            scenes: int = Query(default=0, ge=0, le=20)):
+                            scenes: int = Query(default=0, ge=0, le=20),
+                            fed_chars: int = Query(default=2000, ge=0, le=4000),
+                            fed_top: int = Query(default=3, ge=1, le=10)):
     """SessionStart 注入包：L3 + L2(content+manual) + 相关 L1（本地与权威库融合）。
 
     为什么 L3 要回落到 TDAI：hub 自己的 `memory_docs` 实测只有 L2 一行，**L3 为空**，
@@ -422,6 +491,24 @@ async def injection_context(request: Request, q: Optional[str] = None,
                          + int(bool(l2["content"] or l2["manual"])),
                          "ms": None, "error": None})
 
+    # ── 联邦外部源（v0.13.65 D1）──
+    # 改前这里**没有这段**：`sources` 里的联邦 id 过完 _split_sources 白名单就被丢掉，
+    # 回包 backends 只有 tdai_profile/local，HTTP 200、无异常、无告警——agent 的开局包
+    # 永远拿不到任何其他 agent 的记忆。现在接上，并给墙钟（CONTEXT_TIMEOUT_S）：
+    # 坐在会话起始链路上，宁可少给一路，也不能把开局卡死在记忆检索后面。
+    fed_want = want & set(_FED_TAIL)
+    fed_results: Dict[str, Dict] = {}
+    if fed_want:
+        if q and fed_chars > 0:
+            fed_results = await memfed.search_fed(q, 20, fed_want, wall_s=CONTEXT_TIMEOUT_S)
+        for sid in _FED_TAIL:
+            if sid in fed_want:
+                backends.append(_backend(sid, fed_results.get(sid) or {
+                    "ok": False, "count": 0, "items": [],
+                    "error": "未执行（无 q 或 fed_chars=0）"}))
+    fed_meta = {"sources": len(fed_want), "done": [], "skipped_budget": [],
+                "failed": [], "chars": 0}
+
     parts = []
     if l3["content"] or l3["manual"]:
         parts.append(f"## 长期 Profile\n{l3['content']}\n{l3['manual']}")
@@ -449,10 +536,18 @@ async def injection_context(request: Request, q: Optional[str] = None,
             parts.append("## 场景索引（TDAI L2）\n"
                          + "\n".join(f"- {e.get('path','')}" for e in ent[:scenes]))
 
+    if fed_want:
+        fed_lines, done, skipped, failed, fed_used = _fed_section(
+            fed_results, fed_want, fed_top, fed_chars)
+        fed_meta = {"sources": len(fed_want), "done": done,
+                    "skipped_budget": skipped, "failed": failed, "chars": fed_used}
+        if fed_lines:
+            parts.append("## 其他 Agent 记忆（联邦）\n" + "\n".join(fed_lines))
+
     text = "\n\n".join(parts)
     truncated = len(text) > max_chars
     body = text[:max_chars]
     degraded = [b["name"] for b in backends if not b["ok"]]
     return {"context": body, "truncated": truncated, "chars": len(body),
-            "backends": backends, "degraded": degraded,
+            "backends": backends, "degraded": degraded, "fed": fed_meta,
             "took_ms": round((time.monotonic() - t0) * 1000, 1)}
