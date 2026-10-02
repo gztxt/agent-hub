@@ -93,10 +93,12 @@ class TestScrollSensitivityPinned(unittest.TestCase):
                          % (m.group(1), tok))
 
     def test_version_comment_records_root_cause(self):
-        self.assertIn('VERSION = "0.13.63"', MAIN_PY)
-        seg = MAIN_PY[MAIN_PY.index('VERSION = "0.13.63"'):][:2400]
+        # 版本钉随版本号走（10-02 bump 0.13.63→0.13.64 时同步）：它是一道**随行闸门**，
+        # 逼迫 bump 的人回头看根因注释还在不在，而不是让上一版的注释默默过期。
+        self.assertIn('VERSION = "0.13.64"', MAIN_PY)
+        seg = MAIN_PY[MAIN_PY.index('VERSION = "0.13.64"'):][:2400]
         for kw in ("scrollSensitivity", "0.3", "行/格"):
-            self.assertIn(kw, seg, "v0.13.63 的版本注释里丢了 %s —— 半年后没人知道为什么是 5" % kw)
+            self.assertIn(kw, seg, "版本注释里丢了 %s —— 半年后没人知道为什么是 5" % kw)
 
 
 if __name__ == "__main__":

@@ -77,7 +77,17 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.63"   # 终端滚轮「无法上翻 / 到不了页顶」：xterm 6.0 的 scrollSensitivity 仍取默认 1
+VERSION = "0.13.64"   # 终端移动端三零件（借鉴 cloudcli 行为规格，不复制其 AGPL 代码）：
+                      #   P1 触摸层 static/hub/13-term-touch.js：惯性滚 / 长按选区 / 双指缩放，
+                      #     宽屏不绑定；P2/P3 src/term.py：auth_url 逐观看者旁路 + ANSI 去重，
+                      #     API 只收 agent_id、命令取画像白名单（不退化为 bash -c）。
+                      #   10-02 复核补记：惯性尾巴曾被 ttScrollByPx 每帧 Math.round 逐帧取整吞掉
+                      #     （v 衰减到 <750px/s 后每帧不足半行，衰减段≈7 成路程整段消失：理论 ≈11 行、
+                      #     实测 2 行）⇒ 改为跨帧余量 ttResidPx；L2 判据 T2b 同步收紧为「松手再滑 ≥3 行」。
+                      #   证据：docs/TERM-MOBILE-IMPROVE-PLAN-20261001.md §9.1；台账 PT-20261002-10。
+                      #   上一版（v0.13.63）根因档案保留在下方，它被 L0 闸门 test_term_scroll_sensitivity
+                      #   钉住（改这里之前先读那段注释）：
+                      # 终端滚轮「无法上翻 / 到不了页顶」：xterm 6.0 的 scrollSensitivity 仍取默认 1
                       #   6.0 的 consumeWheelEvent 里有 `if (|deltaY| < 50) r *= 0.3` 再
                       #   Math.floor 取整 ⇒ 标准一格滚轮（deltaY=120、行高 24px）只走
                       #   120/24*0.3=1.5 → 1~2 行。CDP 真派发实测：sens=1 → 2.1 行/格、
