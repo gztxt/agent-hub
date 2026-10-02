@@ -19,6 +19,7 @@ from typing import Optional
 
 import tdai_client
 import memfed
+import memindex
 import kb as kb_mod
 import memory as memory_mod
 from mcp.server.mcpserver import MCPServer
@@ -279,6 +280,36 @@ def hub_cloudcli_projects() -> str:
 
 
 if ALLOW_WRITE:
+    @server.tool()
+    def hub_memindex_rebuild(scope: str = "dry_run") -> str:
+        """重建/刷新记忆索引投影层（memindex FTS）。默认不注册——需 HUB_MCP_ALLOW_WRITE=1。
+
+        `scope` 三选一，**先跑 dry_run**：
+          · `dry_run`    —— 不写库，只采样外推 `est_final_bytes` 与建库耗时。
+                          首次务必用它：容量倍率必须按实测真数定（规格 §八 裁定 2：
+                          写死 1.5 属拍脑袋，不接受）。
+          · `full`       —— 全量重建（清空旧投影后重建）。
+          · `incremental`—— 增量刷新。
+
+        磁盘闸在开写前判：水位不足直接返回 ok=False，检索侧 fail-closed 回退 rg，
+        **绝不自动删索引**——索引是可重建的派生数据，但删除权不在本工具。
+
+        代价（规格 §八 裁定 3）：`memindex.db` **不进备份轮换**，丢了只能重建，
+        重建期间检索降级回 rg（变慢，不返错）。
+        """
+        if scope not in ("dry_run", "full", "incremental"):
+            return json.dumps({"ok": False,
+                               "error": f"scope 须为 dry_run|full|incremental，收到 {scope!r}"},
+                              ensure_ascii=False)
+        import threading
+        rep = memindex.build(scope=scope)
+        out = {"ok": rep.ok, "scope": rep.scope, "files": rep.files,
+               "bytes_corpus": rep.bytes_corpus, "chunks": getattr(rep, "chunks", None),
+               "ms": getattr(rep, "ms", None), "notes": list(rep.notes or [])}
+        out = {k: v for k, v in out.items() if v is not None}
+        out["probe"] = memindex.probe()
+        return json.dumps(out, ensure_ascii=False)
+
     @server.tool()
     def hub_memory_add(content: str, category: str = "fact", layer: str = "L1") -> str:
         """写入一条 hub 记忆。默认不注册——需 HUB_MCP_ALLOW_WRITE=1 才启用。
