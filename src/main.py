@@ -77,8 +77,34 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.68"   # 技能调用记账与零调用僵尸榜（D3：GET /api/skill/zombies）：
-                      #   病根：本批只接了 hub 通道（profile_events 里 source='rest' 的
+VERSION = "0.13.69"   # 技能中心前端改版（D7：统一列表 + 三张诊断卡）：
+                      #   病根：页面里**存着第二个真相**——技能页长期写死「7 路发现点」，
+                      #     而 D1 早已把路由改成 20 路。第二个真相比第一个危险，因为它
+                      #     看起来永远正确、不会随后端变，只能靠人去发现它过期。
+                      #   本版：① 删掉写死文案，路数/条数一律由 /api/skill/list 的
+                      #     SKILL_ROUTES.length 与 items.length 现算；
+                      #     ② 新增发现点自检（/api/skill/status：四态 + 排除段 + 拒读数）；
+                      #     ③ 新增相关性实验室（/api/skill/relevant：命中词 + 耗时 + jev 状态）；
+                      #     ④ 注入预算卡补进度条与「被裁 = agent 看不到它」；
+                      #     ⑤ 列表加「N 天零调用」徽章与「只看零调用」筛选。
+                      #   **置信度封顶必须在界面上写出来**：零调用榜的 medium 藏起来
+                      #     就会被读成 high（d.direct_source=not-implemented 同理）。
+                      #   **闸门 tests/test_skill_center_ui.py 改为 L0**（计划书原写 verify_*）：
+                      #     仓内 README 的 verify_/probe_ 属 L2 live、需服务、手工单跑、
+                      #     不被 discover -p "test_*.py" 收进来 ⇒ 按那个名字写的东西
+                      #     **在提交时根本不会跑**，那不叫闸门叫摆设。
+                      #   **闸门自己蒙对过一次，已修**：首版 rerank 断言拿注释里的
+                      #     「默认 rerank=false」字样去过，而代码里是
+                                      #     `'&n=5&rerank=' + (useJev ? 'true' : 'false')`，并无该字面量。
+                      #     「文字存在 ≠ 已生效」那一族（TDZ / vitals_loop / 跨档镜像声明 同族）——
+                      #     **蒙对的闸门比没闸门更危险**。现改为剥注释后判代码，
+                      #     并补「jev 开关出厂不得带 checked」一条；两条均已反向验证会红。
+                      #   窄屏：未新增任何断点值，复用 01-core-boot.js 的 HUB_NARROW_MQ
+                      #     （分档偏好不变量③）；新增 .sk-budget 预算条用独立类名，
+                      #     不复用 .bar/.chip 以免改坏别处。
+                      #
+                      #   （以下为 0.13.68 D3 技能调用记账与零调用僵尸榜）
+                      #                      #   病根：本批只接了 hub 通道（profile_events 里 source='rest' 的
                       #     skill.read / skill.inject），各家 agent **直读自己技能目录的旁路
                       #     统计未实现**。设计书 §7 的口径是「两源皆零 → confidence=high」，
                       #     而第二源不存在时那条口径不成立——照抄会得到一个看着确定、实际是

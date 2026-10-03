@@ -84,3 +84,53 @@
 | `for it in skill._scan_one(...)` 把返回的 **dict** 当序列迭代，打印出「6 条」（其实是键数） | 与 D1 记录 12+28=40 对不上 | 先量后断言；量错就当没量 |
 | 探针 URL 里直接塞裸中文，没走 `--data-urlencode` ⇒ 响应非 JSON，误判为端点 FAIL | 看旁路日志无异常 + 重取状态码 200 | 中文查询参数一律 `--data-urlencode`；**先看日志再重试** |
 | 解析脚本按 `score`/`rank`/`bm25.took_ms` 取值，全错；且在重解析前把响应体删了 | KeyError | 响应体先落盘再解析；字段名以 `_rel_row` 源码为准，不凭印象 |
+
+---
+
+## 派发批次收口（2026-10-03）
+
+| 腿 | 状态 | 产物 |
+|---|---|---|
+| B1 jcode | **completed** | `work/dispatch/skillcenter/b1-jcode.md` |
+| B2 qwenpaw | **completed** | `work/dispatch/skillcenter/b2-qwenpaw.md` |
+| B3 opencode | **completed** | `work/dispatch/skillcenter/b3-opencode.md` |
+| B4 hermes | **completed** | `work/dispatch/skillcenter/b4-hermes.md` |
+| C1 仓内检索 | **error**（派发失败） | 主会话 grep 补齐，结论已入 v0.13.67 注释与设计书 §5.1 |
+| A1 codex | **error** | CCR 403，禁触面未修 |
+| A2 claude | **error** | CCR helper 缺失（exit 127），禁触面未修 |
+
+**五条腿 3 成功 / 3 失败，成功率 50%**；两条外部腿（A1/A2）的失败**均在 `~/.claude-code-router/**` 禁触面**，
+一条子代理腿（C1）失败于派发本身而非侦察。可用的四条全部只读、全部有主会话独立复核。
+
+**四条腿合起来把 D1 的立论推翻了两处**：
+1. B3：第 20 路 `opencode` 是假发现点（`PT-13`）
+2. B1：「发现点 = 一个绝对目录」这个模型漏掉了项目本地根（`PT-14`）
+
+**成本对照**：四条腿合计 ≈ 660k token / 3.5 小时。若由主会话直接 grep，binaries 部分约 20 次命令即可拿到
+**同样或更强的证据**。⇒ 下次侦察优先主会话直取；派发只留给「跨多目录真需要遍历」的部分
+（B4 扫 hermes 120 条 + hermes-agent 58 条 + hermes-web 22 条的那部分确实值）。
+
+---
+
+## D7 技能中心前端（2026-10-03，v0.13.69）
+
+**闸门从 `verify_*` 改成 L0**：计划书写的 `tests/verify_skill_center_ui.py` 若照办，
+按仓内 `tests/README.md` 的分层口径它属 **L2 live（需服务、手工单跑、不被 `discover -p "test_*.py"` 收进来）**，
+而 pre-commit 只跑 `run_tests.sh hermetic` ⇒ **那个名字的东西在提交时根本不会跑**。那不叫闸门，叫摆设。
+改为 `tests/test_skill_center_ui.py`（L0，23 例静态断言）。
+
+**闸门自己蒙对过一次，已修并留下反向验证**：首版 `rerank` 断言用 `assertIn("rerank=false", JS[端点起 400 字])`，
+而代码里根本没有该字面量（实际是 `'&n=5&rerank=' + (useJev ? 'true' : 'false')`），
+**命中的是上方注释里那句说明**。属「文字存在 ≠ 已生效」那一族（TDZ / `vitals_loop` / 跨档镜像声明）。
+现改为剥注释后判代码，并补「jev 开关出厂不得带 `checked`」。两条均已反向验证会红（改坏→红、还原→绿）。
+
+**真渲染取证**（旁路 3199 + obscura，1280×720）：6 个新元素全部非零尺寸、`jsErrors=[]`、
+`docOverflow=0`、切页正常，且 **`jevChecked=false` 在真浏览器里成立**——不止源码层。
+
+**未做、如实标注**：
+- **窄屏（390px）真渲染没做**：obscura 不暴露视口参数，改不了视口。分档偏好不变量 ③
+  目前只有静态证据（无第二处 `innerWidth < 768`、`.sk-budget` 无固定宽），**不算端侧验收**。
+- 三张卡片在浏览器里的**实际 API 填充内容**没截图（`--eval` 执行时异步请求尚未回来，卡片仍是「加载中…」尺寸）。
+- pi / Claude 端侧真实调用：**未做**，待 D4/D5 完成后由用户在端侧验收。
+
+**体积**：`static/hub.js` 重建后 5803 行，md5 `c062c0b7`；`tests/test_hubjs_split.py` 3 passed（逐字节等于拼接结果）。

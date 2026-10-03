@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""L0 hermetic 测试：D7 技能中心前端（`templates/index.html` + `static/hub/04-terminal-ws.js`）。
+
+**为什么是 L0 而不是计划书写的 `tests/verify_skill_center_ui.py`**：
+仓内 `tests/README.md` 的分层口径是——`verify_*.py`/`probe_*.py` 属 **L2 live，需要服务在跑、
+手工单跑、不被 `discover -p "test_*.py"` 收进来**，而 pre-commit 只跑 `run_tests.sh hermetic`。
+按计划书那个命名写出来的东西**在提交时根本不会跑**，那不叫闸门，叫摆设。
+本文件是纯静态断言（只读三个文件、零服务零网络），因此归 L0，每��提交必过。
+
+**这 6 条为什么必须钉死**：本仓吃过「页面里写死了一个数」的亏——技能页曾长期显示「7 路发现点」，
+而真实路由数早就被 D1 改成 20。页面上**第二个真相**（HTML 写死的文案）比第一个真相更危险，
+因为它看起来永远正确、不会随后端变。
+
+另外钉住**窄屏断点唯一**（工作区分档偏好五条不变量第 3 条）：JS 与 CSS 必须同源
+（`matchMedia('(max-width:767px)')` 与 `@media` 同值），禁写第二处 `innerWidth < 768`。
+"""
+import pathlib
+import re
+import unittest
+
+_REPO = pathlib.Path(__file__).resolve().parents[1]
+INDEX = _REPO / "templates" / "index.html"
+HUBJS = _REPO / "static" / "hub" / "04-terminal-ws.js"
+CORE = _REPO / "static" / "hub" / "01-core-boot.js"
+
+HTML = INDEX.read_text(encoding="utf-8")
+JS = HUBJS.read_text(encoding="utf-8")
+COREJS = CORE.read_text(encoding="utf-8")
+
+
+def strip_js_comments(src: str) -> str:
+    """剥掉块注释、行注释与行尾注释，只留真代码。
+
+    **为什么必须有它**：本文件第一版的 rerank 断言是拿注释里的说明字去过的
+    （代码里是 `'&n=5&rerank=' + (useJev ? 'true' : 'false')`，并无 `rerank=false` 字面量）。
+    「注释里写了」被当成了「代码里做了」——而这两件事在本仓里**经常不是一回事**
+    （TDZ、vitals_loop 函数头丢失、跨档镜像声明，都属同一个坑）。
+    """
+    out = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    out = re.sub(r"^\s*//.*$", "", out, flags=re.M)
+    out = re.sub(r"(?<![:'\"])//[^\n]*$", "", out, flags=re.M)
+    return out
+
+
+class TestNoSecondSourceOfTruth(unittest.TestCase):
+    """① 页面里不得存在第二个真相：路数/条数一律来自后端字段。"""
+
+    def test_no_hardcoded_route_count_in_html(self):
+        # 「7 路发现点」「7个发现点」这类写死文案必须消失——D1 已把 7 路改成 20 路。
+        bad = re.findall(r"[0-9]+\s*路发现点", HTML)
+        self.assertEqual(bad, [], "index.html 仍写死路数：%r（路数只能来自后端字段）" % bad)
+
+    def test_no_hardcoded_skill_total_in_html(self):
+        bad = re.findall(r"[0-9]+\s*个技能", HTML)
+        self.assertEqual(bad, [], "index.html 仍写死技能总数：%r" % bad)
+
+    def test_route_count_comes_from_backend_in_js(self):
+        """路数必须由后端返回的 routes 长度算出来。"""
+        self.assertRegex(JS, r"SKILL_ROUTES\.length")
+
+
+class TestZombieBadgeFields(unittest.TestCase):
+    """② 列表项要能显示「从未调用」徽章与末次调用时间（数据源：/api/skill/zombies）。"""
+
+    def test_js_calls_zombies_endpoint(self):
+        self.assertIn("/api/skill/zombies", JS, "列表未接零调用榜，前端拿不到末次调用时间")
+
+    def test_js_calls_status_endpoint(self):
+        self.assertIn("/api/skill/status", JS, "自检卡未接 /api/skill/status")
+
+    def test_never_called_badge_rendered(self):
+        self.assertIn("从未调用", JS, "缺「从未调用」徽章文案")
+
+    def test_zombie_only_filter_chip_exists(self):
+        self.assertIn("skillZombieOnly", JS, "缺「只看零调用」筛选芯片（id=skillZombieOnly）")
+
+    def test_confidence_ceiling_is_shown_not_hidden(self):
+        """僵尸榜的置信度封顶必须显示出来——藏起来的 medium 会被读成 high。"""
+        self.assertRegex(JS, r"confidence")
+        self.assertIn("medium", JS)
+
+
+class TestSelfCheckCard(unittest.TestCase):
+    """③ 发现点自检卡：覆盖全部 backends + 排除段。"""
+
+    def test_selfcheck_container_exists_in_html(self):
+        self.assertIn('id="skillSelfCheck"', HTML)
+
+    def test_excluded_section_rendered(self):
+        self.assertIn("排除", JS, "自检卡未渲染排除段（EXCLUDED_DIRS 必须在界面上公开理由）")
+
+    def test_four_states_rendered(self):
+        """一路四态 ok/empty/missing/error 必须都能显示，否则「没装」和「配错」又混成一句话。"""
+        for st in ("ok", "empty", "missing", "error"):
+            self.assertIn(st, JS, "自检卡未处理 state=%s" % st)
+
+    def test_skipped_outside_count_shown(self):
+        self.assertIn("skipped_outside", JS, "自检卡未显示白名单外拒读数（看见 vs 拒读必须可区分）")
+
+
+class TestRelevanceLab(unittest.TestCase):
+    """④ 相关性实验室：打 /api/skill/relevant，并显示 BM25/jev 分开 + 耗时。"""
+
+    def test_lab_container_exists_in_html(self):
+        self.assertIn('id="skillLab"', HTML)
+
+    def test_js_calls_relevant_endpoint(self):
+        self.assertIn("/api/skill/relevant", JS)
+
+    def test_lab_input_has_id(self):
+        self.assertIn('id="skillLabQ"', HTML)
+
+    def test_shows_matched_terms_and_took(self):
+        self.assertIn("matched", JS, "实验室未显示命中词——只给分数答不出「为什么这条排第一」")
+        self.assertIn("took_ms", JS, "实验室未显示耗时")
+
+    def test_lab_defaults_to_bm25_only(self):
+        """**默认 rerank=false 是硬要求**：实测 rerank=true 时该端点 took_ms=1064.5ms，
+        而 hub-facade 的 input 钩子预算是 600ms ⇒ 默认必须关，否则每次都超时降级。
+
+        ⚠ 第一版这条断言写成 `assertIn("rerank=false", JS[端点起 400 字])`，
+        结果**蒙对了**——代码里根本没这个字面量，命中的是上方注释里那句说明。
+        「文字存在 ≠ 已生效」那一族（TDZ / vitals_loop / 跨档镜像声明 同族）。
+        本版改成剥掉注释后判**代码**，并补一条「开关默认不勾」的断言：
+        能得到 rerank=true 的唯一路径是那个 checkbox，而它出厂未勾。
+        """
+        code = strip_js_comments(JS)
+        i = code.find("/api/skill/relevant")
+        self.assertNotEqual(i, -1, "未找到相关性调用")
+        seg = code[i:i + 400]
+        self.assertIn("rerank=", seg, "相关性调用没有显式传 rerank（依赖后端默认 = 隐式依赖）")
+        self.assertIn("'true' : 'false'", seg, "rerank 必须是显式二选一，不是跟随后端默认")
+
+    def test_jev_toggle_ships_unchecked(self):
+        """HTML 里的 jev 开关出厂不得带 checked —— 带了就等于默认开。"""
+        m = re.search(r'<input[^>]*id="skillLabJev"[^>]*>', HTML)
+        self.assertIsNotNone(m, "缺少 jev 开关元素，无法断言其默认值")
+        self.assertNotIn("checked", m.group(0), "jev 开关出厂被勾上 = 默认重排 = 每次多等 1 秒")
+
+
+class TestBudgetCard(unittest.TestCase):
+    """⑤ 注入预算卡：full / name_only / truncated 三档分区齐全 + 一句后果说明。"""
+
+    def test_three_zones_rendered(self):
+        for z in ("full", "name_only", "truncated"):
+            self.assertIn(z, JS, "预算卡缺 %s 分区" % z)
+
+    def test_consequence_explained(self):
+        """被裁 = 注入时 agent 看不到它。这句话必须写在界面上，否则用户只看到数字。"""
+        self.assertRegex(JS, r"被裁|看不到")
+
+
+class TestNarrowBreakpointSingleSource(unittest.TestCase):
+    """⑥ 断点唯一：禁第二处 innerWidth < 768（不变量 3：JS 与 CSS 必须同源）。"""
+
+    def test_core_boot_defines_the_single_breakpoint(self):
+        self.assertIn("HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)')", COREJS)
+
+    def test_no_second_innerwidth_breakpoint(self):
+        """**规则注释本身会命中**（index.html 里写着「不得另写 innerWidth<768」），
+        所以必须先剥掉注释再判，否则闸门会被自己的规则文本绊倒。
+        这个文件里的规则原文藏在**三种**注释里，都得剥：
+          ① HTML 注释 `<!-- -->`（第一版漏了 → 误报 index.html:914）
+          ② CSS 块注释 `/* */`（index.html 的 <style> 里，漏了 → 误报 index.html:912）
+          ③ JS 行注释 `//`
+        闸门写错就改闸门，不去改对的代码。反向验证过：往 11-resources.js 里真塞一处
+        `innerWidth < 768`，闸门会报出 `11-resources.js:297`（不是只会绿）。
+        """
+        offenders = []
+        for f in sorted((_REPO / "static" / "hub").glob("*.js")) + [INDEX]:
+            raw = f.read_text(encoding="utf-8")
+            if f.suffix == ".html":
+                raw = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
+            raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)   # CSS/JS 块注释
+            for i, line in enumerate(raw.splitlines(), 1):
+                code = line.split("//")[0]
+                if re.search(r"innerWidth\s*<\s*7[0-9][0-9]", code):
+                    offenders.append("%s:%d" % (f.name, i))
+        self.assertEqual(offenders, [], "出现第二处窄屏断点：%r" % offenders)
+
+    def test_new_skill_card_does_not_introduce_its_own_media_query(self):
+        """D7 新增的卡不得自带 @media 断点值——要么复用现有值，要么根本不写。"""
+        skill_ui = JS[JS.find("技能中心"):JS.find("知识库中心")] if "技能中心" in JS else ""
+        self.assertNotIn("max-width: 768px", skill_ui)
+        self.assertNotIn("max-width: 767px", skill_ui)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -583,7 +583,13 @@ async function previewCtx() {
 
 /* ── 技能中心（v0.13.26 批4）────────────────────────── */
 
-let SKILLS = [], SKILL_ROUTES = [];
+let SKILLS = [], SKILL_ROUTES = [], SKILL_STATUS = null, SKILL_ZOMBIES = {}, SKILL_ZOMBYE_ONLY = false;
+
+/* v0.13.69 D7 技能门面：一份数据源、一个扫描口径。
+ * 主列表 + 三张诊断卡（自检 / 相关性实验室 / 注入预算）都读同一批后端字段，
+ * **页面不存第二个真相**——原先那句写死的「7 路发现点」已于 D1 改成 20 路后变成谎话。
+ * 另：零调用榜的 confidence 封顶 medium（各家直读磁盘未取证）必须在界面上显示，
+ * 藏起来的 medium 会被读成 high。 */
 
 async function loadSkills() {
   boxBusy('skillList');
@@ -601,11 +607,21 @@ async function loadSkills() {
     $('instName').innerHTML = SKILLS.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
     $('skillHint').textContent = SKILLS.length + ' 个技能 · ' + SKILL_ROUTES.length + ' 路发现点';
     if ((d.degraded || []).length) $('skillHint').textContent += ' · 降级路：' + d.degraded.join(',');
-    renderSkillList();
+    // 工具条那句同样不再写死（它与 skillHint 同源，不然后面会再次漂移）
+    $('skillRouteHint').textContent = SKILL_ROUTES.length + ' 路发现点 · 只读门面：点「查看」读正文（脱敏）';
   } catch (e) {
     CENTER_HEALTH.skills = 'err';
     boxFail('skillList', e, 'loadSkills');
   }
+  // 诊断数据与主列表**分开拉**：自检/零调用失败不该把主列表一起拖黑。
+  loadSkillStatus();
+  loadSkillZombies();
+}
+
+function toggleSkillZombieOnly() {
+  SKILL_ZOMBYE_ONLY = !SKILL_ZOMBYE_ONLY;
+  $('skillZombieOnly').classList.toggle('on', SKILL_ZOMBYE_ONLY);
+  renderSkillList();
 }
 
 function renderSkillList() {
@@ -614,14 +630,116 @@ function renderSkillList() {
   const rows = SKILLS.filter(s =>
     (!q || String(s.name || '').toLowerCase().includes(q) || String(s.description || '').toLowerCase().includes(q)) &&
     (!route || (s.routes || []).includes(route) || s.route === route));
-  $('skillList').innerHTML = rows.map(s => {
+  // 「只看零调用」是**后端给的名单**，不是前端自己数出来的：零调用要看的是
+  // 注入/读取两个通道的记账，而不是「页面上没点过查看」。
+  const zrows = SKILL_ZOMBYE_ONLY ? rows.filter(s => SKILL_ZOMBIES[s.name]) : rows;
+  const el = $('skillList');
+  if (SKILL_ZOMBYE_ONLY && !Object.keys(SKILL_ZOMBIES).length) {
+    el.innerHTML = '<div class="hint">零调用榜为空（可能记账尚未建立）——先用相关性实验室跑一次检索。</div>';
+    return;
+  }
+  el.innerHTML = zrows.map(s => {
     const rt = (s.routes && s.routes.length) ? s.routes[0] : s.route;   // 首路作为查看默认 route
+    const z = SKILL_ZOMBIES[s.name];
+    const used = z
+      ? '<span class="badge" title="建议：' + escapeHtml(String(z.suggested_action || '')) + '（只是建议，不自动删）">' + escapeHtml(String(z.days_idle)) + ' 天零调用</span>'
+      : '';
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
     '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
-    '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) + '</span></p>' +
-    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(' + jsStr(s.name) + ',' + jsStr(rt) + ')">查看</button></div>';
+    '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) +
+    ' · ' + (z ? '末次调用：无（从未调用）' : '末次调用：记账未覆盖此技能') + '</span></p>' +
+    '<span style="align-self:flex-start;display:flex;gap:4px">' + used +
+    '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(' + jsStr(s.name) + ',' + jsStr(rt) + ')">查看</button></span></div>';
   }).join('') ||
-    '<div class="hint">没有匹配的技能（' + SKILLS.length + ' 总数）</div>';
+    '<div class="hint">没有匹配的技能（' + zrows.length + ' / ' + SKILLS.length + ' 总数）</div>';
+}
+
+/* 零调用榜：/api/skill/zombies。**confidence 封顶 medium**——只接了 hub 通道
+ * （profile_events 的 skill.read/skill.inject），各家直读磁盘的旁路本批未实现。
+ * 界面上必须把它写出来，否则 medium 会被读成 high。 */
+async function loadSkillZombies() {
+  try {
+    const d = await api('/api/skill/zombies?days=7');
+    SKILL_ZOMBIES = {};
+    (d.zombies || []).forEach(z => { SKILL_ZOMBIES[z.name] = z; });
+    const c = d.confidence || 'medium';
+    $('skillBudgetHint').innerHTML = '零调用榜：' + (d.zombies_count || 0) + ' / ' + (d.total || 0) +
+      ' 条 · 记账覆盖 <b>' + (d.counted || 0) + '</b> 条 · 置信度 <b>' + escapeHtml(c) + '</b>' +
+      (d.direct_source === 'not-implemented' ? '（第二数据源未接入，置信度封顶，不封顶就是自欺）' : '');
+  } catch (e) {
+    $('skillBudgetHint').innerHTML = '<span class="hint">零调用榜不可用：' + escapeHtml(e.message || e) + '</span>';
+  }
+  renderSkillList();
+}
+
+/* 发现点自检：/api/skill/status。四态 + 排除段 + 白名单外拒读数。
+ * 排除段必须在界面上公开理由（D1 的硬要求），否则「为什么这条没进来」无从回答。 */
+async function loadSkillStatus() {
+  const el = $('skillSelfCheck');
+  if (!el) return;
+  try {
+    const d = await api('/api/skill/status');
+    SKILL_STATUS = d;
+    const LABEL = { ok: '正常', empty: '目录空', missing: '未安装', error: '读失败' };
+    const rows = Object.keys(d.disk || {}).sort().map(k => {
+      const s = d.disk[k] || {};
+      const st = LABEL[s.state] || s.state || '?';
+      const skip = (s.skipped_outside || []).length;
+      return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(k) + '</span>' +
+        '<p>' + escapeHtml(st) + ' · <b>' + (s.entries || 0) + '</b> 条' +
+        (skip ? ' · <span class="badge">' + skip + ' 条白名单外拒读</span>' : '') +
+        ((s.fm_missing || []).length ? ' · ' + s.fm_missing.length + ' 条缺 frontmatter' : '') +
+        '<br><span class="hint">' + escapeHtml((s.roots || []).join('  ')) + '</span>' +
+        (s.error ? '<br><span class="hint">' + escapeHtml(String(s.error).slice(0, 140)) + '</span>' : '') +
+        '</p></div>';
+    });
+    const dd = d.dedup || {};
+    const exc = d.excluded || {};
+    const excRows = Object.keys(exc).map(p => '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">排除</span>' +
+      '<p>' + escapeHtml(p) + '<br><span class="hint">' + escapeHtml(String(exc[p])) + '</span></p></div>');
+    el.innerHTML = rows.join('') +
+      '<div class="hint" style="padding:8px 10px">去重前走 ' + (dd.walked || 0) + ' 条 → 去重后 ' +
+      (dd.unique || 0) + ' 条 · 合并 ' + ((dd.aliases || []).length) + ' 个同源副本</div>' +
+      (excRows.length ? '<div class="hint" style="padding:8px 10px">排除 ' + excRows.length + ' 项（不算发现点，但理由公开）</div>' + excRows.join('') : '');
+  } catch (e) {
+    boxFail('skillSelfCheck', e, 'loadSkillStatus');
+  }
+}
+
+/* 相关性实验室：/api/skill/relevant。
+ * **默认 rerank=false 是硬要求**：实测 rerank=true 时该端点 took_ms=1064.5ms，
+ * 而 hub-facade 的 input 钩子预算是 600ms（见 src/main.py 0.13.68 版本注释）。
+ * 界面上给开关，但默认关；BM25 层实测 12–53ms。 */
+async function skillLabSearch() {
+  const q = ($('skillLabQ').value || '').trim();
+  const el = $('skillLab'), hint = $('skillLabHint');
+  if (!el) return;
+  if (!q) { if (hint) hint.textContent = '先输入一句话'; return; }
+  boxBusy('skillLab');
+  const useJev = $('skillLabJev') && $('skillLabJev').checked;
+  try {
+    const d = await api('/api/skill/relevant?q=' + encodeURIComponent(q) +
+      '&n=5&rerank=' + (useJev ? 'true' : 'false'));
+    const b = d.bm25 || {};
+    const items = b.items || [];
+    if (hint) hint.textContent = '命中 ' + items.length + ' / 语料 ' + (d.total || 0) +
+      ' · ' + (d.took_ms != null ? d.took_ms + 'ms' : '?') + (useJev ? '（jev 已开，会慢 ~1s）' : '');
+    el.innerHTML = items.map(x => {
+      const j = x.jev;
+      const jevTxt = j ? ' · jev ' + escapeHtml(String(j.score)) + '（置信 ' + escapeHtml(String(j.confidence)) + '）' : '';
+      return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' +
+        escapeHtml(String(x.name)) + '</span><p><b>' + escapeHtml(String(x.bm25)) + '</b> 分' + jevTxt +
+        '<br><span class="hint">命中词：' + escapeHtml((x.matched || []).join(' ')) +
+        (x.matched_in && x.matched_in.length ? '（' + escapeHtml(x.matched_in.join(' ')) + '）' : '') +
+        ' · ' + escapeHtml((x.routes || [x.route]).join(', ')) +
+        ' · 约 ' + (x.tokens_est || 0) + ' tok</span>' +
+        '<br>' + escapeHtml(String(x.description || '').slice(0, 120)) + '</p></div>';
+    }).join('') || '<div class="hint">无命中</div>' +
+      '<div class="hint" style="padding:8px 10px">注入时 hub 取 top-3 全描述、其余仅名字；' +
+      '被预算裁掉的条目 = agent 根本看不到它。</div>';
+  } catch (e) {
+    boxFail('skillLab', e, 'skillLabSearch');
+  }
 }
 
 /* 技能正文查看（C 缺口）：调 /api/skill/read 弹 skillDocDrawer 抽屉。
@@ -674,10 +792,20 @@ async function loadSkillBudget() {
     const d = await api('/api/skill/budget?max_tokens=' + tok);
     const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + escapeHtml(f.description.slice(0, 80)) : ''));
     const names = (d.name_only || []).map(n => escapeHtml(n));
+    // 三档分区：full（全描述）/ name_only（仅名）/ truncated（被裁）
+    const pct = Math.min(100, Math.round((d.used_est || 0) * 100 / Math.max(1, d.budget || 1)));
+    const bar = $('skillBudgetBar'), fill = $('skillBudgetFill');
+    if (bar && fill) {
+      fill.style.width = pct + '%';
+      bar.setAttribute('aria-valuenow', String(pct));
+      bar.setAttribute('aria-label', '注入预算占用 ' + pct + '%');
+      bar.classList.toggle('over', (d.used_est || 0) > (d.budget || 1));
+    }
     $('skillBudget').innerHTML =
-      '预算 ' + d.budget + ' tok · 实际约 ' + d.used_est + ' · 全条目 ' + full.length + ' / 仅名 ' + names.length +
+      '预算 ' + d.budget + ' tok · 实际约 ' + d.used_est + '（' + pct + '%） · 全条目 ' + full.length + ' / 仅名 ' + names.length +
       (d.truncated ? ' / <b>被裁 ' + d.truncated + '</b>' : '') + '（共 ' + d.total + '）<br>' +
-      full.concat(names).map(s => '· ' + s).join('<br>');
+      full.concat(names).map(s => '· ' + s).join('<br>') +
+      '<br><span class="hint">被裁 = 预算不够时连名字都留不下 ⇒ 注入时 agent <b>看不到</b>它。</span>';
   } catch (e) { boxFail('skillBudget', e, 'loadSkillBudget'); }
 }
 

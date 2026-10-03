@@ -99,8 +99,9 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.66": ("PT-20261002-11", "find 不带 -L", "同源副本", "四态"),
         "0.13.67": ("子串", "name命中恒为空", "不改写排序", "PT-20261002-12"),
         "0.13.68": ("not-implemented", "counted", "suggested_action", "PT-20261002-13"),
+        "0.13.69": ("第二个真相", "7 路发现点", "蒙对的闸门", "HUB_NARROW_MQ"),
     }
-    CURRENT_VERSION = "0.13.68"
+    CURRENT_VERSION = "0.13.69"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
