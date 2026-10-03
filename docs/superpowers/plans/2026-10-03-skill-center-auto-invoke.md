@@ -36,8 +36,8 @@
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `SKILL_DIRS: Dict[str, str]` —— 7 旧 + 13 新 = **20 路**
-  - `EXCLUDED_DIRS: Dict[str, str]` —— `{路径: 排除理由}`，11 项
+  - `SKILL_DIRS: Dict[str, str]` —— 7 旧 + 13 新 = **20 路**（已落地 v0.13.66）
+  - `EXCLUDED_DIRS: Dict[str, str]` —— `{路径: 排除理由}`，**15 项**
   - `_scan_one(route, root) -> Dict` 新增 `reason` 键，取值 `"no_path" | "no_dir" | "read_error" | None`
   - `GET /api/skill/status` 每路新增 `"state"` 键，取值 `"ok" | "empty" | "missing" | "error"`；顶层新增 `"excluded": Dict[str, str]`
 
@@ -55,9 +55,10 @@ import skill
 EXPECTED_ROUTES = {
     "claude", "pi", "techdocs", "superpowers", "agents", "codex", "workbuddy",
     "hermes", "hermes-agent", "hermes-web", "jcode", "grok", "grok-bundled",
-    "picoclaw", "qoder", "qoderwake", "qoderwake-gen", "qoderwake-shadow",
+    "picoclaw", "qoder", "qoderwake", "qoderwake-shadow", "qoderwake-cli",
     "qoder-alpha", "opencode",
 }
+# 注：qoderwake-gen 已删除（该路径不存在）；qoderwake-cli 为实测后新增的稳定路。
 
 
 class TestRoutes(unittest.TestCase):
@@ -105,24 +106,31 @@ ls -la src/skill.py.bak-*
 
 - [ ] **Step 4: 实现**
 
-`_DEFAULT_DIRS` 追加 13 项（每项带注释说明**实测条数与该工具是否真会读**）：
+`_DEFAULT_DIRS` 追加 13 项。⚠️ **本段注释里的条数已在 v0.13.66 实测后作废**，
+权威表见设计书 §4.1（口径 = `skill._scan_many()` / `os.walk(followlinks=True)`）。
+**不带 `-L` 的 `find` 会把 `opencode`、`skills-hot` 误报为 0**（不跟随软链）——
+这是本轮反复踩的同一个坑，凡计数一律回 `_scan_one()` 取。
 
 ```python
-    # ── v0.13.66 D1：56 号文档漏掉的 13 路实测发现点。条数是 2026-10-03 `find -maxdepth 3` 实测，
-    # 登记时**不猜**：「目录存在但 0 条」与「目录不存在」由 /status 的 state 四态区分。
-    "hermes": "/home/gztxt/.hermes/skills",                      # 110 · config.yaml 声明的是 skills-hot（实测 0 条），实际消费这一路
-    "hermes-agent": "/home/gztxt/.hermes/hermes-agent/skills",  # 58 · 上游内置仓，与 hermes 重叠由 _dedup 按 realpath 归一
-    "hermes-web": "/home/gztxt/.hermes-web-ui/.ekko/skills",    # 22
-    "jcode": "/home/gztxt/.jcode/skills",                        # 56
-    "grok": "/home/gztxt/.grok/skills",                          # 1
+    # ── v0.13.66 D1：56 号文档漏掉的 13 路实测发现点。
+    # 实际落地值（权威表见设计书 §4.1）与本段初稿注释的差异：
+    #   hermes 110->120、jcode 56->58、grok 1->3、qoderwake 7->11、qoderwake-shadow 2->1
+    #   qoderwake-gen 删除（路径不存在）→ 换 qoderwake-cli
+    #   qoder-alpha 14->2 且**必须用 glob**（扩展目录名是内容哈希 42d23c0fa380）
+    #   opencode 0->2（3 个软链目录，经软链到达）
+    "hermes": "/home/gztxt/.hermes/skills",                      # 120 · 运行时真实加载面
+    "hermes-agent": "/home/gztxt/.hermes/hermes-agent/skills",  # 58 · 打包种子源，运行时不被扫描
+    "hermes-web": "/home/gztxt/.hermes-web-ui/.ekko/skills",    # 22 · 属 Ekko Studio
+    "jcode": "/home/gztxt/.jcode/skills",                        # 58
+    "grok": "/home/gztxt/.grok/skills",                          # 3
     "grok-bundled": "/home/gztxt/.grok/bundled/skills",          # 9
     "picoclaw": "/home/gztxt/.picoclaw/workspace/skills",        # 8
     "qoder": "/home/gztxt/.qoder/security/skills",               # 1
-    "qoderwake": "/home/gztxt/.qoderwake/resources/builtin-skills",   # 7
-    "qoderwake-gen": "/home/gztxt/.qoderwake/runtime-generations/skills",  # 14
-    "qoderwake-shadow": "/home/gztxt/.qoderwake/run/shadow-skills",       # 2
-    "qoder-alpha": "/home/gztxt/.qoder-alpha/extensions/skills",   # 14
-    "opencode": "/home/gztxt/.config/opencode/skill",             # 目录在、0 条（单数 skill，PT-11 记 1 项未复现）
+    "qoderwake": "/home/gztxt/.qoderwake/resources/builtin-skills",   # 11 · 规范副本
+    "qoderwake-shadow": "/home/gztxt/.qoderwake/run/shadow-skills",  # 1
+    "qoderwake-cli": "/home/gztxt/.qoderwake/qodercli/security-resources/security-scan/skills",  # 1
+    "qoder-alpha": "/home/gztxt/.qoder-alpha/extensions/*/skills",   # 2 · glob，写死哈希必失效
+    "opencode": "/home/gztxt/.config/opencode/skill",             # 2 · 软链到达
 ```
 
 `EXCLUDED_DIRS`（**排除项必须能被面板读到，不静默**）：
@@ -185,7 +193,7 @@ print('路数',len(d['disk']),'去重',d['dedup'],'排除',len(d.get('excluded',
 for k,v in d['disk'].items(): print(' ',k,v.get('state'),v.get('entries'),v.get('error') or '')"
 ```
 
-Expected: 路数 20；`opencode` 为 `empty 0`；不存在者为 `missing` + 脱敏 error；无 500。
+Expected: 路数 20；`opencode` 为 `ok 2`（**不是 `empty 0`** —— 2 条经软链到达）；不存在者为 `missing` + 脱敏 error；无 500。
 
 ---
 

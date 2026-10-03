@@ -40,11 +40,11 @@ agent 侧**分四档落地**。不追求「一套代码通吃 10 家」—— �
 
 | # | 根因 | 证据 |
 |---|---|---|
-| R1 | **可见性**：hermes 110 / jcode 56 / hermes-web-ui 22 / qoder 系 52 条只在自己家的目录里 | 7 路 vs 磁盘实测 |
+| R1 | **可见性**：hermes 120 / jcode 58 / hermes-web 22 / qoder 系 15 条只在自己家的目录里 | 7 路 vs 磁盘实测（`_scan_one`，`os.walk(followlinks=True)`） |
 | R2 | **预算打满**：`800/796`，装不下降 name-only，再多 `truncated` | `/api/skill/budget` |
 | R3 | **注入通道死代码** | 读 `hub-facade.ts` 全文 |
 | R4 | **「相关」没实现** | `skill_list` docstring |
-| R5 | **hermes 声明/消费不一致**：`config.yaml` 指 `skills-hot`（实测 0 条 SKILL.md；PT-11 记 16 条），实读 `~/.hermes/skills`（110 条） | 两处实测 |
+| R5 | **hermes 声明/消费不一致**：`config.yaml:345` 指 `skills-hot`，`skill_utils.py:420-428` 实际同时加载 `~/.hermes/skills` + `skills-hot` | b4 取证 + 主会话复核 |
 | R6 | **无观测**：页面与台账都答不出「哪些技能真被用过」 | `skill.read`=0 |
 
 ---
@@ -53,7 +53,8 @@ agent 侧**分四档落地**。不追求「一套代码通吃 10 家」—— �
 
 ```
 20 路发现点（SKILL_DIRS 扩展，全配置化；每次请求重扫，**不存第二份副本**）
-   │ _dedup 按 realpath 合并重叠（hermes 110 ∩ hermes-agent 58 自动归一）
+   │ _dedup：**realpath 归一 + (name, 内容 sha256) 归一**（见 §4.4；单靠 realpath 会漏 55 条）
+   │   ⚠️ 20 路去重前 381 条；另有 62 条因 realpath 出白名单被拒读（claude 28 / agents 28 / 其余各 1）
    ▼
 /api/skill/list | read | status | install | remove    ← 现有，语义不动
 /api/skill/budget                                     ← 现有，改为相关性排序装填
@@ -72,32 +73,66 @@ agent 侧**分四档落地**。不追求「一套代码通吃 10 家」—— �
 
 ## 4. 发现点清单
 
-### 4.1 现有 7 路（不动）
+### 4.1 最终 20 路（v0.13.66 已落地）
 
-`claude` 18 · `techdocs` 18（自研权威副本）· `superpowers` 14 · `agents` 12 · `codex` 6 · `workbuddy` 6 · `pi` 3
+**权威口径 = `skill._scan_many()`（`os.walk(followlinks=True)`）实测**，2026-10-03。
+⚠️ **禁用不带 `-L` 的 `find` 计数**：它不跟随软链，会把 `opencode` 报成 0、把 `skills-hot` 报成 0。
 
-### 4.2 拟新增 13 路
+| # | route | 路径 | 条数 | 备注 |
+|---|---|---|---|---|
+| 1 | `claude` | `~/.claude/skills` | 20 | 软链到达 2；**白名单外拒读 28** |
+| 2 | `pi` | `~/.pi/agent/skills` | 5 | 软链到达 2 |
+| 3 | `techdocs` | `/fs/1000/ftp/技术文档/skills` | 18 | **自研权威副本** |
+| 4 | `superpowers` | `~/.pi/agent/git/github.com/obra/superpowers/skills` | 14 | |
+| 5 | `agents` | `~/.agents/skills` | 12 | **白名单外拒读 28** |
+| 6 | `codex` | `~/.codex/skills` | 8 | |
+| 7 | `workbuddy` | `~/.workbuddy/skills` | 8 | |
+| 8 | `hermes` | `~/.hermes/skills` | 120 | 运行时真实加载面；含软链 `agent-dispatch`/`unified-memory` |
+| 9 | `hermes-agent` | `~/.hermes/hermes-agent/skills` | 58 | **打包种子源，运行时不被扫描** |
+| 10 | `hermes-web` | `~/.hermes-web-ui/.ekko/skills` | 22 | 属 Ekko Studio 组件，hermes CLI 零引用 |
+| 11 | `jcode` | `~/.jcode/skills` | 58 | |
+| 12 | `grok` | `~/.grok/skills` | 3 | |
+| 13 | `grok-bundled` | `~/.grok/bundled/skills` | 9 | |
+| 14 | `picoclaw` | `~/.picoclaw/workspace/skills` | 8 | |
+| 15 | `qoder` | `~/.qoder/security/skills` | 1 | |
+| 16 | `qoderwake` | `~/.qoderwake/resources/builtin-skills` | 11 | 规范副本 |
+| 17 | `qoderwake-shadow` | `~/.qoderwake/run/shadow-skills` | 1 | |
+| 18 | `qoderwake-cli` | `~/.qoderwake/qodercli/security-resources/security-scan/skills` | 1 | 取代原计划的 `qoderwake-gen`（该路径**不存在**） |
+| 19 | `qoder-alpha` | `~/.qoder-alpha/extensions/*/skills` | 2 | **必须用 glob**：扩展目录名是内容哈希（如 `42d23c0fa380`），写死必失效 |
+| 20 | `opencode` | `~/.config/opencode/skill` | 2 | 3 个软链目录；普通 `find` 曾误报 0 |
 
-| route | 路径 | 实测条数 |
-|---|---|---|
-| `hermes` | `~/.hermes/skills` | 110 |
-| `hermes-agent` | `~/.hermes/hermes-agent/skills` | 58（重叠由 dedup 归一） |
-| `hermes-web` | `~/.hermes-web-ui/.ekko/skills` | 22 |
-| `jcode` | `~/.jcode/skills` | 56 |
-| `grok` | `~/.grok/skills` | 1 |
-| `grok-bundled` | `~/.grok/bundled/skills` | 9 |
-| `picoclaw` | `~/.picoclaw/workspace/skills` | 8 |
-| `qoder` | `~/.qoder/security/skills` | 1 |
-| `qoderwake` | `~/.qoderwake/resources/builtin-skills` | 7 |
-| `qoderwake-gen` | `~/.qoderwake/runtime-generations/skills` | 14 |
-| `qoderwake-shadow` | `~/.qoderwake/run/shadow-skills` | 2 |
-| `qoder-alpha` | `~/.qoder-alpha/extensions/skills` | 14 |
-| `opencode` | `~/.config/opencode/skill` | 0（**目录在、内容空**，status 如实报） |
+去重前合计 **381** 条。`state` 四态：`ok` / `empty` / `missing` / `error`；`_scan_one` 给出机器可判 `reason`：
+`no_path` / `no_dir` / `read_error` / `None`。
 
-### 4.3 待重验 2 项（不得写成定论）
+### 4.2 排除项（`EXCLUDED_DIRS`，15 条，理由在 `/api/skill/status` 公开）
 
-- `~/.codebuddy/skills`：PT-20261002-11 记 1 项，本轮 `maxdepth 3` **未列出**
-- `~/.hermes/skills-hot`：PT-11 记 16 项，本轮 `maxdepth 4` **0 项**
+市场缓存、安装暂存、备份、快照、非技能目录、厂商同源副本六类。例如
+`~/.claude/plugins/marketplaces`、`~/.grok/marketplace-cache`、`~/.qoderwake/.tmp`、
+`~/.qoder-alpha/extensions/*/*/_/skills`（6 份同源副本）、`~/.hermes/hermes-agent/optional-skills`、
+`/fs/1000/ftp/技术文档/{snapshots,全量备份}`、`~/Hermes-backup`、`~/.pi-upgrade-backup`。
+
+另：`qoderwake` 4 份 realpath 各异的实体副本（`runtime-resources` / `runtime-generations/{A,B}`）不登记，
+否则 11 条会被报成 44 条。
+
+### 4.3 待重验（不得写成定论）
+
+- `~/.codebuddy/skills`：PT-20261002-11 记 1 项，本轮 20 路实测**未列出**
+- `~/.hermes/skills-hot`：**16 活链 + 16 条 `*.deadlink-20261003` 悬空残留**（b4 取证 + 主会话复核）。
+  活链已指向自研权威副本；悬空残留属既存问题，**停手报请，不顺手删**。
+
+### 4.4 🔴 去重口径修正（b4 派发带出，D1 遗留缺陷）
+
+`_dedup` 只按 **realpath** 合并，但 `hermes-agent/skills → ~/.hermes/skills` 是**拷贝**关系
+（`tools/skills_sync.py:2-4`），不是软链 ⇒ 实测：
+
+| 对照 | realpath 交集 | 技能名交集 | 内容比对 |
+|---|---|---|---|
+| hermes ∩ hermes-agent | **0** | **58（全部）** | 55 条字节相同、3 条不同 |
+| hermes ∩ hermes-web | 0 | 14 | **14/14 均不同** |
+
+⇒ 正确口径是 **(name, 内容 sha256)**：折叠 55 条真重复，同时**必须保留** hermes-agent 那 3 条
+（`hermes-agent` / `hermes-agent-skill-authoring` / `systematic-debugging`，本地一侧被改过）与 hermes-web 那 14 条。
+**按 realpath 合并漏真重复，按 name 合并吞真内容，两端都错。** 登记为 `PT-20261002-12`，不在 D1 内顺手改。
 
 ⇒ 施工 D1 第一步就是逐层 `find` 重验这两处，结果写进 `status` 而非文档。
 
