@@ -77,7 +77,28 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.71"   # 归档根白名单 + 技能中心模糊搜索（PT-13 的 62 条缺口清零）。两条：
+VERSION = "0.13.72"   # 模糊匹配铺到全站搜索框 + 修 hermetic-clean 档的恒真用例。两条：
+                      #   ① **模糊匹配不再是「技能中心专属」**：搜 `crawl1ai`（数字 1）找不到
+                      #     `crawl4ai` 这类手误，此前只有技能中心改了；本版把 `fuzzyMatch` 从
+                      #     `04-terminal-ws` 搬进 `01-core-boot`（它被 5 个分片用，挂在 terminal
+                      #     那一片会让下一个找它的人以为「只有终端用」），并接入全部搜索框：
+                      #     侧栏搜索 / agents 命令面板 / 端口表 / 本地项目 / GitHub 项目 / 技能中心。
+                      #     **口径不变**：精确子串恒 1000 分压倒近似，短查询(<5字)不容忍编辑距离，
+                      #     近似行标 `≈近似` 徽标——面板必须能回答「为什么这条出现在这里」。
+                      #     ⚠ 连带改判上版说法：上版汇报称「还有 6 处纯 includes()」，实测只有
+                      #     **5 处**——「终端历史」与「经理任务」**根本没有客户端搜索框**
+                      #     （前者只有成员判断、后者无输入框），那个 6 是我数错的。
+                      #   ② **一个恒真的 L0 用例**：`test_skill_visibility_sync` 的干跑用例原先
+                      #     直接 `os.listdir($HOME/.claude/skills)`（→ `hermetic-clean` 档报
+                      #     `FileNotFoundError`，因为假 HOME 里那个目录本就不存在）。改成「不存在
+                      #     就当空」虽然不报错，但**仍是恒真**：把 `apply_plan` 挪到 `--apply`
+                      #     判断之前（制造「干跑却真写了」的回归）重跑，测试依然绿——
+                      #     因为 `os.symlink` 在父目录不存在时抛 `FileNotFoundError`，被
+                      #     `except OSError` 吞进 `failed`，那个环境下**想写也写不成**。
+                      #     ⇒ 改为「测试自建源与目标目录，且源里真有 2 条待链技能」，
+                      #     并补一条**前提守卫**先证明真写确实写得进去。
+                      #     已用注入回归验证：改坏时红、还原时绿（不验证就会把假绿当修好）。
+                      # ── 以下为 v0.13.71 的根因，保留供追溯，非本版条目 ──
                       #   ① **归档根与发现点是两张表**：`_DEFAULT_DIRS` 答「各 CLI 自己会读哪」，
                       #     而 09-25 装的 hallmark / mattpocock-skills / Agent-Reach 与既有的
                       #     crawl4ai，其 `SKILL.md` 都在 `技术文档/<仓>/…`。`_inside()` 按 realpath

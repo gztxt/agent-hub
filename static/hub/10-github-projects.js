@@ -199,8 +199,7 @@ function ghRenderList() {
   const ordered = pairs.filter(([r]) => ghStars.has(r.full_name))
     .concat(pairs.filter(([r]) => !ghStars.has(r.full_name)));
   const idx = ordered.filter(([r]) =>
-    !q || String(r.name || '').toLowerCase().includes(q) ||
-    String(r.full_name || '').toLowerCase().includes(q));
+    !q || fuzzyMatch([[r.name, 3], [r.full_name, 1]], q) > 0);
   box.innerHTML = idx.map(([r, i]) => ghRowHtml(r, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配仓库' : '无仓库') + '</div>';
   const hint = $('ghHint');

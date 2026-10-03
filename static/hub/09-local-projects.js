@@ -161,8 +161,7 @@ function lpRenderList() {
   const ordered = visible.filter(p => lpStars.has(p.path))
     .concat(visible.filter(p => !lpStars.has(p.path)));
   const idx = ordered.map(p => [p, LP.indexOf(p)])
-    .filter(([p]) => !q || String(p.name || '').toLowerCase().includes(q) ||
-    String(p.path || '').toLowerCase().includes(q));
+    .filter(([p]) => !q || fuzzyMatch([[p.name, 3], [p.path, 1]], q) > 0);
   box.innerHTML = idx.map(([p, i]) => lpRowHtml(p, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配项目' : '无项目') + '</div>';
 }
