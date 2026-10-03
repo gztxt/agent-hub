@@ -167,3 +167,43 @@ HTTP 200 / 墙钟 **287ms** / `n=3` / 每行 `name`·`description`·`matched` �
 **未做、待端侧验收**：pi 重启前这段代码**不会生效**（extensionCache 不看 mtime，长命进程活到重启），
 且端到端注入效果只能由你在新会话里看到。仓内无 `hub-facade.ts` 副本，`~/.pi/agent` 也不是 git 仓 ⇒
 **已快照一份到 `work/dispatch/skillcenter/hub-facade.D4.snapshot.ts`**（否则唯一权威副本只躺在受保护面里）。
+
+---
+
+## D5 · Claude 注入（2026-10-03，受保护面改动，用户点名授权 `~/.claude/settings.json`）
+
+**跨会话写共享配置的三步前置**（该文件今早被 3 个别的会话写过）：
+① 查并发写者（最后改动 09:22、距今 6.5h，无 lsof 持有者）⇒ 无并发；
+② 备份并验：`settings.json.bak-20261003_160129-d5-userprompt-hook`，md5 `439b127f…`，20 行，合法 JSON；
+③ **外科式文本插入**（不 json 重写），且写前在内存里断言「原来 6 个键的值逐个未变」。
+diff 复核确认只增了 `hooks` 段，别人的键一字节没动。
+
+**脚本第一属性是「不拦人」**：UserPromptSubmit 同步阻塞在用户输入之前，
+**hook 返回非零会让 Claude 拒绝这次输入**——那比「没注入技能」严重得多。
+故任何异常一律吞掉并 `exit 0`。实测 6 种形态**全部 `exit=0 stderr=0`**：
+正常(379B 注入) / hub 不可达 / **对生产 v0.13.65 打过去 404** / 垃圾 stdin / 空 stdin / 斜杠命令。
+
+## D6 · 可见性铺设（2026-10-03）
+
+`scripts/skill_visibility_sync.py` + 闸门 `tests/test_skill_visibility_sync.py`（L0 12 例，含两条负向用例：
+「干跑不得改动真实 Agent 目录」「冲突不得被覆盖」）。
+
+**四条铁律**：只铺**已证实**的扫描根 · **禁改面拒绝**并说明原因 · 只软链不复制、
+同 realpath 幂等、指向别处**报冲突不覆盖** · 默认 dry-run。
+
+**`opencode` 不作目标**（B3 证伪），但它真正扫的 `~/.claude/skills` 与 `~/.agents/skills`
+两路都在表里 ⇒ **opencode 顺带被覆盖**，不必给它建一个它根本不读的目录。
+
+**实测**：claude / agents / codex / workbuddy 四路**建成 66 条**，
+幂等复跑 **0 新增 / 72 已就位 / 0 冲突**。三层验收**不可合并成一个 PASS**：
+
+| 路由 | 第一层 链接在 | 第二层 能扫到 SKILL.md | 第三层 被 agent 真读到 |
+|---|---|---|---|
+| claude | ✔ | 64 | **不可判定**（待端侧） |
+| agents | ✔ | 58 | **不可判定** |
+| codex | ✔ | 20 | **不可判定** |
+| workbuddy | ✔ | 25 | **不可判定** |
+| pi | ✘ 主动扣下 | 6（原有） | — |
+
+**`pi` 路为何扣下**：`~/.pi/agent/**` 在受保护面，用户给的是**单文件**授权
+（`hub-facade.ts`）而非整棵树 ⇒ 窄授权不得读成宽授权。这条要单独授权才能补。
