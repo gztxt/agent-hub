@@ -6,6 +6,92 @@
 const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
 const hubNarrow = () => HUB_NARROW_MQ.matches;
 
+/* ── 模糊搜索（全站共用，2026-10-03）────────────────────────────────────
+ * 放在 01 而不是 04-terminal-ws：本函数被 04/05/09/10 **五个分片**用
+ *（技能中心、agents 命令面板、侧栏搜索、端口表、本地项目、GitHub 项目），
+ * 挂在 terminal/WS 那一片会让下一个找它的人以为「只有终端用」。
+ * 同 01 已有的两处跨片工具（断点唯一真源、localStorage 守卫）一个理由。
+
+ * 【为什么加】搜索框原本一律是纯 `includes()` 子串匹配，于是**一个字符的手误即零命中**：
+ * 真名 `crawl4ai`（crawl4ai/skill/crawl4ai/SKILL.md 的 frontmatter）搜 `crawl1ai`
+ * （数字 1）得 0 条——而这条技能明明在盘上、已被扫进清单。
+ *
+ * 【为什么不引库】与后端 `skill_relevance.py` 同一判断：几百条语料、纯前端，
+ * 引 rank_bm25/jieba 是拿维护成本换零收益。要的只是「容忍手误 + 可排序」。
+
+ * 【口径：先精确后模糊，且不静默】
+ *   · 精确子串命中 → 恒 1000 分，**压倒一切**近似 ⇒ 精确结果不会被近似挤下去；
+ *   · 否则算编辑距离，容忍度随长度给（≤4 字不容忍，≥5 字容忍 1，≥8 字容忍 2）。
+ *     短词不容忍：`cc` 容忍 1 会把 `crawler` 之类召回一片。
+ *   · 字段权重由调用方给（name 高于 desc / path），分高者胜。
+ * 返回 0 = 不匹配。调用方拿 <1000 的分当「近似命中」并据此打 `≈近似` 徽标——
+ * 面板必须能回答「为什么这条出现在这里」，只给一个排序就答不上
+ * （同 `skill_relevance.py` 的 `matched` 可解释性纪律）。
+ */
+
+/* Levenshtein 编辑距离，带上限早退（超限即返回 limit+1，不做完整 DP）。
+ * 纯 JS、O(len*m)；本规模下开销可忽略。 */
+function _levenshtein(a, b, limit) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > limit) return limit + 1;
+  const prev = new Array(b.length + 1);
+  const cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    let best = cur[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > limit) return limit + 1;          // 行内已超限 ⇒ 整体必然超限
+    for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
+  }
+  return prev[b.length];
+}
+
+/* 查询长度 → 容忍的编辑距离。短词不容忍。 */
+function _fuzzyTolerance(q) {
+  if (q.length >= 8) return 2;
+  if (q.length >= 5) return 1;
+  return 0;
+}
+
+/* 对**一个字段**打分：0 = 不匹配，>0 = 匹配（越大越靠前）。 */
+function _fuzzyFieldScore(fieldText, q, tol) {
+  if (!fieldText) return 0;
+  let best = 0;
+  // 按分隔符切段：连字符/点分名与长描述整串各参与一次，避免大段文本拖慢 DP。
+  const parts = fieldText.split(/[\s,，、:：()（）\-_/.]+/).filter(Boolean);
+  for (const p of parts) {
+    if (Math.abs(p.length - q.length) > tol) continue;
+    const d = _levenshtein(q, p, tol);
+    if (d <= tol) best = Math.max(best, (tol + 1 - d) * 10);
+  }
+  const d2 = _levenshtein(q, fieldText, tol);
+  if (d2 <= tol) best = Math.max(best, (tol + 1 - d2) * 10);
+  return best;
+}
+
+/* 全站搜索统一入口。`pairs` = [[文本, 权重], …]（权重大的字段说了算）。
+ * 空查询 ⇒ 返回 1（全匹配），保持旧行为：空搜索本就该显示全部。 */
+function fuzzyMatch(pairs, qRaw) {
+  const q = String(qRaw || '').trim().toLowerCase();
+  if (!q) return 1;
+  const tol = _fuzzyTolerance(q);
+  let best = 0;
+  for (const [text, weight] of pairs) {
+    const t = String(text || '').toLowerCase();
+    if (!t) continue;
+    if (t.includes(q)) return 1000;             // 精确子串压倒一切近似
+    if (!tol) continue;
+    const s = _fuzzyFieldScore(t, q, tol);
+    if (s > 0) best = Math.max(best, s * (weight || 1));
+  }
+  return best;
+}
+
 'use strict';
 
 /* ── localStorage 守卫（v0.13.13，2026-09-24）──────────────────────────────────
@@ -3024,82 +3110,6 @@ async function loadSkills() {
   loadSkillZombies();
 }
 
-/* ── 技能中心搜索的模糊匹配（2026-10-03）─────────────────────────────────
- *
- * 【为什么加】原实现是纯 `includes()` 子串匹配，于是**一个字符的手误就零命中**：
- * 真名 `crawl4ai`（crawl4ai/skill/crawl4ai/SKILL.md 的 frontmatter）搜 `crawl4ai`
- * （数字 1 替字母 l）得 0 条——而这条技能明明就在盘上、已被扫描收进来。
- * 用户原话：「即便修好白名单，crawl4ai（数字 1）这种手误仍搜不到；要加模糊匹配」。
- *
- * 【为什么不引库】与后端 `skill_relevance.py` 同一判断：语料几百条、纯前端、
- * 引 rank_bm25/jieba 是拿维护成本换零收益。这里只要「容忍手误 + 可排序」，
- * 一个编辑距离函数足够。
- *
- * 【口径：先精确后模糊，且不静默】分两层——
- *   · 精确子串命中 → 分数 1000（**压倒一切**，保证精确结果不被近似挤下去）；
- *   · 否则算编辑距离，容忍度随长度给（≤4 字不容忍，≥5 字容忍 1，≥8 字容忍 2）。
- * 近似命中的行会标 `≈近似` 徽标：面板必须能回答「为什么这条出现在这里」，
- * 只给一个排序就答不上（同 `skill_relevance.py` 的 `matched` 可解释性纪律）。
- */
-
-/* Levenshtein 编辑距离，带上限早退（超限即返回 limit+1，不做完整 DP）。
- * 纯 JS、O(len*m)；skill 条数 × 查询长度的规模下开销可忽略。 */
-function _levenshtein(a, b, limit) {
-  if (a === b) return 0;
-  if (Math.abs(a.length - b.length) > limit) return limit + 1;
-  const prev = new Array(b.length + 1);
-  const cur = new Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    cur[0] = i;
-    let best = cur[0];
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
-      if (cur[j] < best) best = cur[j];
-    }
-    if (best > limit) return limit + 1;          // 行内已超限 ⇒ 整体必然超限
-    for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
-  }
-  return prev[b.length];
-}
-
-/* 查询长度 → 容忍的编辑距离。短词不容忍（`cc` 容忍 1 会召回一片）。 */
-function _fuzzyTolerance(q) {
-  if (q.length >= 8) return 2;
-  if (q.length >= 5) return 1;
-  return 0;
-}
-
-/* 单条技能对查询的匹配分：0 = 不匹配，>0 = 匹配（越大越靠前）。
- * 精确子串压倒近似；近似按「距离越小分越高」，同距离时字段权重 name > desc。 */
-function skillMatchScore(item, qRaw) {
-  const q = String(qRaw || '').trim().toLowerCase();
-  if (!q) return 1;                               // 空查询：全部匹配（保持旧行为）
-  const name = String(item.name || '').toLowerCase();
-  const desc = String(item.description || '').toLowerCase();
-  if (name.includes(q) || desc.includes(q)) return 1000;
-  const tol = _fuzzyTolerance(q);
-  if (!tol) return 0;
-  let best = 0;
-  const consider = (fieldText, weight) => {
-    if (!fieldText) return;
-    // 按分隔符切段：`crawl4ai` 整体比，也比它与相邻词；避免长描述整串参与 DP。
-    const parts = fieldText.split(/[\s,，、:：()（）\-_/.]+/).filter(Boolean);
-    for (const p of parts) {
-      if (Math.abs(p.length - q.length) > tol) continue;
-      const d = _levenshtein(q, p, tol);
-      if (d <= tol) best = Math.max(best, (tol + 1 - d) * 10 * weight);
-    }
-    // 整段（无分隔符的长串，如连字符名）也参与一次
-    const d2 = _levenshtein(q, fieldText, tol);
-    if (d2 <= tol) best = Math.max(best, (tol + 1 - d2) * 10 * weight);
-  };
-  consider(name, 3);
-  consider(desc, 1);
-  return best;
-}
-
 function toggleSkillZombieOnly() {
   SKILL_ZOMBYE_ONLY = !SKILL_ZOMBYE_ONLY;
   $('skillZombieOnly').classList.toggle('on', SKILL_ZOMBYE_ONLY);
@@ -3112,7 +3122,7 @@ function renderSkillList() {
   // 模糊打分 + 排序：精确命中（1000 分）在前，近似命中在后且按接近度排。
   const scored = SKILLS
     .filter(s => (!route || (s.routes || []).includes(route) || s.route === route))
-    .map(s => ({ s, score: skillMatchScore(s, q) }))
+    .map(s => ({ s, score: fuzzyMatch([[s.name, 3], [s.description, 1]], q) }))
     .filter(x => !q || x.score > 0)
     .sort((a, b) => (b.score - a.score) || String(a.s.name || '').localeCompare(String(b.s.name || '')));
   const rows = scored.map(x => x.s);
@@ -3136,7 +3146,7 @@ function renderSkillList() {
       : '';
     // 近似徽标：这条是靠编辑距离进来的，不是精确子串。**必须标出来**，
     // 否则用户看到一条「搜不完全对」的记录却不知道为什么。
-    const sc = skillMatchScore(s, q);
+    const sc = fuzzyMatch([[s.name, 3], [s.description, 1]], q);
     const near = (q && sc > 0 && sc < 1000)
       ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
       : '';
@@ -3436,7 +3446,11 @@ async function loadPorts() {
 }
 function renderPorts() {
   const f = ($('portFilter') ? $('portFilter').value.trim() : '').toLowerCase();
-  const rows = PORTS.filter(r => !f || (r.port + ' ' + (r.process || '') + ' ' + r.address + ' ' + (r.agent || '')).toLowerCase().includes(f));
+  // 模糊：端口号与进程名分开打分，不用「拼成一个大串」——串起来后编辑距离会把
+  // 分隔符也算进失配，`80` 搜 `8080` 会被四个无关空格抵掉（实测 `includes` 反而能用，
+  // 故此处保留精确快路：fuzzyMatch 内部先判子串，只有子串不中才走编辑距离）。
+  const rows = PORTS.filter(r => !f || fuzzyMatch([
+    [r.port, 3], [r.process, 2], [r.address, 1], [r.agent, 1]], f) > 0);
   $('portsBody').innerHTML = rows.map(r =>
     '<tr><td>' + r.proto + '</td><td><b>' + r.port + '</b></td><td style="font-family:var(--font-mono);font-size:var(--fs-sm)">' + escapeHtml(r.address) + '</td>' +
     '<td>' + (r.pid || '-') + '</td><td>' + escapeHtml(r.process || '-') + '</td>' +
@@ -3826,8 +3840,11 @@ function openCmd() {
 function closeCmd() { $('cmdMask').classList.remove('on'); }
 function renderCmdList(q) {
   const box = $('cmdList');
-  const ql = q.toLowerCase();
-  const items = AGENTS.filter(a => !ql || a.id.toLowerCase().includes(ql) || (a.name || '').toLowerCase().includes(ql)).slice(0, 12);
+  // 模糊：派发时 agent 名与 id 最常被手误（`claud`/`opencode-e`）。
+  const items = AGENTS.map(a => ({ a, score: fuzzyMatch([[a.id, 3], [a.name, 2]], q) }))
+    .filter(x => !q || x.score > 0)
+    .sort((x, y) => (y.score - x.score) || String(x.a.name || '').localeCompare(String(y.a.name || '')))
+    .slice(0, 12).map(x => x.a);
   box.innerHTML = items.map(a =>
     '<div class="cmd-item" onclick="cmdGo(\'' + a.id + '\')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
     '<div class="hint" style="padding:8px">无匹配实体</div>';
@@ -3870,10 +3887,8 @@ function navRank(a) {
   return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status];
 }
 function navMatch(a, q) {
-  const ql = q.toLowerCase();
-  return String(a.name || '').toLowerCase().includes(ql) ||
-         String(a.id || '').toLowerCase().includes(ql) ||
-         String(a.port || '').includes(q);
+  // 侧栏搜索：与全站其他搜索框同一口径（fuzzyMatch：精确恒 1000 压倒近似）。
+  return fuzzyMatch([[a.name, 3], [a.id, 2], [a.port, 1]], q) > 0;
 }
 // 搜索词高亮
 /* P1-22（2026-09-30）：高亮改在**转义之后**的串上匹配。
@@ -4835,8 +4850,7 @@ function lpRenderList() {
   const ordered = visible.filter(p => lpStars.has(p.path))
     .concat(visible.filter(p => !lpStars.has(p.path)));
   const idx = ordered.map(p => [p, LP.indexOf(p)])
-    .filter(([p]) => !q || String(p.name || '').toLowerCase().includes(q) ||
-    String(p.path || '').toLowerCase().includes(q));
+    .filter(([p]) => !q || fuzzyMatch([[p.name, 3], [p.path, 1]], q) > 0);
   box.innerHTML = idx.map(([p, i]) => lpRowHtml(p, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配项目' : '无项目') + '</div>';
 }
@@ -5114,8 +5128,7 @@ function ghRenderList() {
   const ordered = pairs.filter(([r]) => ghStars.has(r.full_name))
     .concat(pairs.filter(([r]) => !ghStars.has(r.full_name)));
   const idx = ordered.filter(([r]) =>
-    !q || String(r.name || '').toLowerCase().includes(q) ||
-    String(r.full_name || '').toLowerCase().includes(q));
+    !q || fuzzyMatch([[r.name, 3], [r.full_name, 1]], q) > 0);
   box.innerHTML = idx.map(([r, i]) => ghRowHtml(r, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配仓库' : '无仓库') + '</div>';
   const hint = $('ghHint');

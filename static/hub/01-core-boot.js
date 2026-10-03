@@ -6,6 +6,92 @@
 const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
 const hubNarrow = () => HUB_NARROW_MQ.matches;
 
+/* ── 模糊搜索（全站共用，2026-10-03）────────────────────────────────────
+ * 放在 01 而不是 04-terminal-ws：本函数被 04/05/09/10 **五个分片**用
+ *（技能中心、agents 命令面板、侧栏搜索、端口表、本地项目、GitHub 项目），
+ * 挂在 terminal/WS 那一片会让下一个找它的人以为「只有终端用」。
+ * 同 01 已有的两处跨片工具（断点唯一真源、localStorage 守卫）一个理由。
+
+ * 【为什么加】搜索框原本一律是纯 `includes()` 子串匹配，于是**一个字符的手误即零命中**：
+ * 真名 `crawl4ai`（crawl4ai/skill/crawl4ai/SKILL.md 的 frontmatter）搜 `crawl1ai`
+ * （数字 1）得 0 条——而这条技能明明在盘上、已被扫进清单。
+ *
+ * 【为什么不引库】与后端 `skill_relevance.py` 同一判断：几百条语料、纯前端，
+ * 引 rank_bm25/jieba 是拿维护成本换零收益。要的只是「容忍手误 + 可排序」。
+
+ * 【口径：先精确后模糊，且不静默】
+ *   · 精确子串命中 → 恒 1000 分，**压倒一切**近似 ⇒ 精确结果不会被近似挤下去；
+ *   · 否则算编辑距离，容忍度随长度给（≤4 字不容忍，≥5 字容忍 1，≥8 字容忍 2）。
+ *     短词不容忍：`cc` 容忍 1 会把 `crawler` 之类召回一片。
+ *   · 字段权重由调用方给（name 高于 desc / path），分高者胜。
+ * 返回 0 = 不匹配。调用方拿 <1000 的分当「近似命中」并据此打 `≈近似` 徽标——
+ * 面板必须能回答「为什么这条出现在这里」，只给一个排序就答不上
+ * （同 `skill_relevance.py` 的 `matched` 可解释性纪律）。
+ */
+
+/* Levenshtein 编辑距离，带上限早退（超限即返回 limit+1，不做完整 DP）。
+ * 纯 JS、O(len*m)；本规模下开销可忽略。 */
+function _levenshtein(a, b, limit) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > limit) return limit + 1;
+  const prev = new Array(b.length + 1);
+  const cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    let best = cur[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > limit) return limit + 1;          // 行内已超限 ⇒ 整体必然超限
+    for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
+  }
+  return prev[b.length];
+}
+
+/* 查询长度 → 容忍的编辑距离。短词不容忍。 */
+function _fuzzyTolerance(q) {
+  if (q.length >= 8) return 2;
+  if (q.length >= 5) return 1;
+  return 0;
+}
+
+/* 对**一个字段**打分：0 = 不匹配，>0 = 匹配（越大越靠前）。 */
+function _fuzzyFieldScore(fieldText, q, tol) {
+  if (!fieldText) return 0;
+  let best = 0;
+  // 按分隔符切段：连字符/点分名与长描述整串各参与一次，避免大段文本拖慢 DP。
+  const parts = fieldText.split(/[\s,，、:：()（）\-_/.]+/).filter(Boolean);
+  for (const p of parts) {
+    if (Math.abs(p.length - q.length) > tol) continue;
+    const d = _levenshtein(q, p, tol);
+    if (d <= tol) best = Math.max(best, (tol + 1 - d) * 10);
+  }
+  const d2 = _levenshtein(q, fieldText, tol);
+  if (d2 <= tol) best = Math.max(best, (tol + 1 - d2) * 10);
+  return best;
+}
+
+/* 全站搜索统一入口。`pairs` = [[文本, 权重], …]（权重大的字段说了算）。
+ * 空查询 ⇒ 返回 1（全匹配），保持旧行为：空搜索本就该显示全部。 */
+function fuzzyMatch(pairs, qRaw) {
+  const q = String(qRaw || '').trim().toLowerCase();
+  if (!q) return 1;
+  const tol = _fuzzyTolerance(q);
+  let best = 0;
+  for (const [text, weight] of pairs) {
+    const t = String(text || '').toLowerCase();
+    if (!t) continue;
+    if (t.includes(q)) return 1000;             // 精确子串压倒一切近似
+    if (!tol) continue;
+    const s = _fuzzyFieldScore(t, q, tol);
+    if (s > 0) best = Math.max(best, s * (weight || 1));
+  }
+  return best;
+}
+
 'use strict';
 
 /* ── localStorage 守卫（v0.13.13，2026-09-24）──────────────────────────────────

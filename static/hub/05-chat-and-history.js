@@ -139,8 +139,11 @@ function openCmd() {
 function closeCmd() { $('cmdMask').classList.remove('on'); }
 function renderCmdList(q) {
   const box = $('cmdList');
-  const ql = q.toLowerCase();
-  const items = AGENTS.filter(a => !ql || a.id.toLowerCase().includes(ql) || (a.name || '').toLowerCase().includes(ql)).slice(0, 12);
+  // 模糊：派发时 agent 名与 id 最常被手误（`claud`/`opencode-e`）。
+  const items = AGENTS.map(a => ({ a, score: fuzzyMatch([[a.id, 3], [a.name, 2]], q) }))
+    .filter(x => !q || x.score > 0)
+    .sort((x, y) => (y.score - x.score) || String(x.a.name || '').localeCompare(String(y.a.name || '')))
+    .slice(0, 12).map(x => x.a);
   box.innerHTML = items.map(a =>
     '<div class="cmd-item" onclick="cmdGo(\'' + a.id + '\')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
     '<div class="hint" style="padding:8px">无匹配实体</div>';
@@ -183,10 +186,8 @@ function navRank(a) {
   return NAV_RANK[a.status] == null ? 9 : NAV_RANK[a.status];
 }
 function navMatch(a, q) {
-  const ql = q.toLowerCase();
-  return String(a.name || '').toLowerCase().includes(ql) ||
-         String(a.id || '').toLowerCase().includes(ql) ||
-         String(a.port || '').includes(q);
+  // 侧栏搜索：与全站其他搜索框同一口径（fuzzyMatch：精确恒 1000 压倒近似）。
+  return fuzzyMatch([[a.name, 3], [a.id, 2], [a.port, 1]], q) > 0;
 }
 // 搜索词高亮
 /* P1-22（2026-09-30）：高亮改在**转义之后**的串上匹配。
