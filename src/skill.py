@@ -114,6 +114,51 @@ EXCLUDED_DIRS: Dict[str, str] = {
 }
 
 
+# ── v0.13.71（PT-20261002-13 问题 2，用户裁定①）：附加放行根 ──────────────────
+# 病根：`_allowed_roots()` 只由**发现点根**推出来，而 20 路发现点里只有一路
+# （techdocs=`技术文档/skills`）指向归档区。第三方技能仓是**软链进发现点**的：
+# 链接点在白名单里，realpath 却落在白名单外 ⇒ 扫描阶段就被拒读（PT-13 实测 62 条 / 28 个技能）。
+# 对宿主是有效的（Claude 读得到），对 hub 是不可见的 ⇒ 列表可信度受损，且
+# D2 的 `/api/skill/relevant` 永远不会推荐它们。
+#
+# 为什么是**逐仓点名**而不是放行整个 `技术文档/`：那棵树里同时住着 D1 明确排除的
+# `snapshots/`(664) 与 `全量备份/`(247)。整树放行会把「排除」悄悄变成「放行」——
+# 而 D1 的硬要求是排除/放行都必须在 `/api/skill/status` 上读得到理由。
+#
+# 安全底线不变：本表只是**多认几个根**，`_inside()` 的前缀边界（os.sep）没动，
+# `/etc/passwd`、`~/.ssh`、以及 `/a/skills2` 这种同前缀兄弟目录仍然拒读
+# （负向用例见 tests/test_skill_facade.py::TestWhitelistGuard）。
+_DEFAULT_EXTRA_ROOTS: Tuple[str, ...] = (
+    "/fs/1000/ftp/技术文档/mattpocock-skills",
+    "/fs/1000/ftp/技术文档/crawl4ai",
+    "/fs/1000/ftp/技术文档/hallmark",
+    "/fs/1000/ftp/技术文档/Agent-Reach",
+)
+
+
+def _load_extra_roots() -> Tuple[str, ...]:
+    """附加放行根。可用 `SKILL_EXTRA_ROOTS_JSON` 覆盖（数组 of str），非法则忽略并留警告。
+
+    与 `_load_dirs` 同一套口径：**非法输入不静默回退**——运维改了环境变量却以为生效了，
+    是这类组件最常见的静默失效。
+    """
+    raw = os.getenv("SKILL_EXTRA_ROOTS_JSON")
+    if not raw:
+        return _DEFAULT_EXTRA_ROOTS
+    try:
+        v = json.loads(raw)
+    except ValueError as e:
+        log.warning("SKILL_EXTRA_ROOTS_JSON 不是合法 JSON（%s），已忽略，用内置附加根", e)
+        return _DEFAULT_EXTRA_ROOTS
+    if not (isinstance(v, list) and all(isinstance(x, str) and x for x in v)):
+        log.warning("SKILL_EXTRA_ROOTS_JSON 形状不对（要非空字符串数组），已忽略")
+        return _DEFAULT_EXTRA_ROOTS
+    return tuple(v)
+
+
+EXTRA_ALLOWED_ROOTS: Tuple[str, ...] = _load_extra_roots()
+
+
 def expand_roots(pattern: str) -> List[str]:
     """把可能含 `*` 的路径展开成真实存在的根列表。**非 glob 原样返回**（含不存在的路径）。
 
@@ -231,9 +276,19 @@ def _read_text(path: str) -> Tuple[str, str]:
 
 
 def _allowed_roots() -> List[str]:
-    """白名单根的 realpath。**每次调用现算**（与 disk_routes() 同理：猴补 SKILL_DIRS 后必须跟着变）。"""
-    return [os.path.realpath(r) for route in SKILL_DIRS for r in route_roots(route)
-            if r and os.path.isdir(r)]
+    """白名单根的 realpath = **发现点根** + **附加放行根**。
+
+    **每次调用现算**（与 disk_routes() 同理：猴补 SKILL_DIRS / EXTRA_ALLOWED_ROOTS 后必须跟着变，
+    否则测试与运维覆盖会假绿）。不存在的根丢弃、去重后保序返回。
+    """
+    out: List[str] = []
+    for r in [x for route in SKILL_DIRS for x in route_roots(route)] + list(EXTRA_ALLOWED_ROOTS):
+        if not r or not os.path.isdir(r):
+            continue
+        rp = os.path.realpath(r)
+        if rp not in out:                      # 去重但保序：报错回显与测试都靠顺序稳定
+            out.append(rp)
+    return out
 
 
 def _inside(rp: str, allowed: List[str]) -> bool:
@@ -434,11 +489,103 @@ def _dedup(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict
     return out, aliases
 
 
-def _match_q(it: Dict[str, Any], ql: str) -> bool:
+# ── v0.13.71：模糊匹配（三级，见 `_score_q`）─────────────────────────────────
+# 起因：搜 `craw14ai` 搜不到 `crawl4ai`——手误把字母 l 打成了数字 1。
+# 而 D1 的 `/api/skill/list?q=` 一直只是**子串**过滤（`ql in hay`），
+# 前端 `renderSkillList` 也是同一条 `includes()`，两端都没有容错。
+# 这不是「用户打错字」的免责——搜不到就等于技能不存在，而这是资产面板。
+#
+# 三级分级，**高分在前**（`_score_q` 返回 0 即不命中）：
+#   T0 直接子串（不折叠）——保持原行为，中文检索全靠这一级
+#   T1 混淆折叠后子串 —— 专治「数字/符号代替字母」：`1 l | !` / `0 o` / `5 s` / `8 b` / `9,6 g` / `2 z`
+#   T2 token 级有界编辑距离（OSA，含换位）——治一般手误（换位、漏字、多字）
+#
+# 为什么折叠只做**单字符**映射、不做 `rn→m` 之类合并：后者会改词义
+# （`carnival`→`camiVal`），会把「能搜到」变成「搜到不相干的」。
+# 为什么 T2 要求 token ≥4 字且距离有上限：短 token 的编辑距离噪声太大
+# （`a` 与任意单字距离都是 1），不设限会把整个技能库糊成一片。
+_CONFUSABLES = str.maketrans({"1": "l", "|": "l", "!": "l",
+                              "0": "o", "5": "s", "8": "b",
+                              "9": "g", "6": "g", "2": "z"})
+_TOK_RE = re.compile(r"[0-9a-z一-鿿]+")
+_MIN_FUZZY_TOKEN = 4      # 短于此的 token 不参与 T2（噪声大于收益）
+_MAX_FUZZY_TOKENS = 48    # 长描述只比前 N 个 token，挡住病态输入
+
+
+def _fold(s: str) -> str:
+    """把视觉同形的数字/符号折成字母类，两端同折 ⇒ 类别合并。"""
+    return s.lower().translate(_CONFUSABLES)
+
+
+def _osa(a: str, b: str, cap: int) -> int:
+    """受限 Damerau-Levenshtein（OSA：支持相邻换位）。超过 cap 立刻返回 cap+1。
+
+    带 cap 剪枝不是为了省时间，是为了让「不像」尽早判掉：技能库 365 条 × 每条几十个
+    token，不剪枝的话单次搜索会退化到平方级。
+    """
+    la, lb = len(a), len(b)
+    if abs(la - lb) > cap:
+        return cap + 1
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev2: Optional[List[int]] = None
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        row_best = cur[0]
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                v = min(v, prev2[j - 2] + 1)          # 换位：ab→ba 只需 1 步
+            cur[j] = v
+            if v < row_best:
+                row_best = v
+        if row_best > cap:
+            return cap + 1
+        prev2, prev = prev, cur
+    return prev[lb]
+
+
+def _fuzzy_cap(q: str) -> int:
+    """容差随词长放宽，但封顶 2：再松就变成「什么都能搜到」，比搜不到更糟。"""
+    n = len(q)
+    if n < _MIN_FUZZY_TOKEN:
+        return 0
+    return 1 if n <= 7 else 2
+
+
+def _score_q(it: Dict[str, Any], ql: str) -> int:
+    """返回相关性分（0 = 不命中）。空过滤词一律命中，与旧行为一致。"""
     if not ql:
-        return True
+        return 1
     hay = " ".join(str(it.get(k) or "") for k in ("name", "description", "path", "route")).lower()
-    return ql in hay
+    if ql in hay:                                          # T0
+        return 100
+    q_f = _fold(ql)
+    if q_f and q_f in _fold(hay):                          # T1
+        return 80
+    cap = _fuzzy_cap(q_f)
+    if not cap:
+        return 0
+    toks = [t for t in _TOK_RE.findall(q_f) if len(t) >= _MIN_FUZZY_TOKEN]
+    if not toks:
+        return 0
+    htoks = [t for t in _TOK_RE.findall(_fold(hay)) if len(t) >= _MIN_FUZZY_TOKEN]
+    if not htoks:
+        return 0
+    for t in toks[:_MAX_FUZZY_TOKENS]:
+        for h in htoks[:_MAX_FUZZY_TOKENS]:
+            if _osa(t, h, cap) <= cap:                     # T2
+                return 60
+    return 0
+
+
+def _match_q(it: Dict[str, Any], ql: str) -> bool:
+    """布尔外壳（闸门与既有调用点用它）。排序用 `_score_q`。"""
+    return _score_q(it, ql) > 0
 
 
 @router.get("/list")
@@ -496,8 +643,15 @@ async def skill_list(request: Request,
 
     unique, aliases = _dedup(disk_items)
     ql = (q or "").strip().lower()
-    merged = [x for x in unique + tdai_items if _match_q(x, ql)]
-    merged = merged[:limit]
+    if ql:
+        # 模糊匹配后**必须排序**，否则「craw14ai」命中的 crawl4ai 会混在一堆同名同姓里，
+        # 用户看到的仍是一屏噪声。按 (分降, route, name) 排：同分保持原来的稳定序。
+        scored = [(_score_q(x, ql), x) for x in unique + tdai_items]
+        scored = [(s, x) for s, x in scored if s]
+        scored.sort(key=lambda p: (-p[0], (p[1].get("route") or ""), (p[1].get("name") or "")))
+        merged = [x for _s, x in scored[:limit]]
+    else:
+        merged = (unique + tdai_items)[:limit]
 
     engines = [b["name"] for b in backends if b["ok"] and b["count"]]
     degraded = [b["name"] for b in backends if not b["ok"]]
@@ -525,6 +679,11 @@ async def skill_list(request: Request,
         "dedup": {"walked": walked, "unique": len(unique), "aliases": aliases,
                   "why": "os.walk(followlinks=True) 会把软链目录里的技能重复数到，按 realpath 归一"},
         "skipped_outside": skipped_all,
+        "limit": limit,
+        "total_unique": len(unique) + len(tdai_items),
+        "truncated": (len(unique) + len(tdai_items)) > len(merged),
+        "why_total_unique": "limit 之前可供浏览/搜索的总量；truncated=True 说明有条目被 limit 截掉"
+                            "（不报这个数会把截断读成「就这么多」，正是 09-23 白遮挡同形的静默失效）",
         "took_ms": round((time.monotonic() - t0) * 1000, 1),
     }
 
@@ -658,6 +817,13 @@ async def skill_status(force: bool = Query(default=False)):
         "disk": disk_out,
         "dedup": {"walked": len(all_items), "unique": len(unique), "aliases": aliases},
         "excluded": dict(EXCLUDED_DIRS),
+        "allowed_extra": [tdai_client.scrub(r) for r in EXTRA_ALLOWED_ROOTS
+                          if r and os.path.isdir(r)],
+        "allowed_extra_missing": [tdai_client.scrub(r) for r in EXTRA_ALLOWED_ROOTS
+                                  if r and not os.path.isdir(r)],
+        "allowed_extra_why": "发现点之外的附加放行根：第三方技能仓软链进发现点、realpath 落在仓根下，"
+                             "不点名放行就会被软链守卫拒读（PT-20261002-13 问题2，裁定①）。"
+                             "逐仓点名而非整树放行，所以同在归档区的 snapshots/全量备份 仍然被排除。",
         "tdai": {
             "available": bool(tdai_raw.get("ok")),
             "rows": len(tdai_items),

@@ -77,7 +77,21 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.70"   # D5 Claude 注入 + D6 可见性铺设。本版四条根因（其余细节见台账）：
+VERSION = "0.13.71"   # 技能可见性 + 搜索容错。本版三条根因（细节见台账 PT-20261002-13）：
+                      #   ① **软链守卫把合法的第三方仓当成越界**：`crawl4ai` 等 4 个仓的
+                      #     软链在发现点里（宿主读得到），但 realpath 落在白名单外 ⇒ 扫描
+                      #     阶段就被拒读，实测 62 条 / 28 个技能对 hub 完全不可见，且 D2 的
+                      #     /api/skill/relevant 永不推荐它们。裁定①：逐仓点名放行
+                      #     realpath（_DEFAULT_EXTRA_ROOTS），而非整树放行——那会把同在归档区
+                      #     的 snapshots/全量备份从「排除」静默变成「放行」；排除与放行都
+                      #     必须在 /api/skill/status 读得到理由。
+                      #   ② **搜索是纯子串，手误即查无**：搜 `craw14ai`（数字1）搜不到
+                      #     `crawl4ai`。本版加三级模糊：T0 子串 / T1 混淆折叠（1→l）/ T2
+                      #     有界 OSA；前后端同一套判定，后端还按分排序。
+                      #   ③ **limit=200 静默截断**：去重后 365 条，面板只显示 200 ⇒ 165 条
+                      #     既搜不到也看不见。修法：要全量 + 报 truncated/total_unique，
+                      #     不让截断被读成「就这么多」。
+                      # 上一版 0.13.70：D5 Claude 注入 + D6 可见性铺设。本版四条根因（其余细节见台账）：
                       #   ① **退出码会让 Claude 拒绝输入**：UserPromptSubmit 同步阻塞在用户
                       #     输入之前，hook 返回非零就是把「技能没检索到」升级成「用户发不出
                       #     消息」⇒ 脚本吞掉一切异常并 exit 0。实测 6 种形态（正常 / 不可达 /

@@ -101,8 +101,10 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.68": ("not-implemented", "counted", "suggested_action", "PT-20261002-13"),
         "0.13.69": ("第二个真相", "7 路发现点", "蒙对的闸门", "HUB_NARROW_MQ"),
         "0.13.70": ("退出码会让 Claude 拒绝输入", "禁改面拒绝", "报冲突不覆盖", "窄授权不得读成宽授权"),
+        "0.13.71": ("PT-20261002-13", "软链守卫把合法的第三方仓当成越界", "craw14ai", "混淆折叠",
+                    "limit=200 静默截断", "realpath"),
     }
-    CURRENT_VERSION = "0.13.70"
+    CURRENT_VERSION = "0.13.71"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，

@@ -2997,10 +2997,68 @@ let SKILLS = [], SKILL_ROUTES = [], SKILL_STATUS = null, SKILL_ZOMBIES = {}, SKI
  * 另：零调用榜的 confidence 封顶 medium（各家直读磁盘未取证）必须在界面上显示，
  * 藏起来的 medium 会被读成 high。 */
 
+/* v0.13.71（PT-20261002-13 问题2）：搜索容错 + 截断口径。
+ *
+ * ① 模糊匹配：与后端 `skill._score_q` **逐行对应**的同一套三级判定（T0 子串 /
+ *    T1 混淆折叠 / T2 有界 OSA）。两边必须一致——否则会出现「后端命中但页面搜不到」
+ *    或反之，而这两条都是“看起来像另一个 bug”的分叉（09-23 分档偏好第 5 条同形：
+ *    同一动作因存量不同给出不同结果）。
+ *    合并单字符数字/符号混淆（1→l、0→o…），但不合并 rn→m 这类改词义的映射。
+ * ② limit：列表默认 limit=200，而去重后有 365 条 ⇒ 静默截掉 165 条，
+ *    截掉的那部分既搜不到也看不见，面板却显示 “200 个技能”。改为要全量并把
+ *    真实总数显示出来（truncated 标记），不让截断被读成「就这么多」。 */
+const SKILL_CONFUSABLES = (function () {
+  const m = {};
+  for (const [k, v] of Object.entries({ '1': 'l', '|': 'l', '!': 'l', '0': 'o', '5': 's', '8': 'b', '9': 'g', '6': 'g', '2': 'z' })) m[k] = v;
+  return m;
+})();
+function skillFold(s) {
+  s = String(s || '').toLowerCase();
+  let out = '';
+  for (const ch of s) out += (SKILL_CONFUSABLES[ch] !== undefined ? SKILL_CONFUSABLES[ch] : ch);
+  return out;
+}
+function skillOsa(a, b, cap) {
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > cap) return cap + 1;
+  if (!la) return lb;
+  if (!lb) return la;
+  let prev2 = null, prev = Array.from({ length: lb + 1 }, (_, i) => i);
+  for (let i = 1; i <= la; i++) {
+    const cur = [i];
+    let rowBest = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, prev2[j - 2] + 1);
+      cur[j] = v;
+      if (v < rowBest) rowBest = v;
+    }
+    if (rowBest > cap) return cap + 1;
+    prev2 = prev; prev = cur;
+  }
+  return prev[lb];
+}
+function skillFuzzyCap(q) { const n = q.length; return n < 4 ? 0 : (n <= 7 ? 1 : 2); }
+function skillToks(s) { return (skillFold(s).match(/[0-9a-z一-鿿]+/g) || []).filter(t => t.length >= 4).slice(0, 48); }
+function skillScore(it, ql) {
+  if (!ql) return 1;
+  const hay = [it.name, it.description, it.path, it.route].map(x => String(x || '')).join(' ').toLowerCase();
+  if (hay.indexOf(ql) !== -1) return 100;
+  const qf = skillFold(ql);
+  if (qf && skillFold(hay).indexOf(qf) !== -1) return 80;
+  const cap = skillFuzzyCap(qf);
+  if (!cap) return 0;
+  const qt = skillToks(qf), ht = skillToks(hay);
+  if (!qt.length || !ht.length) return 0;
+  for (const t of qt) for (const h of ht) if (skillOsa(t, h, cap) <= cap) return 60;
+  return 0;
+}
+
 async function loadSkills() {
   boxBusy('skillList');
   try {
-    const d = await api('/api/skill/list');
+    const d = await api('/api/skill/list?limit=500');   // 要全量，否则搜索只能搜到前 limit 条
     CENTER_HEALTH.skills = (d.degraded || []).length ? 'warn' : 'ok';
     SKILLS = d.items || d || [];
     // 发现点下拉（过滤器 + 安装选择器共用）
@@ -3012,6 +3070,7 @@ async function loadSkills() {
     mountPicks('instTo');   // v0.13.40：option 每次重写 ⇒ 芯片壳跟着重挂（函数幂等）
     $('instName').innerHTML = SKILLS.map(s => '<option value="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</option>').join('');
     $('skillHint').textContent = SKILLS.length + ' 个技能 · ' + SKILL_ROUTES.length + ' 路发现点';
+    if (d.truncated) $('skillHint').textContent += ' · 共 ' + d.total_unique + ' 条（部分被 limit 截断）';
     if ((d.degraded || []).length) $('skillHint').textContent += ' · 降级路：' + d.degraded.join(',');
     // 工具条那句同样不再写死（它与 skillHint 同源，不然后面会再次漂移）
     $('skillRouteHint').textContent = SKILL_ROUTES.length + ' 路发现点 · 只读门面：点「查看」读正文（脱敏）';
@@ -3033,8 +3092,11 @@ function toggleSkillZombieOnly() {
 function renderSkillList() {
   const q = ($('skillQ').value || '').toLowerCase();
   const route = $('skillRoute').value;
-  const rows = SKILLS.filter(s =>
-    (!q || String(s.name || '').toLowerCase().includes(q) || String(s.description || '').toLowerCase().includes(q)) &&
+  // v0.13.71：容错排序——高分在前，同分保持 SKILLS 原序（稳定）。
+  const scored = SKILLS.map(s => ({ s, sc: skillScore(s, q) }))
+    .filter(o => o.sc > 0);
+  scored.sort((a, b) => b.sc - a.sc);
+  const rows = scored.map(o => o.s).filter(s =>
     (!route || (s.routes || []).includes(route) || s.route === route));
   // 「只看零调用」是**后端给的名单**，不是前端自己数出来的：零调用要看的是
   // 注入/读取两个通道的记账，而不是「页面上没点过查看」。

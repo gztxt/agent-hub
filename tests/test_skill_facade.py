@@ -36,11 +36,13 @@ class _TmpSkillCase(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="l0skill-"))
         self._dirs = dict(skill.SKILL_DIRS)
+        self._extra = skill.EXTRA_ALLOWED_ROOTS
         skill.SKILL_DIRS = {"t": str(self.tmp)}
         self.addCleanup(self._restore)
 
     def _restore(self):
         skill.SKILL_DIRS = self._dirs
+        skill.EXTRA_ALLOWED_ROOTS = self._extra
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def mk(self, name, body, raw=None):
@@ -326,8 +328,84 @@ class TestWhitelistGuard(_TmpSkillCase):
 
     def test_allowed_roots_follows_monkeypatched_dirs_and_drops_missing(self):
         skill.SKILL_DIRS = {"a": str(self.tmp), "ghost": "/nonexistent-l0-ghost"}
+        skill.EXTRA_ALLOWED_ROOTS = ()
         roots = skill._allowed_roots()
         self.assertEqual(roots, [os.path.realpath(str(self.tmp))])
+
+    # ── PT-20261002-13 问题2（裁定①）：附加放行根 ──────────────────────────
+    def test_extra_allowed_roots_are_appended_and_deduped(self):
+        """附加根必须真参与放行，且不存在的被丢弃、去重后保序。"""
+        skill.SKILL_DIRS = {"a": str(self.tmp)}
+        skill.EXTRA_ALLOWED_ROOTS = (str(self.tmp),          # 与发现点根重名 ⇒ 应去重
+                                     "/nonexistent-l0-ghost2")
+        roots = skill._allowed_roots()
+        self.assertEqual(roots, [os.path.realpath(str(self.tmp))],
+                         "重复根没去重或幽灵根没丢弃")
+
+    def test_extra_root_makes_symlinked_skill_visible(self):
+        """本体：软链在白名单发现点内、realpath 落在附加根下 ⇒ 之前被拒，现在必须收进来。
+        这就是 crawl4ai / hallmark / agent-reach / mattpocock-skills 看不见的成因。"""
+        outside = pathlib.Path(tempfile.mkdtemp(prefix="l0extra-"))
+        self.addCleanup(shutil.rmtree, str(outside), True)
+        (outside / "SKILL.md").write_text("---\nname: crawl4ai\n---\n正文\n", encoding="utf-8")
+        via = self.tmp / "via"
+        via.mkdir()
+        os.symlink(str(outside), str(via / "crawl4ai"))
+
+        skill.SKILL_DIRS = {"t": str(self.tmp)}
+        skill.EXTRA_ALLOWED_ROOTS = ()          # 先复现「修之前」：被拒
+        r0 = skill._scan_one("t", str(self.tmp))
+        self.assertEqual([i["name"] for i in r0["items"]], [])
+        self.assertEqual(len(r0["skipped_outside"]), 1)
+
+        skill.EXTRA_ALLOWED_ROOTS = (str(outside),)   # 再复现「修之后」：收进来
+        r1 = skill._scan_one("t", str(self.tmp))
+        self.assertEqual([i["name"] for i in r1["items"]], ["crawl4ai"])
+        self.assertEqual(r1["skipped_outside"], [])
+
+    def test_extra_roots_do_not_weaken_escape_guard(self):
+        """红向（PT-13 明写的安全底线）：多认几个根**不等于**把闸门拆了。
+        指向附加根之外的软链仍必须在读之前被拒，且外部内容不许泄进响应。"""
+        outside = pathlib.Path(tempfile.mkdtemp(prefix="l0escape-"))
+        self.addCleanup(shutil.rmtree, str(outside), True)
+        secret = outside / "SKILL.md"
+        secret.write_text("---\nname: leaked\n---\nL0SECRET-MARKER-9137\n", encoding="utf-8")
+        evil = self.tmp / "evil"
+        evil.mkdir()
+        os.symlink(str(secret), str(evil / "SKILL.md"))
+        self.mk("ok", "---\nname: ok\n---\n正文\n")
+        skill.SKILL_DIRS = {"t": str(self.tmp)}
+        skill.EXTRA_ALLOWED_ROOTS = (str(self.tmp / "does-not-exist"),)
+
+        r = skill._scan_one("t", str(self.tmp))
+        self.assertEqual([i["name"] for i in r["items"]], ["ok"], "越界软链进了清单")
+        self.assertEqual(len(r["skipped_outside"]), 1)
+        self.assertNotIn("L0SECRET-MARKER-9137", json.dumps(r, ensure_ascii=False),
+                         "越界文件的内容被读出来了")
+        with self.assertRaises(HTTPException):
+            skill._guard_inside_whitelist("/etc/passwd")
+
+    def test_default_extra_roots_pinned(self):
+        """附加根是**安全边界**，不能随手加/删而不留证据：钉住当前这 4 个仓。
+        加仓＝扩大读权限 ⇒ 必须回到台账拿裁定，不是改个元组就上线。"""
+        self.assertEqual(skill._DEFAULT_EXTRA_ROOTS,
+                         ("/fs/1000/ftp/技术文档/mattpocock-skills",
+                          "/fs/1000/ftp/技术文档/crawl4ai",
+                          "/fs/1000/ftp/技术文档/hallmark",
+                          "/fs/1000/ftp/技术文档/Agent-Reach"))
+
+    def test_extra_roots_env_override(self):
+        os.environ["SKILL_EXTRA_ROOTS_JSON"] = json.dumps(["/tmp/x"])
+        self.addCleanup(os.environ.pop, "SKILL_EXTRA_ROOTS_JSON", None)
+        self.assertEqual(skill._load_extra_roots(), ("/tmp/x",))
+        os.environ["SKILL_EXTRA_ROOTS_JSON"] = json.dumps([123])
+        with self.assertLogs(skill.log, level="WARNING") as lg:
+            self.assertEqual(skill._load_extra_roots(), skill._DEFAULT_EXTRA_ROOTS)
+        self.assertIn("SKILL_EXTRA_ROOTS_JSON", " ".join(lg.output),
+                      "回退了却没说为何回退，等于静默")
+        os.environ["SKILL_EXTRA_ROOTS_JSON"] = "{不是 JSON"
+        with self.assertLogs(skill.log, level="WARNING"):
+            self.assertEqual(skill._load_extra_roots(), skill._DEFAULT_EXTRA_ROOTS)
 
     def test_guard_raises_400_for_outside_path(self):
         with self.assertRaises(HTTPException) as cm:
@@ -386,6 +464,49 @@ class TestBackendAndRoutes(_TmpSkillCase):
         self.assertTrue(skill._match_q(it, "网页"))
         self.assertTrue(skill._match_q(it, "claude"))
         self.assertFalse(skill._match_q(it, "不存在"))
+
+    # ── v0.13.71：三级模糊匹配 ────────────────────────────────────────────
+    def test_fuzzy_catches_digit_for_letter_typo(self):
+        """本条就是报障本体：搜 `craw14ai`（数字 1）要能找到 `crawl4ai`。"""
+        it = {"name": "crawl4ai", "description": "用 crawl4ai 抓网页并转成 Markdown",
+              "path": "/home/gztxt/.claude/skills/crawl4ai/SKILL.md", "route": "claude"}
+        self.assertTrue(skill._match_q(it, "craw14ai"))
+        self.assertEqual(skill._score_q(it, "crawl4ai"), 100, "精确命中必须是最高分")
+        self.assertEqual(skill._score_q(it, "craw14ai"), 80, "混淆折叠命中应是次高分")
+        self.assertLess(skill._score_q(it, "crawla4i"), skill._score_q(it, "craw14ai"),
+                        "编辑距离命中不该压过混淆折叠命中")
+
+    def test_fuzzy_keeps_cjk_substring_working(self):
+        """中文检索全靠 T0 子串：模糊改造不得把中文搜索改坏。"""
+        it = {"name": "crawl4ai", "description": "把网页正文转成 LLM-ready Markdown", "route": "claude"}
+        self.assertTrue(skill._match_q(it, "网页正文"))
+        self.assertTrue(skill._match_q(it, "markdown"))
+        self.assertFalse(skill._match_q(it, "数据库"))
+
+    def test_fuzzy_does_not_swallow_everything(self):
+        """负面：太远的手误**不该**命中，否则面板变成「什么都能搜到」，比搜不到更糟。"""
+        it = {"name": "crawl4ai", "description": "抓网页转 Markdown", "route": "claude"}
+        self.assertFalse(skill._match_q(it, "climb4ai"), "差 4 个字符还命中＝容差失控")
+        self.assertFalse(skill._match_q(it, "完全不相关的词"))
+
+    def test_fold_maps_only_single_char_confusables(self):
+        """折叠只做单字符映射：`1→l` 认，`rn→m` 不认（后者会改词义）。"""
+        self.assertEqual(skill._fold("craw14ai"), "crawl4ai")
+        self.assertEqual(skill._fold("CRAWL4AI"), "crawl4ai")
+        self.assertEqual(skill._fold("carnival"), "carnival", "rn 没被合并")
+        self.assertEqual(skill._fold("c0de"), "code")
+
+    def test_osa_counts_transposition_as_one(self):
+        self.assertEqual(skill._osa("crawla4i", "crawl4ai", 2), 1)
+        self.assertEqual(skill._osa("climb4ai", "crawl4ai", 2), 3, "超上限应剪枝成 cap+1")
+        self.assertEqual(skill._osa("abc", "abc", 2), 0)
+
+    def test_fuzzy_cap_scales_and_caps_at_two(self):
+        self.assertEqual(skill._fuzzy_cap("ab"), 0)
+        self.assertEqual(skill._fuzzy_cap("abcd"), 1)
+        self.assertEqual(skill._fuzzy_cap("abcdefg"), 1)
+        self.assertEqual(skill._fuzzy_cap("abcdefgh"), 2)
+        self.assertEqual(skill._fuzzy_cap("a" * 40), 2, "再长也不放宽，封顶 2")
 
     def test_disk_routes_and_all_routes(self):
         skill.SKILL_DIRS = {"a": "/x", "b": "/y"}
