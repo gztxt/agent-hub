@@ -77,8 +77,31 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.67"   # 技能相关性检索（D2：GET /api/skill/relevant）：
-                      #   病根：/api/skill/list?q= 只是大小写不敏感**子串**过滤，
+VERSION = "0.13.68"   # 技能调用记账与零调用僵尸榜（D3：GET /api/skill/zombies）：
+                      #   病根：本批只接了 hub 通道（profile_events 里 source='rest' 的
+                      #     skill.read / skill.inject），各家 agent **直读自己技能目录的旁路
+                      #     统计未实现**。设计书 §7 的口径是「两源皆零 → confidence=high」，
+                      #     而第二源不存在时那条口径不成立——照抄会得到一个看着确定、实际是
+                      #     仪表盘盲区自欺的榜。故本批**把封顶值做成可断言字段**：
+                      #     每行 confidence 恒 medium + direct_source="not-implemented"，
+                      #     顶层再回显 counted（账里有痕迹的技能数，0 = 压根没记账），
+                      #     前端与测试据此区分「真的没人用」和「没有仪表盘」。
+                      #   src/skill_usage.py  counts()/zombies()/snapshot()：
+                      #     读不到 DB **绝不抛**（面板要能开），回落方向保守——多提醒不漏提醒；
+                      #     零调用技能**绝不自动删**，只出 suggested_action，且单路可见优先
+                      #     widen_visibility（它可能压根没机会被选中，不能先判它该退）。
+                      #   闸门 tests/test_skill_usage.py（L0 29 例，用假 db 模块驱动 counts()
+                      #     顺带断言 SQL 参数形状：真 API 是 db.query，计划书里的 db.fetchall
+                      #     并不存在，照抄会直接 AttributeError）。
+                      #   runlog.SUBJECTS 增 skill.relevant / skill.inject（D4/D5 注入链记账用）。
+                      #   B3 侦察反证 D1 第 20 路 opencode 是**假发现点**（opencode 1.18.34
+                      #     只扫 ~/.claude/skills、~/.agents/skills、项目 {skill,skills} 与配置键
+                      #     skills.paths；opencode.json 无 skills 键 ⇒ 接线不存在），
+                      #     顺带量出 62 条第三方技能对 agent-hub 不可见 ⇒ 已登记
+                      #     **PT-20261002-13**，本批不夹带（它动生产常量与安全白名单）。
+                      #   生产未重启（重启授权留到 D3 之后一次执行）。
+                      #
+                      #   （以下为 0.13.67 D2 技能相关性检索：GET /api/skill/relevant）   病根：/api/skill/list?q= 只是大小写不敏感**子串**过滤，
                       #     「说一段任务描述 → 找回对的技能」机制上不存在；而 hub-facade.ts
                       #     的 input→context 通道只能拿到记忆（skill.read=0），没有技能候选可注入。
                       #   src/skill_relevance.py  零新依赖 BM25F：ASCII 按词 + 连字符名额外拆子词，

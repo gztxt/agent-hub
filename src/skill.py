@@ -51,6 +51,7 @@ from pydantic import BaseModel
 
 import db
 import runlog
+import skill_usage
 import tdai_client
 import writeauth
 
@@ -781,6 +782,25 @@ def _rel_row(x: Dict[str, Any]) -> Dict[str, Any]:
             "route": it.get("route"), "routes": it.get("routes"),
             "bm25": x["score"], "matched": x["matched"], "matched_in": x["matched_in"],
             "jev": None, "tokens_est": 0}
+
+
+@router.get("/zombies")
+async def skill_zombies(days: int = Query(default=7, ge=1, le=365)):
+    """近 N 天零调用的技能榜。
+
+    **置信度封顶 `medium`**：本批只接了 hub 通道（`profile_events` 里
+    `source='rest'` 的 `skill.read` / `skill.inject`），各家 agent 直接读自己技能目录的
+    旁路统计**未实现**。设计书 §7 的口径是「两源皆零 → high」，而第二源不存在时那条口径
+    不成立——照抄会得到一个看起来很确定、实际是仪表盘盲区自欺的榜。
+    `direct_source` 与 `counted` 两个字段就是让这个盲区在返回值里可断言。
+    """
+    routes = disk_routes()
+    scans = await asyncio.gather(*[_scan_async(r, route_roots(r)) for r in routes])
+    items: List[Dict[str, Any]] = []
+    for s in scans:
+        items.extend(s.get("items") or [])
+    unique, _aliases = _dedup(items)
+    return skill_usage.snapshot(unique, days)
 
 
 @router.get("/relevant")

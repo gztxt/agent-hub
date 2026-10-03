@@ -39,3 +39,41 @@
 
 ### 一处自我纠错（值得记，因为它是判据级别的）
 首次统计 `~/.agents/skills` 条数时我写了 `for it in skill._scan_one(...)`——该函数返回 **dict**，迭代得到的是**键名**（`ok/items/ms/...`），于是打印出「6 条」。真实值 **12 接受 + 28 拒读 = 40**，与 D1 记录一致。**先量后断言；量错就当没量。**
+
+---
+
+## D3 落地与旁路实测（2026-10-03）
+
+**实现**：`src/skill_usage.py`（`counts`/`zombies`/`snapshot`）+ `GET /api/skill/zombies?days=7` + `runlog.SUBJECTS` 增 `skill.relevant`/`skill.inject` + 闸门 `tests/test_skill_usage.py`（L0 29 例）。版本 **0.13.68**。
+
+**计划书与现实的三处出入（照抄会直接炸）**：
+
+| 计划书写法 | 实际 | 后果 |
+|---|---|---|
+| `db.fetchall(sql, params)` | 真实 API 是 `db.query(sql, params) -> list[dict]`（`db.py:197`） | AttributeError |
+| `_all_items()` | `skill.py` 里**不存在**该函数 | NameError |
+| `_WINDOW = max(1, min(365, days)) if (days := 7) else 7` | 模块级死代码，且把 `days` 泄漏进模块命名空间 | 误导读者以为窗口是全局常量 |
+
+**旁路验证形态**（既有先例）：临时端口 **3199 + 只绑 127.0.0.1**，PID 记进 `work/sidecar/d3-verify.pid`，收场只按该 PID `kill`（禁 `pkill`）。生产 3102 全程 `active`，未被抢占。**唯一一次重启授权未动用。**
+
+### 探针结果（单轮复合，一次取齐）
+
+| 端点 | 结果 |
+|---|---|
+| `/health` | `version=0.13.68` `code_stale=False` |
+| `/api/skill/zombies?days=7` | `total=365` `zombies=263` **`counted=0`** `confidence=medium` `direct_source=not-implemented`；建议分布 `widen_visibility` 261 / `retire_review` 2 |
+| `/api/skill/relevant?q=这个任务该派给谁去做&n=3&rerank=true` | HTTP 200 / 4374 B / `took_ms=1064.5` / `backends=20`；`agent-dispatch` **15.18 居首** |
+
+### 两条必须带走的结论
+
+1. **`counted=0` 证明「保守方向」设计是对的**：注入链（D4/D5）还没建，365 条技能全无记账，于是 63% 上榜。榜单此刻**没有决策价值**，但它**诚实**——`counted` 字段让前端能区分「真的没人用」与「压根没仪表盘」。这正是把封顶值做成可断言字段换来的东西。
+2. **jev 首次上真网，结论比预期更强**：对噪声（`arkcli-*`）的 confidence **0.85** 高于对正确答案（`agent-dispatch`）的 **0.53**。⇒ D2「jev 不改写排序」不是保守，是**必须的**。
+3. **`rerank=true` 时 1064.5ms > hub-facade 的 600ms 预算** ⇒ **D4 必须 `rerank=false`**，否则每次输入都走静默降级、白烧 600ms 还拿不到候选。
+
+### 我在这轮犯的三个错（都记下来，因为都是「量/判」层面的）
+
+| 错 | 怎么发现的 | 教训 |
+|---|---|---|
+| `for it in skill._scan_one(...)` 把返回的 **dict** 当序列迭代，打印出「6 条」（其实是键数） | 与 D1 记录 12+28=40 对不上 | 先量后断言；量错就当没量 |
+| 探针 URL 里直接塞裸中文，没走 `--data-urlencode` ⇒ 响应非 JSON，误判为端点 FAIL | 看旁路日志无异常 + 重取状态码 200 | 中文查询参数一律 `--data-urlencode`；**先看日志再重试** |
+| 解析脚本按 `score`/`rank`/`bm25.took_ms` 取值，全错；且在重解析前把响应体删了 | KeyError | 响应体先落盘再解析；字段名以 `_rel_row` 源码为准，不凭印象 |

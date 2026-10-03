@@ -1,0 +1,157 @@
+"""D3：技能调用记账与「零调用僵尸榜」。
+
+**只认 hub 通道**（`profile_events` 里 `source='rest'` 且 subject ∈ {`skill.read`, `skill.inject`}）。
+各家 agent 直接读自己技能目录的旁路统计**本批未实现** ⇒ 置信度封顶 `medium`。
+
+军规落地（禁把 SKIP 当 PASS）：**不取证的第二数据源绝不能报 `high`**。设计书 §7 定的口径是
+「两源皆零 → high；仅 hub 源为零 → medium」；`DIRECT_SOURCE = "not-implemented"` 就是把
+「第二源没接」这件事变成返回值里可断言的字段，而不是一句注释。
+
+**绝不自动删技能**：只出 `suggested_action`。理由同设计书 §7——hub 是唯一权威门面，
+自动退役等于让「没被我的仪表盘看见」直接等价于「该删」，而第二源缺席时这个等价是错的。
+
+实现注意（照抄前先核过，避免留下虚构 API）：
+- 读库走 `db.query(sql, params) -> list[dict]`（`db.fetchall` 不存在，计划书那段是虚构的）。
+- `created_at` 落盘形如 `2026-10-03T03:13:41.975138+00:00`，与 `datetime.now(timezone.utc).isoformat()`
+  同为「ISO + 微秒 + +00:00」，**同一时区同一格式 ⇒ 字符串比较即时间比较**（存的都是 UTC）。
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List
+
+#: 第二数据源（各家会话日志 / 直读磁盘旁路）未实现。出现在每个零调用条目上，
+#: 也出现在 /api/skill/zombies 的顶层，供前端与测试直接断言。
+DIRECT_SOURCE = "not-implemented"
+
+#: 计入记账的 subject。读库用 IN 展开，故须是 tuple 而非集合（sqlite3 接收序列）。
+_SUBJECTS = ("skill.read", "skill.inject")
+
+#: hub 自身事件通道。`hook.py:131` 的 agent 画像聚合是按 `source != 'rest'` 排除本通道的，
+#: 也就是说 'rest' 正是「hub 自己干的事」——技能门面的读写走这里。
+_SOURCE = "rest"
+
+MAX_DAYS = 365
+
+
+def _clamp(days: int) -> int:
+    """把 days 收进 [1, 365]。0/负数/None 全部回落到 1——宁可窗口最小，也不让 SQL 变成全表。"""
+    try:
+        d = int(days)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(MAX_DAYS, d))
+
+
+def counts(days: int = 7) -> Dict[str, Dict[str, Any]]:
+    """近 N 天各技能被读/被注入的次数。
+
+    **DB 读不到就返回空 dict，绝不抛**——仪表盘必须能开；L0 hermetic 下 MEMINDEX_DB
+    被钉到不存在的路径，这里正好走「读不到 ⇒ 空表 ⇒ 全部技能都算零调用」这条分支。
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=_clamp(days))).isoformat()
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        import db
+        rows = db.query(
+            "SELECT subject, detail, created_at FROM profile_events "
+            "WHERE source = ? AND subject IN (?, ?) AND created_at >= ? "
+            "ORDER BY id",
+            (_SOURCE,) + _SUBJECTS + (since,))
+    except Exception:
+        # 面板要能开：查不到记账就当没人被调用过，僵尸榜会偏大但**方向是保守的**
+        #（多列嫌疑而不是漏列嫌疑）。宁可多提醒也不漏提醒。
+        return out
+
+    for row in rows or []:
+        name = _name_of(row.get("detail"))
+        if not name:
+            continue
+        e = out.setdefault(name, {"reads": 0, "injects": 0, "last_at": "", "via": []})
+        if row.get("subject") == "skill.read":
+            e["reads"] += 1
+        else:
+            e["injects"] += 1
+        at = str(row.get("created_at") or "")
+        if at > e["last_at"]:
+            e["last_at"] = at
+        if "hub" not in e["via"]:
+            e["via"].append("hub")
+    return out
+
+
+def _name_of(detail: Any) -> str:
+    """从事件 detail 里取技能名。**坏 JSON 不许炸掉整张榜**——单条脏数据不能带倒面板。"""
+    if not detail:
+        return ""
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:
+            return ""
+    if not isinstance(detail, dict):
+        return ""
+    return str(detail.get("name") or "").strip()
+
+
+def _action_for(item: Dict[str, Any], routes: List[str]) -> str:
+    """给零调用技能一条**建议**（不是命令）。
+
+    判据顺序是「先补可发现性，再谈退役」：
+    - 只在一路可见 ⇒ 先扩大可见性（它可能压根没机会被选中）
+    - 有描述但零调用 ⇒ 描述没写出触发词，补 triggers
+    - 描述也空或多路可见仍零调用 ⇒ 才值得进退役评估
+    """
+    if len(routes) <= 1:
+        return "widen_visibility"
+    if not str(item.get("description") or "").strip():
+        return "add_triggers"
+    return "retire_review"
+
+
+def zombies(items: Iterable[Dict[str, Any]], counts_map: Dict[str, Dict[str, Any]],
+            days: int = 7) -> List[Dict[str, Any]]:
+    """列出近 N 天零调用的技能。置信度**恒为 medium**（第二源未取证，不得报 high）。"""
+    d = _clamp(days)
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for it in items or []:
+        name = str(it.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        c = counts_map.get(name) or {}
+        if (c.get("reads") or 0) or (c.get("injects") or 0):
+            continue
+        seen.add(name)
+        routes = [str(x) for x in (it.get("routes") or []) if str(x)]
+        rows.append({
+            "name": name,
+            "routes": routes,
+            "days_idle": d,
+            "last_at": None,
+            "confidence": "medium",          # ← 封顶值。报 high 需要第二源，本批没有
+            "direct_source": DIRECT_SOURCE,
+            "suggested_action": _action_for(it, routes),
+        })
+    rows.sort(key=lambda r: r["name"].lower())
+    return rows
+
+
+def snapshot(items: Iterable[Dict[str, Any]], days: int = 7) -> Dict[str, Any]:
+    """榜单体。`counted` 显式回显**查到了多少个技能的记账**——0 就说明账是空的，
+    此时 `zombies` 数≈`total` 是必然的，前端必须能区分「真的没人用」和「压根没记账」。"""
+    items = list(items or [])
+    cmap = counts(days)
+    z = zombies(items, cmap, days)
+    return {
+        "days": _clamp(days),
+        "total": len(items),
+        "zombies": z,
+        "zombies_count": len(z),
+        "counted": len(cmap),          # 账里有痕迹的技能数；0 = 无记账
+        "confidence": "medium",
+        "direct_source": DIRECT_SOURCE,
+        "note": "仅 hub 通道记账；各家直读磁盘未取证 ⇒ 置信度封顶 medium",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }

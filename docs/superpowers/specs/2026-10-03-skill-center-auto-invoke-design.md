@@ -325,3 +325,38 @@ curl -s -m 5 http://127.0.0.1:3102/api/skill/relevant?q=技能检索 -w '\n'
 ```
 
 新会话读 `agent-hub/logs/pi-skill-center-handoff.md` 续接 D4~D7 收尾。
+
+## 5.2 D3 旁路实测（2026-10-03，生产级证据）
+
+临时端口 **3199 + 只绑 127.0.0.1**（既有先例），PID 记进 `work/sidecar/`，收场只按该 PID kill。
+生产 3102 全程 `active`，**唯一一次重启授权未动用**。
+
+| 端点 | 实测 |
+|---|---|
+| `/health` | `version=0.13.68` `code_stale=False` |
+| `/api/skill/zombies?days=7` | `total=365` `zombies=263` **`counted=0`** `confidence=medium` `direct_source=not-implemented`；建议分布 `widen_visibility` 261 / `retire_review` 2 |
+| `/api/skill/relevant?q=这个任务该派给谁去做&n=3&rerank=true` | HTTP 200 / 4374 B / `took_ms=1064.5` / `backends=20`；`agent-dispatch` **15.18 居首** |
+
+### 证据一：`counted=0` 证明「保守回落」的设计是对的
+
+注入链（D4/D5）尚未建立 ⇒ 365 条技能**全无记账** ⇒ 63% 上榜。
+榜单此刻**没有决策价值**，但它**诚实**：`counted` 让前端能区分「真的没人用」与「压根没仪表盘」。
+这正是把「置信度封顶」做成可断言字段（而非注释）换来的东西。
+
+### 证据二：jev 首次上真网，结论比 §5 的转述更强
+
+| 技能 | BM25 | jev score | jev confidence |
+|---|---|---|---|
+| `agent-dispatch`（真正该派活的） | **15.18 #1** | 0.31 高度相关 | **0.53** |
+| `arkcli-train-finetune`（噪声） | 5.01 | 1.90 不相关 | **0.85** |
+| `arkcli-understand`（噪声） | 4.65 | 1.90 不相关 | **0.85** |
+
+⇒ **jev 对噪声的置信高于对正确答案的置信。** 若当初让 jev 改写排序，被抬上去的会是两个
+`arkcli` 噪声。§5「jev 只做附加信号、排序权威仍是 BM25」由此从「技能文档的转述」升级为
+**本机生产级实证**。
+
+### 证据三：一条必须传给 D4 的硬约束
+
+`rerank=true` 时端点 **`took_ms=1064.5`**，而 `hub-facade.ts` 的 `input` 钩子预算 **600ms**
+⇒ **D4 调用必须 `rerank=false`**。否则每次输入都超时走静默降级，600ms 白烧且拿不到候选。
+BM25 层本身实测 12–53ms，远在预算内。
