@@ -5,7 +5,7 @@
 | 片 | 执行者 | 产物绝对路径 | 状态 | 判据 |
 |---|---|---|---|---|
 | A1 | **外部 CLI `codex`**（改派：断言需 shell 计数，claude 无 Bash） | work/dispatch/skillcenter/a1-codex-shell.* | **error** | exit=1 stdout=0B；`403 All target providers failed` @ CCR `/v1/responses`。CCR 本身活着（3456 在听、无 token `/v1/models`=401）⇒ 路由/模型可达性问题。禁触面 ⇒ 停手报请，不重试 |
-| B1 | pi 子代理 `Explore`（jcode 技能加载面） | work/dispatch/skillcenter/b1-jcode.md | running | 文件存在且含绝对路径+行号 |
+| B1 | pi 子代理 `Explore`（jcode 技能加载面） | work/dispatch/skillcenter/b1-jcode.md | **completed**（子代理在 turn limit 收尾且**自己没写文件**，主会话代写） | ✅ 产物已落盘 + **主会话独立复核并补上子代理漏掉的一整块**。核心结论成立，最硬证据是 jcode **用户可见报错文案**逐条列出的三个根：`~/.jcode/skills`(global) / `./.jcode/skills`(project-local) / `./.claude/skills`(compatibility)。**增量不在“3 个根”而在于后两个是相对 cwd 的** ⇒ D1 把「发现点」等同于「一个绝对目录」的模型缺口（已登记 PT-20261002-14）。费用 151k token / 31 tool use / 56 min |
 | B2 | pi 子代理 `Explore`（qwenpaw 技能加载面） | work/dispatch/skillcenter/b2-qwenpaw.md | **completed** | ✅ 产物已由主会话落盘。产出：有发现面（`skill_paths`+`skill_pool`）；2 软链在但**清单零命中、池 API 只读清单 ⇒ 不可见**。带出台账纠正：`PT-11` 的「9/9 体检 PASS」是链接体检非生效体检 |
 | B3 | pi 子代理 `Explore`（opencode 技能加载面） | work/dispatch/skillcenter/b3-opencode.md | **completed**（子代理在 turn limit 收尾且**自己没写文件**，主会话代写产物） | ✅ 产物已落盘 + **主会话独立复核 6/6**。结论**反证 D1 第 20 路是假发现点**：`~/.config/opencode/skill` 不被 opencode 读取（`Path.config,"skill` 零命中 + `opencode.json` 无 `skills` 键 ⇒ `skills.paths` 未配置）。功能无损失（同名副本已在 opencode 真扫的 `~/.claude/skills/`），损失的是列表可信度。费用 234k token / 33 tool use / 55 min，**性价比很差**（主预算耗在 185MB 二进制的 `grep -o -P`，一次 900s 超时） |
 | A2 | 外部 CLI `claude`（纯读代码复核） | work/dispatch/skillcenter/a2-claude-review.* | **error** | exit=1 stdout=153B；`apiKeyHelper ... ccr-claude-code-api-key-default-claude-code: not found`（exit 127）。`~/.claude-code-router/bin/` 下 codex/grok/pi 三个 helper 都在，唯独 claude 那个从未开通。禁触面 ⇒ 停手报请 |
@@ -39,6 +39,13 @@
 
 ### 一处自我纠错（值得记，因为它是判据级别的）
 首次统计 `~/.agents/skills` 条数时我写了 `for it in skill._scan_one(...)`——该函数返回 **dict**，迭代得到的是**键名**（`ok/items/ms/...`），于是打印出「6 条」。真实值 **12 接受 + 28 拒读 = 40**，与 D1 记录一致。**先量后断言；量错就当没量。**
+
+### 第二次同型错误（B1 对账时）——已成一条判据
+看到 `ls -d ~/.jcode/skills/*/ | wc -l` = 57 而 D1 记 58，我判「差一」。
+实际：`_scan_many` 接受 **58** = 57 顶层 + `ima-skills/notes` + `ima-skills/knowledge-base` 两条嵌套（1 条被白名单拒读）。
+⇒ **与 D1 完全一致，无 discrepancy**；错因又是「拿两个不同口径的数字对比」。
+
+> **判据：跨来源比数字之前，先确认两个来源量的是同一个东西。** 本轮两次同型错误（dict 当序列、顶层 vs 递归）。
 
 ---
 
