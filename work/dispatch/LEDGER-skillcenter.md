@@ -134,3 +134,36 @@
 - pi / Claude 端侧真实调用：**未做**，待 D4/D5 完成后由用户在端侧验收。
 
 **体积**：`static/hub.js` 重建后 5803 行，md5 `c062c0b7`；`tests/test_hubjs_split.py` 3 passed（逐字节等于拼接结果）。
+
+---
+
+## D4 · pi 注入（2026-10-03，受保护面改动，用户点名授权）
+
+**改动声明（军规：跨工具链改动先说清谁改/改哪个/原值/新值/影响面/回滚）**
+- **谁改**：本会话（主会话串行写，子代理只读）
+- **改哪个**：`~/.pi/agent/extensions/hub-facade.ts`（+43 / -4 行）
+- **原值**：`rev=20261002b-D1.5`，input 钩子**只**检索记忆
+- **新值**：`rev=20261003a-D4`，input 钩子并联检索 `/api/skill/relevant`，top-3 技能候选追加进同一注入块
+- **影响面**：仅 pi 的 `input` 钩子（每次输入多一次 GET）。**向后兼容**：生产仍是 v0.13.65，
+  该端点不存在 ⇒ 404 ⇒ `hubGet` 返回 null ⇒ 静默跳过，不影响任何现有行为
+- **回滚**：`cp ~/.pi/agent/extensions/hub-facade.ts.bak-20261003_155814-d4-skill-inject ~/.pi/agent/extensions/hub-facade.ts`
+  （备份 md5 `cf5d6172…`，195 行，逐字节对账过）
+
+**三条口径都落在代码里而非只写在注释里**：
+`Promise.all`（L114 真并联）· `rerank=false`（L116 真进 URL）· `pendingHit` 单一落点（L127）。
+
+**踩坑一（自造竞态，第一版写错了）**：第一版写成「记忆 `await` 完 + 技能 `.then()` 挂后台」，
+那不是并联——pi 的 `context` 钩子在 `input` 返回后**立刻**消费 `pendingHit`，
+技能块大概率在它被读走之后才 resolve，等于接了个寂寞。改 `Promise.all` 等两边同拍落地。
+**教训：说「并联」要能在代码里指到 `Promise.all`，`.then()` 不算。**
+
+**契约与延迟实测**（旁路 3199，原样打 facade 会发的那条请求）：
+HTTP 200 / 墙钟 **287ms** / `n=3` / 每行 `name`·`description`·`matched` 齐 / `tokens_est=189` /
+`jev={ok:false, calls:0, why:"调用方显式关闭精排"}` ⇒ **零外部调用**，`rerank=false` 确实生效。
+（此处我先前只读 4 行源码就断言「jev 会是 null」，实测是更友好的 why 文案——少读几行就下结论，是老毛病。）
+
+**语法自检**：Node 24 原生类型剥离 `--check` 通过。
+
+**未做、待端侧验收**：pi 重启前这段代码**不会生效**（extensionCache 不看 mtime，长命进程活到重启），
+且端到端注入效果只能由你在新会话里看到。仓内无 `hub-facade.ts` 副本，`~/.pi/agent` 也不是 git 仓 ⇒
+**已快照一份到 `work/dispatch/skillcenter/hub-facade.D4.snapshot.ts`**（否则唯一权威副本只躺在受保护面里）。
