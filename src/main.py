@@ -77,7 +77,21 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.65"   # 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）：
+VERSION = "0.13.66"   # 技能中心统一列表（D1 补齐 20 路发现点 + 排除清单 + state 四态）：
+                      #   病根：技能门面只扫 7 路 ⇒ 家长 10 家里 6 家约 300 条技能不在册，
+                      #     「按任务自动发现技能」从机制上就漏（PT-20261002-11 的 R1 可见性缺口）。
+                      #   D1  src/skill.py：_DEFAULT_DIRS 7→20 路；EXCLUDED_DIRS 15 条**带理由**
+                      #     （marketplace 缓存/安装暂存/备份/快照/厂商同源副本），排除项进 /api/skill/status
+                      #     不静默；_scan_one 加 reason 三态 + skill_state() 四态（ok/empty/missing/error）
+                      #     ——原 available 布尔把「这家没装」与「我们配错」混成一句话；
+                      #     expand_roots/route_roots 支持 glob（qoder-alpha 扩展目录名是内容哈希，
+                      #     写死必然升级即 missing），_scan_many 多根部分失败不判整路失败。
+                      #   取证修正三处曾记错的实况：find 不带 -L 不跟随软链 ⇒ opencode 实为 2 条非 0；
+                      #     qoderwake 的 runtime-generations/{A,B} 与 resources/builtin-skills 是
+                      #     realpath 不同的同源副本（各 11 条）⇒ 列入排除否则 11 报成 44；
+                      #     hermes 120 与 hermes-agent 58 实测**零重叠**（去重机制另在 L0 造重叠验证）。
+                      #   闸门 tests/test_skill_routes.py（L0 23 例 + L1 4 例）。**生产重启未执行**（沿用禁重启边界）。
+                      # 上一版 v0.13.65 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）：
                       #   病根实测：/api/memory/context 收了 9 路联邦源 ID、过白名单校验不报 400，
                       #     却在函数体里被静默丢弃 ⇒ 回包 backends 只有 tdai_profile/local，
                       #     fed.sources=0、正文 1585 字符、联邦段完全缺席。HTTP 200 无异常无告警

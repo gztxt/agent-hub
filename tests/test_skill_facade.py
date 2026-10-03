@@ -394,9 +394,14 @@ class TestBackendAndRoutes(_TmpSkillCase):
 
     def test_default_dirs_route_names_are_pinned(self):
         """400 报错里回显的可用值依赖这些名字；改名会连带打破闸门与前端。
-        v0.13.26 批2：4→7 路（新增 agents/codex/workbuddy 三个实测发现点，56 号文档）。"""
+        v0.13.26 批2：4→7 路（新增 agents/codex/workbuddy 三个实测发现点，56 号文档）。
+        v0.13.66 D1：7→20 路（补齐 hermes×3/jcode/grok×2/picoclaw/qoder×3+alpha/opencode）。
+        路线细节、条数与排除理由由 tests/test_skill_routes.py 逐项钉；本闸门只守**名字**。"""
         self.assertEqual(sorted(skill._DEFAULT_DIRS),
-                         ["agents", "claude", "codex", "pi", "superpowers",
+                         ["agents", "claude", "codex", "grok", "grok-bundled",
+                          "hermes", "hermes-agent", "hermes-web", "jcode", "opencode",
+                          "pi", "picoclaw", "qoder", "qoder-alpha", "qoderwake",
+                          "qoderwake-cli", "qoderwake-shadow", "superpowers",
                           "techdocs", "workbuddy"])
 
     def test_load_dirs_env_override_takes_effect(self):

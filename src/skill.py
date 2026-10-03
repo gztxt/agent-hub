@@ -36,6 +36,7 @@
 脱敏只能有一个实现（见 `memory.py:79-81` 与 `tdai_client.scrub` 的注释）。
 """
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -67,7 +68,66 @@ _DEFAULT_DIRS: Dict[str, str] = {
     "agents": "/home/gztxt/.agents/skills",
     "codex": "/home/gztxt/.codex/skills",
     "workbuddy": "/home/gztxt/.workbuddy/skills",
+
+    # ── v0.13.66 D1：补齐 13 路实测发现点。条数是 2026-10-03 `find -maxdepth 3` 实测，
+    # 登记时**不猜**：「目录在但 0 条」与「目录不存在」由 /status 的 state 四态分开说，
+    # 两者都是事实，不允许代码把空目录当正常路、把缺目录当正常路。
+    "hermes": "/home/gztxt/.hermes/skills",                      # 110 · config.yaml 声明的是 skills-hot（实测 0 条），实际消费这一路
+    "hermes-agent": "/home/gztxt/.hermes/hermes-agent/skills",  # 58 · 上游内置仓，与 hermes 重叠由 _dedup 按 realpath 归一
+    "hermes-web": "/home/gztxt/.hermes-web-ui/.ekko/skills",    # 22
+    "jcode": "/home/gztxt/.jcode/skills",                        # 56
+    "grok": "/home/gztxt/.grok/skills",                          # 1
+    "grok-bundled": "/home/gztxt/.grok/bundled/skills",          # 9
+    "picoclaw": "/home/gztxt/.picoclaw/workspace/skills",        # 8
+    "qoder": "/home/gztxt/.qoder/security/skills",               # 1
+    "qoderwake": "/home/gztxt/.qoderwake/resources/builtin-skills",        # 11
+    "qoderwake-shadow": "/home/gztxt/.qoderwake/run/shadow-skills",       # 1
+    "qoderwake-cli": "/home/gztxt/.qoderwake/qodercli/security-resources/security-scan/skills",  # 1
+    # qoder-alpha 的扩展目录名是**内容哈希**（42d23c0fa380），升级即变 ⇒ 写死必然有一天
+    # 变成 missing。登记 glob 让它跟着升级走。
+    "qoder-alpha": "/home/gztxt/.qoder-alpha/extensions/*/skills",         # 2 · glob，命中随版本变
+    "opencode": "/home/gztxt/.config/opencode/skill",             # 2 · 全是软链指回 techdocs 自研目录（find 不带 -L 会报 0，勿再据此下结论）
 }
+
+# ── v0.13.66 D1：明确排除的目录。**排除是结论，必须能被面板读到理由**——
+# 军规「禁把 SKIP 当 PASS」在目录层的形态就是：不能悄悄少收，得说清少收了什么、为什么。
+# 桶只有五类：marketplace 缓存 / 安装暂存 / 备份 / 快照 / 厂商同源副本。
+EXCLUDED_DIRS: Dict[str, str] = {
+    "/home/gztxt/.codex/.tmp/plugins": "marketplace 缓存：按需安装的来源，不是自动加载发现点（504 项）",
+    "/home/gztxt/.workbuddy/connectors-marketplace": "marketplace 缓存（716 项）",
+    "/home/gztxt/.codebuddy/plugins/marketplaces": "marketplace 缓存（171 项）",
+    "/home/gztxt/.grok/marketplace-cache": "marketplace 缓存（72 项）",
+    "/home/gztxt/.claude/plugins/marketplaces": "marketplace 缓存（41 项）",
+    "/home/gztxt/.qoderwake/.tmp": "安装暂存（install.* 0700），装完即弃的中间态",
+    "/home/gztxt/.qoderwake/runtime-resources": "厂商同源副本：与 resources/builtin-skills 同为 11 条但 realpath 不同，软链去重压不下去，收进来等于把 11 条报成 22 条",
+    "/home/gztxt/.qoderwake/runtime-generations": "厂商同源副本：generation 槽 A/B 各 11 条，与 resources/builtin-skills 同源",
+    "/home/gztxt/.qoder-alpha/extensions/*/*/_/skills": "扩展内 mcp/sdk 隔离副本（6 份 × 2 条），与同扩展的 skills/ 同源副本，但 realpath 不同",
+    "/home/gztxt/.hermes/hermes-agent/optional-skills": "上游可选仓（150 项），默认不自动加载",
+    "/home/gztxt/.claude/projects": "会话工程目录，非技能（946 项）",
+    "/fs/1000/ftp/技术文档/snapshots": "快照（664 项）",
+    "/fs/1000/ftp/技术文档/全量备份": "备份（247 项）",
+    "/home/gztxt/Hermes-backup": "备份（125 项）",
+    "/home/gztxt/.pi-upgrade-backup": "升级备份（2 项）",
+}
+
+
+def expand_roots(pattern: str) -> List[str]:
+    """把可能含 `*` 的路径展开成真实存在的根列表。**非 glob 原样返回**（含不存在的路径）。
+
+    为什么需要：厂商把技能目录放在**内容哈希**或**运行期槽位**里（qoder-alpha 的
+    extensions/42d23c0fa380、qoderwake 的 runtime-generations/A|B），写死路径必然过期。
+    一个都不命中时退回原 pattern，让 state 如实报 missing，而不是整路凭空消失。
+    """
+    if not pattern or "*" not in pattern:
+        return [pattern]
+    return sorted(glob.glob(pattern)) or [pattern]
+
+
+def route_roots(route: str) -> List[str]:
+    """一路对应的真实根（已展开 glob）。白名单与扫描共用它，避免两处口径。"""
+    pat = SKILL_DIRS.get(route, "")
+    roots = [r for r in expand_roots(pat) if r and os.path.isdir(r)]
+    return roots or ([pat] if pat else [""])
 
 
 def _load_dirs() -> Dict[str, str]:
@@ -169,7 +229,8 @@ def _read_text(path: str) -> Tuple[str, str]:
 
 def _allowed_roots() -> List[str]:
     """白名单根的 realpath。**每次调用现算**（与 disk_routes() 同理：猴补 SKILL_DIRS 后必须跟着变）。"""
-    return [os.path.realpath(d) for d in SKILL_DIRS.values() if d and os.path.isdir(d)]
+    return [os.path.realpath(r) for route in SKILL_DIRS for r in route_roots(route)
+            if r and os.path.isdir(r)]
 
 
 def _inside(rp: str, allowed: List[str]) -> bool:
@@ -179,17 +240,68 @@ def _inside(rp: str, allowed: List[str]) -> bool:
     return any(rp == a or rp.startswith(a + os.sep) for a in allowed)
 
 
-def _scan_one(route: str, root: str) -> Dict[str, Any]:
-    """扫一个技能目录。同步实现（放子线程跑）。任何失败都变成结构化 error，不抛。"""
+def skill_state(scan: Dict[str, Any], n_entries: int) -> str:
+    """一路的**四态**。ok=有条目 / empty=目录在但 0 条 / missing=目录不在 / error=配错或读不动。
+
+    为什么要四态而不是 ok 布尔：`available=False` 把「这家没装」和「我们配错了」混成一句话，
+    面板上只能显示成灰色，前者无罪后者是 bug。D1 把它们拆开，`opencode` 那种「目录在、内容空」
+    才不会被误报成故障（PT-20261002-11 记 1 项、本轮 0 条就是这么混的）。
+    """
+    if scan.get("ok"):
+        return "empty" if not n_entries else "ok"
+    return {"no_dir": "missing", "no_path": "error"}.get(scan.get("reason"), "error")
+
+
+def _scan_many(route: str, roots: List[str]) -> Dict[str, Any]:
+    """一路多根（glob 展开）。**部分根失败不算整路失败**——只要有一根读得出条目就报 ok，
+    读不出的根逐条进 error。与 `_scan_one` 里「部分文件读不了 ≠ 整路失败」同一条纪律。"""
+    t0 = time.perf_counter()
+    items: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    errs: List[str] = []
+    ok_count = 0
+    for one in roots:
+        r = _scan_one(route, one)
+        items.extend(r.get("items") or [])
+        skipped.extend(r.get("skipped_outside") or [])
+        if r.get("ok"):
+            ok_count += 1
+            if r.get("error"):
+                errs.append(str(r["error"]))
+        else:
+            errs.append("%s: %s" % (one, r.get("error")))
+    if not roots:
+        # 空根列表 = 这一路一个根都没有，但**这不等于扫描失败**：
+        # ok=True / 0 条 / reason=None，交给 skill_state 报成 empty。
+        return {"ok": True, "items": [], "skipped_outside": [], "reason": None,
+                "ms": round((time.perf_counter() - t0) * 1000, 1), "error": None}
+    if not ok_count:
+        reason = "no_dir" if all(e.startswith("/") for e in errs) else "read_error"
+        return {"ok": False, "items": items, "skipped_outside": skipped, "reason": reason,
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": tdai_client.scrub("; ".join(errs))[:400]}
+    return {"ok": True, "items": items, "skipped_outside": skipped, "reason": None,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+            "error": tdai_client.scrub("; ".join(errs))[:400] or None}
+
+
+def _scan_one(route: str, root) -> Dict[str, Any]:
+    """扫一个技能目录（`root` 可为 str 或 list[str] —— glob 路会展开成多根）。同步。任何失败都变成结构化 error，不抛。"""
+    if isinstance(root, (list, tuple)):
+        return _scan_many(route, list(root))
     t0 = time.perf_counter()
 
     def ms() -> float:
         return round((time.perf_counter() - t0) * 1000, 1)
 
+    # reason 三态（D1）：no_path=没配目录 / no_dir=目录不在或读不了 / read_error=目录在但走不下去。
+    # 三者都报 ok=False，但**必须有机器可判的 reason**——否则 /status 只能靠解析中文错误串，
+    # 那是把「事实」写进「文案」，改一次文案就改一次事实。
     if not root:
-        return {"ok": False, "items": [], "ms": ms(), "error": "该路未配置目录（SKILL_DIRS 里是空串）"}
+        return {"ok": False, "items": [], "ms": ms(), "reason": "no_path",
+                "error": "该路未配置目录（SKILL_DIRS 里是空串）"}
     if not os.path.isdir(root):
-        return {"ok": False, "items": [], "ms": ms(),
+        return {"ok": False, "items": [], "ms": ms(), "reason": "no_dir",
                 "error": tdai_client.scrub(f"目录不存在或不可读：{root}")[:200]}
 
     items: List[Dict[str, Any]] = []
@@ -237,23 +349,25 @@ def _scan_one(route: str, root: str) -> Dict[str, Any]:
             })
     except OSError as e:                          # 整个根走不下去（权限/断链）
         return {"ok": False, "items": items, "ms": ms(), "skipped_outside": skipped,
+                "reason": "read_error",
                 "error": tdai_client.scrub(f"{type(e).__name__}: {e}")[:200]}
 
     err = None
     if errs:
         # 部分文件读不了 ≠ 整路失败：路仍报 ok，但把读不了的文件逐条说出来（不许静默少条目）
         err = tdai_client.scrub("部分文件读取失败：" + "; ".join(errs))[:400]
-    return {"ok": True, "items": items, "ms": ms(), "error": err, "skipped_outside": skipped}
+    return {"ok": True, "items": items, "ms": ms(), "error": err, "reason": None,
+            "skipped_outside": skipped}
 
 
-async def _scan_async(route: str, root: str) -> Dict[str, Any]:
+async def _scan_async(route: str, root) -> Dict[str, Any]:
     """磁盘 IO 放子线程 + 超时闸门。超时按"该路本次弃用"表态，不拖垮整个请求。"""
     t0 = time.perf_counter()
     try:
         return await asyncio.wait_for(asyncio.to_thread(_scan_one, route, root),
                                       timeout=SCAN_TIMEOUT_S)
     except asyncio.TimeoutError:
-        return {"ok": False, "items": [],
+        return {"ok": False, "items": [], "reason": "read_error",
                 "ms": round((time.perf_counter() - t0) * 1000, 1),
                 "error": f"扫描超时 {SCAN_TIMEOUT_S}s（该路本次弃用）"}
     except Exception as e:  # noqa: BLE001 — 兜底也要表态，绝不静默
@@ -355,7 +469,7 @@ async def skill_list(request: Request,
     for r in disk_routes():
         if r in want:
             names.append(r)
-            tasks.append(_scan_async(r, SKILL_DIRS.get(r, "")))
+            tasks.append(_scan_async(r, route_roots(r)))
     if TDAI_ROUTE in want:
         names.append(TDAI_ROUTE)
         tasks.append(_tdai_async())
@@ -506,7 +620,7 @@ async def skill_status(force: bool = Query(default=False)):
 
     t0 = time.monotonic()
     names = list(disk_routes()) + [TDAI_ROUTE]
-    tasks = [_scan_async(r, SKILL_DIRS.get(r, "")) for r in disk_routes()] + [_tdai_async()]
+    tasks = [_scan_async(r, route_roots(r)) for r in disk_routes()] + [_tdai_async()]
     res = await asyncio.gather(*tasks, return_exceptions=True)
 
     disk_out: Dict[str, Any] = {}
@@ -523,7 +637,9 @@ async def skill_status(force: bool = Query(default=False)):
         all_items.extend(items)
         disk_out[name] = {
             "available": bool(r.get("ok")),
+            "state": skill_state(r, len(items)),
             "dir": tdai_client.scrub(SKILL_DIRS.get(name, "")),
+            "roots": [tdai_client.scrub(r) for r in route_roots(name)],
             "entries": len(items),
             "fm_missing": sorted(i["name"] for i in items if not i.get("fm")),
             "via_symlink": sorted(i["name"] for i in items if i.get("via_symlink")),
@@ -538,6 +654,7 @@ async def skill_status(force: bool = Query(default=False)):
     data = {
         "disk": disk_out,
         "dedup": {"walked": len(all_items), "unique": len(unique), "aliases": aliases},
+        "excluded": dict(EXCLUDED_DIRS),
         "tdai": {
             "available": bool(tdai_raw.get("ok")),
             "rows": len(tdai_items),
@@ -664,7 +781,7 @@ async def skill_budget(max_tokens: int = Query(default=800, ge=50, le=8000)):
     - name-only 也装不下则截断，返回 truncated 与 total——如实说「被裁了」。
     """
     t0 = time.monotonic()
-    tasks = [_scan_async(r, SKILL_DIRS.get(r, "")) for r in disk_routes()]
+    tasks = [_scan_async(r, route_roots(r)) for r in disk_routes()]
     scans = await asyncio.gather(*tasks)
     items: List[Dict[str, Any]] = []
     for s in scans:
