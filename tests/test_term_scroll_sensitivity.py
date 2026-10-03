@@ -92,22 +92,34 @@ class TestScrollSensitivityPinned(unittest.TestCase):
                          "?v=%s 与 hub.js 实际内容 %s 不符 —— 跑 scripts/build_hubjs.sh"
                          % (m.group(1), tok))
 
-    def test_version_comment_records_root_cause(self):
-        # 版本钉随版本号走（10-03 bump 0.13.65→0.13.66 时同步）：它是一道**随行闸门**，
-        # 逼迫 bump 的人回头看根因注释还在不在，而不是让上一版的注释默默过期。
-        # 本闸门只跟当前版本号走，不承担跨版本归档职责；旧批根因注释仍在 main.py 里。
-        self.assertIn('VERSION = "0.13.66"', MAIN_PY)
-        seg = MAIN_PY[MAIN_PY.index('VERSION = "0.13.66"'):][:2400]
-        # 0.13.66 的根因关键字：可见性缺口来源 + 两个把结论带偏的取证坑 + 四态表态。
-        for kw in ("PT-20261002-11", "find 不带 -L", "同源副本", "四态"):
-            self.assertIn(kw, seg, "版本注释里丢了 %s —— 半年后没人知道为什么当时只扫 7 路" % kw)
+    #: 每个已 bump 的版本号 -> 该版根因注释里必须在场的关键字。
+    #: 新增一行就是新增一道“半年后没人知道当时为何这么改”的闸门；删除一行等于销账。
+    VERSION_ROOT_CAUSES = {
+        "0.13.65": ("fed.sources=0", "skipped_budget", "全指标绿而功能层已死", "scrollSensitivity"),
+        "0.13.66": ("PT-20261002-11", "find 不带 -L", "同源副本", "四态"),
+        "0.13.67": ("子串", "name命中恒为空", "不改写排序", "PT-20261002-12"),
+    }
+    CURRENT_VERSION = "0.13.67"
 
-    def test_previous_version_root_cause_comment_survives(self):
-        """上一版（0.13.65）的根因关键字必须**仍在** main.py 里——版本钉只跟当前版走，
-        但注释不许随 bump 蒸发，否则注入通道那次「全指标绿而功能层已死」的教训就没了。"""
-        seg = MAIN_PY
-        for kw in ("fed.sources=0", "skipped_budget", "全指标绿而功能层已死", "scrollSensitivity"):
-            self.assertIn(kw, seg, "0.13.65 及更早批的根因关键字 %s 已从 main.py 消失" % kw)
+    def test_version_comment_records_root_cause(self):
+        # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
+        # 而不是让上一版的注释默默过期。本闸门只跟当前版本号走，不承担跨版本归档职责。
+        self.assertIn('VERSION = "%s"' % self.CURRENT_VERSION, MAIN_PY)
+        seg = MAIN_PY[MAIN_PY.index('VERSION = "%s"' % self.CURRENT_VERSION):][:2400]
+        for kw in self.VERSION_ROOT_CAUSES[self.CURRENT_VERSION]:
+            self.assertIn(kw, seg,
+                          "%s 的版本注释里丢了 %s —— 半年后没人知道当时为何这么改"
+                          % (self.CURRENT_VERSION, kw))
+
+    def test_earlier_version_root_causes_survive(self):
+        """更早批次的根因关键字必须**仍在** main.py 里——版本钉只跟当前版走，
+        但注释不许随 bump 蒸发，否则 0.13.65「全指标绿而功能层已死」那条教训就没了。"""
+        for ver, kws in self.VERSION_ROOT_CAUSES.items():
+            if ver == self.CURRENT_VERSION:
+                continue
+            for kw in kws:
+                self.assertIn(kw, MAIN_PY,
+                              "%s 的根因关键字 %s 已从 main.py 消失" % (ver, kw))
 
 
 if __name__ == "__main__":

@@ -77,7 +77,25 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.66"   # 技能中心统一列表（D1 补齐 20 路发现点 + 排除清单 + state 四态）：
+VERSION = "0.13.67"   # 技能相关性检索（D2：GET /api/skill/relevant）：
+                      #   病根：/api/skill/list?q= 只是大小写不敏感**子串**过滤，
+                      #     「说一段任务描述 → 找回对的技能」机制上不存在；而 hub-facade.ts
+                      #     的 input→context 通道只能拿到记忆（skill.read=0），没有技能候选可注入。
+                      #   src/skill_relevance.py  零新依赖 BM25F：ASCII 按词 + 连字符名额外拆子词，
+                      #     CJK 只出相邻二字（单字查询走长度为 1 的回落）；W_NAME 2.5 / W_DESC 1.0。
+                      #   src/jev_client.py  jev 异步精排：8s 超时、600s 缓存、连续 2 次失败熔断，
+                      #     **不进必成功关键路径**。依据实测：choice 中文置信常 1.00 而 score
+                      #     主观刻度掉到 ~0.3 ⇒ jev 只逐行回传分数与置信度，**不改写排序**，
+                      #     排序权威仍是 BM25。
+                      #   闸门 tests/test_skill_relevance.py（L0 37 例，含端点级 tmp 根 TestClient）。
+                      #   **两处真实盘取证修正**（分词器的错不抛异常，只安静地少召回）：
+                      #     ① 同时出单字+二字时高频字（能/不/登）各带 IDF 累加成噪声，把
+                      #       arkcli-auth/deploy 抬进“登录态加载不出但能新建”的前四名；
+                      #     ② _LATIN_RE 把 '-' 当词内字符 ⇒ agent-dispatch 整名不可分，
+                      #       查询里写 dispatch 则**全部 365 条技能 name命中恒为空**。
+                      #   旁证：codex/skill-creator 在真实结果里各出现两次 = PT-20261002-12
+                      #     记的 realpath 去重缺陷，正在输出里显形。**生产重启未执行**（沿用禁重启边界）。
+                      # 上一版 v0.13.66 技能中心统一列表（D1 补齐 20 路发现点 + 排除清单 + state 四态）：
                       #   病根：技能门面只扫 7 路 ⇒ 家长 10 家里 6 家约 300 条技能不在册，
                       #     「按任务自动发现技能」从机制上就漏（PT-20261002-11 的 R1 可见性缺口）。
                       #   D1  src/skill.py：_DEFAULT_DIRS 7→20 路；EXCLUDED_DIRS 15 条**带理由**

@@ -38,9 +38,11 @@
 import asyncio
 import glob
 import json
+import jev_client
 import logging
 import os
 import re
+import skill_relevance
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -763,6 +765,103 @@ async def skill_remove(name: str = Query(min_length=1, max_length=100),
     db.log_asset_event("skill", name, "unbind", writeauth.actor_of(request), {
         "route": route, "realpath": os.path.realpath(target)})
     return {"status": "removed", "name": name, "route": route}
+
+
+# ── 相关性检索（D2）──────────────────────────────────────────────────
+#: jev 精排在请求路径上的**上限秒数**。BM25 已经能出结果，jev 只是增强，
+#: 而本端点会被注入通道调用（那条链路有自己的预算），所以宁可超时降级也不能拖住它。
+JEV_RERANK_TIMEOUT_S = 5.0
+
+
+def _rel_row(x: Dict[str, Any]) -> Dict[str, Any]:
+    """把 `skill_relevance` 的打分结果整成对外行。`matched`/`matched_in` 是给
+    「相关性实验室」看命中依据用的——只给分数就答不出「为什么这条排第一」。"""
+    it = x["item"]
+    return {"name": it.get("name"), "description": it.get("description"),
+            "route": it.get("route"), "routes": it.get("routes"),
+            "bm25": x["score"], "matched": x["matched"], "matched_in": x["matched_in"],
+            "jev": None, "tokens_est": 0}
+
+
+@router.get("/relevant")
+@runlog.track("skill.relevant")
+async def skill_relevant(request: Request,
+                         q: str = Query(min_length=1, max_length=2000),
+                         n: int = Query(default=5, ge=1, le=20),
+                         max_tokens: int = Query(default=0, ge=0, le=8000),
+                         rerank: bool = Query(default=True)):
+    """按一段自然语言任务描述，从**真实在用**的技能里排最相关的 n 条。
+
+    **返回值刻意把 `bm25` 与 `jev` 分开报，不合成一个数字。**
+    - `bm25.items[]` 永远有值：同步内存打分，不依赖任何外部服务、不联网；
+    - `jev` 为 null = 没调；为 `{"ok": false, ...}` = 调了但用不了，`why` 说明原因。
+
+    **jev 只做增强，不改写排序。** 依据 `typesafe-ai` 技能的实测：choice 在中文上
+    置信常 1.00，而 score 用于主观刻度时置信会掉到 0.3 左右。「技能对某个任务的相关
+    程度」正是主观刻度，用一个 0.3 置信的分数去改写排序不成立。所以本端点把 jev 的
+    分数与置信度逐行回传，**排序权威仍是 BM25**，等拿到可比数据再决定是否换权。
+    """
+    t0 = time.monotonic()
+    routes = disk_routes()
+    scans = await asyncio.gather(*[_scan_async(r, route_roots(r)) for r in routes])
+    items: List[Dict[str, Any]] = []
+    backends: List[Dict[str, Any]] = []
+    for r, s in zip(routes, scans):
+        items.extend(s.get("items") or [])
+        backends.append(_backend(r, s))
+    unique, _aliases = _dedup(items)
+
+    res = skill_relevance.rank(q, unique, n=n)
+    rows = [_rel_row(x) for x in res["items"]]
+    for r in rows:
+        r["tokens_est"] = int(len("%s: %s" % (r["name"], r["description"] or "")) / _CHARS_PER_TOKEN) + 1
+
+    jev_block: Optional[Dict[str, Any]] = None
+    if rerank and rows:
+        try:
+            async with asyncio.timeout(JEV_RERANK_TIMEOUT_S):
+                scored = await jev_client.score_candidates(q, [x["item"] for x in res["items"]])
+            for r in rows:
+                hit = scored.get(r["name"] or "")
+                if hit:
+                    r["jev"] = hit
+            jev_block = dict(jev_client.status(), ok=True)
+        except jev_client.JevUnavailable as e:
+            jev_block = dict(jev_client.status(), ok=False, why=str(e))
+        except asyncio.TimeoutError:
+            jev_block = dict(jev_client.status(), ok=False,
+                             why="超过 %.1fs 上限，已放弃精排（BM25 结果仍完整）" % JEV_RERANK_TIMEOUT_S)
+    elif not rerank:
+        jev_block = dict(jev_client.status(), ok=False, why="调用方显式关闭精排（rerank=false）")
+
+    truncated = 0
+    if max_tokens and rows:
+        used, keep = 0, []
+        for r in rows:
+            if used + r["tokens_est"] <= max_tokens:
+                keep.append(r)
+                used += r["tokens_est"]
+            else:
+                truncated += 1
+        rows, total_est = keep, used
+    else:
+        total_est = sum(r["tokens_est"] for r in rows)
+
+    return {
+        "q": q, "n": n, "total": len(unique),
+        "bm25": {"items": rows,
+                 "query_tokens": res["query_tokens"],
+                 "short_query": res["short_query"],
+                 "total_hits": res.get("total_hits"),
+                 "weights": res.get("weights"),
+                 "why": res.get("why")},
+        "jev": jev_block,
+        "backends": backends,
+        "max_tokens": max_tokens or None,
+        "tokens_est": total_est,
+        "truncated": truncated,
+        "took_ms": round((time.monotonic() - t0) * 1000, 1),
+    }
 
 
 #: 预算化清单的 token 估算：CJK 与英文混排取字符/2.5 的粗估。这个数只影响装填顺序，
