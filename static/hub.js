@@ -3024,6 +3024,82 @@ async function loadSkills() {
   loadSkillZombies();
 }
 
+/* ── 技能中心搜索的模糊匹配（2026-10-03）─────────────────────────────────
+ *
+ * 【为什么加】原实现是纯 `includes()` 子串匹配，于是**一个字符的手误就零命中**：
+ * 真名 `crawl4ai`（crawl4ai/skill/crawl4ai/SKILL.md 的 frontmatter）搜 `crawl4ai`
+ * （数字 1 替字母 l）得 0 条——而这条技能明明就在盘上、已被扫描收进来。
+ * 用户原话：「即便修好白名单，crawl4ai（数字 1）这种手误仍搜不到；要加模糊匹配」。
+ *
+ * 【为什么不引库】与后端 `skill_relevance.py` 同一判断：语料几百条、纯前端、
+ * 引 rank_bm25/jieba 是拿维护成本换零收益。这里只要「容忍手误 + 可排序」，
+ * 一个编辑距离函数足够。
+ *
+ * 【口径：先精确后模糊，且不静默】分两层——
+ *   · 精确子串命中 → 分数 1000（**压倒一切**，保证精确结果不被近似挤下去）；
+ *   · 否则算编辑距离，容忍度随长度给（≤4 字不容忍，≥5 字容忍 1，≥8 字容忍 2）。
+ * 近似命中的行会标 `≈近似` 徽标：面板必须能回答「为什么这条出现在这里」，
+ * 只给一个排序就答不上（同 `skill_relevance.py` 的 `matched` 可解释性纪律）。
+ */
+
+/* Levenshtein 编辑距离，带上限早退（超限即返回 limit+1，不做完整 DP）。
+ * 纯 JS、O(len*m)；skill 条数 × 查询长度的规模下开销可忽略。 */
+function _levenshtein(a, b, limit) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > limit) return limit + 1;
+  const prev = new Array(b.length + 1);
+  const cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    let best = cur[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > limit) return limit + 1;          // 行内已超限 ⇒ 整体必然超限
+    for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
+  }
+  return prev[b.length];
+}
+
+/* 查询长度 → 容忍的编辑距离。短词不容忍（`cc` 容忍 1 会召回一片）。 */
+function _fuzzyTolerance(q) {
+  if (q.length >= 8) return 2;
+  if (q.length >= 5) return 1;
+  return 0;
+}
+
+/* 单条技能对查询的匹配分：0 = 不匹配，>0 = 匹配（越大越靠前）。
+ * 精确子串压倒近似；近似按「距离越小分越高」，同距离时字段权重 name > desc。 */
+function skillMatchScore(item, qRaw) {
+  const q = String(qRaw || '').trim().toLowerCase();
+  if (!q) return 1;                               // 空查询：全部匹配（保持旧行为）
+  const name = String(item.name || '').toLowerCase();
+  const desc = String(item.description || '').toLowerCase();
+  if (name.includes(q) || desc.includes(q)) return 1000;
+  const tol = _fuzzyTolerance(q);
+  if (!tol) return 0;
+  let best = 0;
+  const consider = (fieldText, weight) => {
+    if (!fieldText) return;
+    // 按分隔符切段：`crawl4ai` 整体比，也比它与相邻词；避免长描述整串参与 DP。
+    const parts = fieldText.split(/[\s,，、:：()（）\-_/.]+/).filter(Boolean);
+    for (const p of parts) {
+      if (Math.abs(p.length - q.length) > tol) continue;
+      const d = _levenshtein(q, p, tol);
+      if (d <= tol) best = Math.max(best, (tol + 1 - d) * 10 * weight);
+    }
+    // 整段（无分隔符的长串，如连字符名）也参与一次
+    const d2 = _levenshtein(q, fieldText, tol);
+    if (d2 <= tol) best = Math.max(best, (tol + 1 - d2) * 10 * weight);
+  };
+  consider(name, 3);
+  consider(desc, 1);
+  return best;
+}
+
 function toggleSkillZombieOnly() {
   SKILL_ZOMBYE_ONLY = !SKILL_ZOMBYE_ONLY;
   $('skillZombieOnly').classList.toggle('on', SKILL_ZOMBYE_ONLY);
@@ -3033,9 +3109,14 @@ function toggleSkillZombieOnly() {
 function renderSkillList() {
   const q = ($('skillQ').value || '').toLowerCase();
   const route = $('skillRoute').value;
-  const rows = SKILLS.filter(s =>
-    (!q || String(s.name || '').toLowerCase().includes(q) || String(s.description || '').toLowerCase().includes(q)) &&
-    (!route || (s.routes || []).includes(route) || s.route === route));
+  // 模糊打分 + 排序：精确命中（1000 分）在前，近似命中在后且按接近度排。
+  const scored = SKILLS
+    .filter(s => (!route || (s.routes || []).includes(route) || s.route === route))
+    .map(s => ({ s, score: skillMatchScore(s, q) }))
+    .filter(x => !q || x.score > 0)
+    .sort((a, b) => (b.score - a.score) || String(a.s.name || '').localeCompare(String(b.s.name || '')));
+  const rows = scored.map(x => x.s);
+  const nearCount = q ? scored.filter(x => x.score < 1000).length : 0;
   // 「只看零调用」是**后端给的名单**，不是前端自己数出来的：零调用要看的是
   // 注入/读取两个通道的记账，而不是「页面上没点过查看」。
   const zrows = SKILL_ZOMBYE_ONLY ? rows.filter(s => SKILL_ZOMBIES[s.name]) : rows;
@@ -3044,20 +3125,30 @@ function renderSkillList() {
     el.innerHTML = '<div class="hint">零调用榜为空（可能记账尚未建立）——先用相关性实验室跑一次检索。</div>';
     return;
   }
-  el.innerHTML = zrows.map(s => {
+  const nearHint = (q && nearCount)
+    ? '<div class="hint">其中 <b>' + nearCount + '</b> 条为<b>近似匹配</b>（容忍手误，标 ≈近似）——无精确命中项。</div>'
+    : '';
+  el.innerHTML = nearHint + zrows.map(s => {
     const rt = (s.routes && s.routes.length) ? s.routes[0] : s.route;   // 首路作为查看默认 route
     const z = SKILL_ZOMBIES[s.name];
     const used = z
       ? '<span class="badge" title="建议：' + escapeHtml(String(z.suggested_action || '')) + '（只是建议，不自动删）">' + escapeHtml(String(z.days_idle)) + ' 天零调用</span>'
       : '';
+    // 近似徽标：这条是靠编辑距离进来的，不是精确子串。**必须标出来**，
+    // 否则用户看到一条「搜不完全对」的记录却不知道为什么。
+    const sc = skillMatchScore(s, q);
+    const near = (q && sc > 0 && sc < 1000)
+      ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
+      : '';
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
     '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
     '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) +
     ' · ' + (z ? '末次调用：无（从未调用）' : '末次调用：记账未覆盖此技能') + '</span></p>' +
-    '<span style="align-self:flex-start;display:flex;gap:4px">' + used +
+    '<span style="align-self:flex-start;display:flex;gap:4px">' + used + near +
     '<button class="btn sm" title="读全文（脱敏）" onclick="skillRead(' + jsStr(s.name) + ',' + jsStr(rt) + ')">查看</button></span></div>';
   }).join('') ||
-    '<div class="hint">没有匹配的技能（' + zrows.length + ' / ' + SKILLS.length + ' 总数）</div>';
+    '<div class="hint">没有匹配的技能（' + zrows.length + ' / ' + SKILLS.length + ' 总数' +
+    (q ? '；已启用模糊匹配仍无结果 ⇒ 换关键词或查发现点自检' : '') + '）</div>';
 }
 
 /* 零调用榜：/api/skill/zombies。**confidence 封顶 medium**——只接了 hub 通道

@@ -114,6 +114,31 @@ EXCLUDED_DIRS: Dict[str, str] = {
 }
 
 
+# ── v0.13.71：**归档根**。发现点（`_DEFAULT_DIRS`）是「各 CLI 自己会读哪」，
+# 归档根是「我们自研/已评估过的技能，其权威副本落在哪」——两者是**不同的问题**，
+# 所以必须是两张表而不是一张：发现点决定「从哪读」，归档根只决定「软链的 realpath 落在哪算合法」。
+#
+# 为什么必须放宽（2026-10-03 实测，PT-20261002-13 的「62 条」缺口由此定案）：
+# `_inside()` 按 realpath 判，而 09-25 装的三仓（hallmark / mattpocock-skills / Agent-Reach）
+# 加既有的 crawl4ai，其 `SKILL.md` 都在 `技术文档/<仓>/…` 下；从各发现点软链过去时
+# realpath 落在 `_DEFAULT_DIRS` 的任何一根之外 ⇒ 被当成「软链越界」拒读。
+# 实测**现网真被拒 62 条**（路由级）/ 28 个不同 realpath，与 PT-13 记的数字逐条对上。
+#
+# **口径依据是归档军规**：「源码唯一权威副本必须落在 `/fs/1000/ftp/技术文档/<项目名>/`」。
+# 承认 `技术文档/` 为权威归档根 = 这些仓的副本位置本身就是合法的，不该被自己的防越界闸门拒掉。
+#
+# 【为什么不直接把 `技术文档/` 整个当白名单根】那会把 `snapshots/`（664 项）、
+# `全量备份/`（247 项）、`.orca-audit/`、`Hermes/`（88 项）一并放进来，
+# 而这四类在 `EXCLUDED_DIRS` 里**都是已定的排除结论** ⇒ 放宽必须**逐仓枚举**，
+# 不能用「整个归档根」一刀切，否则等于用一条 FAIL 换掉另一条已定的结论。
+ARCHIVE_ROOTS: Dict[str, str] = {
+    "/fs/1000/ftp/技术文档/mattpocock-skills": "25 条 · 09-25 用户点名评估并安装的技能仓",
+    "/fs/1000/ftp/技术文档/crawl4ai": "1 条 · 自研抓页技能（c4ai），早于本表已装，软链长期被拒",
+    "/fs/1000/ftp/技术文档/hallmark": "1 条 · 09-25 用户点名评估并安装的技能仓",
+    "/fs/1000/ftp/技术文档/Agent-Reach": "1 条 · 09-25 用户点名评估并安装的技能仓",
+}
+
+
 def expand_roots(pattern: str) -> List[str]:
     """把可能含 `*` 的路径展开成真实存在的根列表。**非 glob 原样返回**（含不存在的路径）。
 
@@ -150,7 +175,35 @@ def _load_dirs() -> Dict[str, str]:
     return d
 
 
+def _load_archive_roots() -> Dict[str, str]:
+    """归档根，可用 `ARCHIVE_ROOTS_JSON` 覆盖（形状同 `SKILL_DIRS_JSON`）。
+
+    【为什么要注入口】L0 hermetic 层的定义是「干净机器/CI 上可跑、无宿主依赖」。
+    `ARCHIVE_ROOTS` 里的路径是**本机绝对路径**，若写死不可覆盖，则：
+    ① 现有 L0 用例 `test_allowed_roots_follows_monkeypatched_dirs_and_drops_missing`
+    猴补 `SKILL_DIRS` 后断言白名单**恰好**等于那个临时目录，而本机存在的 4 个归档根
+    会一并混进来 ⇒ 该用例在开发机必红、在干净 runner 上必绿 = **同码两态**；
+    ② 更坏的是反向：换个跑测环境，归档根在不在会改变白名单内容，测试跟着漂。
+    给了注入口，L0 既能钉成空集保持与宿主无关，生产又不受影响。
+    """
+    raw = os.getenv("ARCHIVE_ROOTS_JSON")
+    if not raw:
+        return dict(ARCHIVE_ROOTS)
+    try:
+        d = json.loads(raw)
+    except ValueError as e:
+        log.warning("ARCHIVE_ROOTS_JSON 不是合法 JSON（%s），已忽略，用内置归档根", e)
+        return dict(ARCHIVE_ROOTS)
+    if not (isinstance(d, dict) and d
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in d.items())):
+        log.warning("ARCHIVE_ROOTS_JSON 形状不对（要 {path: 理由} 且全字符串），已忽略")
+        return dict(ARCHIVE_ROOTS)
+    return d
+
+
 SKILL_DIRS: Dict[str, str] = _load_dirs()
+#: 生效中的归档根（可能被 `ARCHIVE_ROOTS_JSON` 覆盖；**现算**，不固化）
+ARCHIVE_ROOTS_ACTIVE: Dict[str, str] = _load_archive_roots()
 
 TDAI_ROUTE = "tdai"
 SCAN_TIMEOUT_S = float(os.getenv("SKILL_SCAN_TIMEOUT", "2.0"))     # 38 个文件实测毫秒级，2s 已极宽
@@ -231,9 +284,18 @@ def _read_text(path: str) -> Tuple[str, str]:
 
 
 def _allowed_roots() -> List[str]:
-    """白名单根的 realpath。**每次调用现算**（与 disk_routes() 同理：猴补 SKILL_DIRS 后必须跟着变）。"""
-    return [os.path.realpath(r) for route in SKILL_DIRS for r in route_roots(route)
-            if r and os.path.isdir(r)]
+    """白名单根的 realpath。**每次调用现算**（与 disk_routes() 同理：猴补 SKILL_DIRS 后必须跟着变）。
+
+    白名单 = 发现点根 ∪ 归档根。前者是「从哪读」，后者是「realpath 落哪算合法」
+    （见 `ARCHIVE_ROOTS` 注释：62 条拒读的来龙去脉）。
+
+    【放宽不等于撤防】这仍是防「软链 SKILL.md 指向 `/etc/passwd`」的唯一闸门，
+    所以任何不在发现点也不在归档根里的 realpath —— `/etc/passwd`、`~/.ssh`、快照与备份子树 ——
+    依然拒读。`tests/test_archive_roots.py` 的负向用例是这个判据的守卫。
+    """
+    roots = [r for route in SKILL_DIRS for r in route_roots(route) if r and os.path.isdir(r)]
+    roots += [r for r in ARCHIVE_ROOTS_ACTIVE if os.path.isdir(r)]
+    return [os.path.realpath(r) for r in roots]
 
 
 def _inside(rp: str, allowed: List[str]) -> bool:
