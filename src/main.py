@@ -77,7 +77,19 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.70"   # D5 Claude 注入 + D6 可见性铺设。本版四条根因（其余细节见台账）：
+VERSION = "0.13.71"   # 归档根白名单 + 技能中心模糊搜索（PT-13 的 62 条缺口清零）。两条：
+                      #   ① **归档根与发现点是两张表**：`_DEFAULT_DIRS` 答「各 CLI 自己会读哪」，
+                      #     而 09-25 装的 hallmark / mattpocock-skills / Agent-Reach 与既有的
+                      #     crawl4ai，其 `SKILL.md` 都在 `技术文档/<仓>/…`。`_inside()` 按 realpath
+                      #     判 ⇒ 这四仓的软链被自己的防越界闸门拒读，**实测 62 条**（与
+                      #     PT-20261002-13 记的数字逐条对上，现已清零）。口径依据归档军规
+                      #     「源码唯一权威副本必须落在 `技术文档/<项目名>/`」。
+                      #     刻意**不**把整个 `技术文档/` 当根：那会架空 `EXCLUDED_DIRS` 已定的
+                      #     snapshots(664) / 全量备份(247) / `.orca-audit` / `Hermes-backup` 四条结论。
+                      #   ② **搜索框的纯 includes() 让手误等于不存在**：搜 `crawl1ai`（数字 1）
+                      #     找不到 `crawl4ai`。改为「精确优先（恒 1000 分，压倒近似）+ 编辑距离
+                      #     近似」，近似行标 `≈近似` 徽标 —— 面板必须能回答「为什么这条出现在这里」。
+                      # ── 以下为 v0.13.70（D5/D6）时的根因，保留供追溯，非本版条目 ──
                       #   ① **退出码会让 Claude 拒绝输入**：UserPromptSubmit 同步阻塞在用户
                       #     输入之前，hook 返回非零就是把「技能没检索到」升级成「用户发不出
                       #     消息」⇒ 脚本吞掉一切异常并 exit 0。实测 6 种形态（正常 / 不可达 /
