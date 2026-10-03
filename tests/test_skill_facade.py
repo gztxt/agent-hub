@@ -326,7 +326,15 @@ class TestWhitelistGuard(_TmpSkillCase):
 
     def test_allowed_roots_follows_monkeypatched_dirs_and_drops_missing(self):
         skill.SKILL_DIRS = {"a": str(self.tmp), "ghost": "/nonexistent-l0-ghost"}
-        roots = skill._allowed_roots()
+        # 2026-10-03：归档根也得钉住。`ARCHIVE_ROOTS` 是本机绝对路径，
+        # 写死在模块里而用例不钉 ⇒ 开发机上多出 4 条白名单、干净 runner 上是 0 条，
+        # **同码两态**（本机必红 / CI 必绿）。与 SKILL_DIRS 同样猴补，与宿主解耦。
+        saved_archive = skill.ARCHIVE_ROOTS_ACTIVE
+        skill.ARCHIVE_ROOTS_ACTIVE = {}
+        try:
+            roots = skill._allowed_roots()
+        finally:
+            skill.ARCHIVE_ROOTS_ACTIVE = saved_archive
         self.assertEqual(roots, [os.path.realpath(str(self.tmp))])
 
     def test_guard_raises_400_for_outside_path(self):
