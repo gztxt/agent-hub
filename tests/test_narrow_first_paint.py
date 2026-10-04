@@ -111,6 +111,31 @@ class NarrowFirstPaintTest(unittest.TestCase):
         self.assertEqual(widths, [BREAKPOINT],
                          "管辖侧栏的 @media 断点有多个取值：%s（应只有 %s）" % (widths, BREAKPOINT))
 
+    def test_marker_must_be_removed_when_js_takes_over(self):
+        """**首帧标记必须在 JS 接管后被摘掉**——否则抽屉永远打不开。
+
+        2026-10-04 用户报「窄屏左侧菜单栏展开不正常」，实为 v0.13.75 引入的回归：
+        `<head>` 里的 `narrow-rail` 是首帧专用标记，但**打完就没再摘**。
+        `html.narrow-rail .sidebar:not(.collapsed)` 的**特异性高于**
+        `.sidebar:not(.collapsed)`，于是用户点「展开」时 JS 确实移除了 `collapsed`，
+        几何却仍被按回 52px 图标条 ⇒ 抽屉打不开，**而遮罩照样亮**
+        （实测点哪都点不到 = 整页锁死）。
+
+        这条与上面「标记必须在 head」是**一对**：只管打、不管摘，等于把首帧的补丁
+        变成了永久的补丁。真渲染判据在 `tests/probe_narrow_layout.py`
+        （点开后抽屉须 ≥200px/fixed 且遮罩亮）。
+        """
+        shard = (_REPO / "static" / "hub" / "06-manager-tasks.js").read_text(encoding="utf-8")
+        self.assertIn("classList.remove('narrow-rail')", shard,
+                      "没有摘除 narrow-rail 的代码 ⇒ 抽屉永远打不开（v0.13.75 回归）")
+        # 且必须在 initSidebar 里、且**在 resolve() 之后**（按源码下标比大小，不按字符距离——
+        # 第一版用「resolve() 后面 400 字内」的窗口，结果被自己那 12 行注释顶出去了，假红一次。
+        # 这是本轮第 4 次「闸门写得太紧 ⇒ 自己把自己判红」：断言应当表达**关系**，不是距离。
+        i_res = shard.index("resolve();")
+        i_rm = shard.index("classList.remove('narrow-rail')")
+        self.assertLess(i_res, i_rm,
+                        "摘除动作在 resolve() 之前 ⇒ 首帧标记可能在接管前就摘了，首帧又会闪")
+
     def test_sidebar_toggle_button_still_present(self):
         """首帧默认收起之后，用户必须**有办法展开** —— 收起按钮不能被顺手藏掉。"""
         self.assertIn('id="btnSideToggle"', HTML,
