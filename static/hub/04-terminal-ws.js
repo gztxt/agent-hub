@@ -618,6 +618,15 @@ async function loadSkills() {
   loadSkillZombies();
 }
 
+/* 技能中心的匹配字段表：**必须与 `src/skill.py` 的 `_Q_FIELDS` 同表同权重**。
+ * 加 `realpath`（权重 1）是为了能按来源仓名找技能——`path` 是软链那一侧，
+ * `mattpocock-skills` 这类仓名只出现在 `realpath` 里，不加就搜不到。
+ * 两边只要有一处漏改，`tests/test_skill_list_q_parity.py` 就会红（分数逐条比对）。
+ * 别在这里「顺手简化」成只有 name+desc。 */
+function skillFields(s) {
+  return [[s.name, 3], [s.description, 1], [s.path, 1], [s.route, 1], [s.realpath, 1]];
+}
+
 function toggleSkillZombieOnly() {
   SKILL_ZOMBYE_ONLY = !SKILL_ZOMBYE_ONLY;
   $('skillZombieOnly').classList.toggle('on', SKILL_ZOMBYE_ONLY);
@@ -630,7 +639,7 @@ function renderSkillList() {
   // 模糊打分 + 排序：精确命中（1000 分）在前，近似命中在后且按接近度排。
   const scored = SKILLS
     .filter(s => (!route || (s.routes || []).includes(route) || s.route === route))
-    .map(s => ({ s, score: fuzzyMatch([[s.name, 3], [s.description, 1]], q) }))
+    .map(s => ({ s, score: fuzzyMatch(skillFields(s), q) }))
     .filter(x => !q || x.score > 0)
     .sort((a, b) => (b.score - a.score) || String(a.s.name || '').localeCompare(String(b.s.name || '')));
   const rows = scored.map(x => x.s);
@@ -654,7 +663,7 @@ function renderSkillList() {
       : '';
     // 近似徽标：这条是靠编辑距离进来的，不是精确子串。**必须标出来**，
     // 否则用户看到一条「搜不完全对」的记录却不知道为什么。
-    const sc = fuzzyMatch([[s.name, 3], [s.description, 1]], q);
+    const sc = fuzzyMatch(skillFields(s), q);
     const near = (q && sc > 0 && sc < 1000)
       ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
       : '';
