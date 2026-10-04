@@ -496,18 +496,98 @@ def _dedup(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict
     return out, aliases
 
 
+# ── `q` 的模糊口径（v0.13.73）───────────────────────────────────────────────────
+# 【病根】`q` 此前是纯子串：搜 `crawl1ai`（数字 1）找不到 `crawl4ai`。
+# 而前端搜索框在 v0.13.72 已改模糊 ⇒ **同一台机器、同一份数据，两套口径**：
+# UI 里搜得到，MCP 门面（`hubmcp.py`）与资产面板三路检索（`07-asset-panel.js`）
+# 走 `/api/skill/list?q=` 却搜不到。而这两条链路才是 pi / Claude 注入时真正用的那条。
+#
+# 【为什么不引库 / 为什么不复用 skill_relevance】那套 BM25F 是给
+# `/api/skill/relevant`（相关性实验室、注入排序）用的，语义是「说一段任务描述→找回技能」，
+# 与 `q` 的「我大致记得这个名字」不是一件事。而模糊匹配的口径必须与**前端那套逐字一致**，
+# 否则两边又不同源。故此处手写一份与 `static/hub/01-core-boot.js` 的 `fuzzyMatch`
+# **逐条对齐**的实现（容忍度、字段权重、精确快路都相同），
+# 再由 `tests/test_skill_list_q_parity.py` 把两侧跑**同一批夹具**、逐条比对结果——
+# 两份实现可以各写各的，但**漂移会被闸门当场抓住**，而不是等用户在 UI 与 API 之间
+# 各搜出不同结果时才发现。
+#
+# 【为什么不把四字段拼成一个大串再算距离】拼接后编辑距离会把分隔符算进失配：
+# `crawl1ai` 对 `'crawl4ai some description'` 会被后面无关的词抵掉。
+# 必须**逐字段**算，再取最优（同前端 `renderPorts` 的注释）。
+
+#: 查询长度 → 容忍的编辑距离。与前端 `_fuzzyTolerance` 逐字一致。
+def _fuzzy_tolerance(q: str) -> int:
+    if len(q) >= 8:
+        return 2
+    if len(q) >= 5:
+        return 1
+    return 0
+
+
+def _levenshtein(a: str, b: str, limit: int) -> int:
+    """带上限早退的编辑距离；超限即返回 ``limit + 1``（不做完整 DP）。"""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        if min(cur) > limit:
+            return limit + 1
+        prev = cur
+    return prev[len(b)]
+
+
+_SEP_RE = re.compile(r"[\s,;:()（）\-_/.]+")
+
+
+def _fuzzy_field(field: str, q: str, tol: int) -> bool:
+    """单字段是否命中（精确子串先走快路，再逐段算编辑距离）。"""
+    if not field:
+        return False
+    if q in field:                      # 精确子串压倒一切近似（同前端）
+        return True
+    if not tol:
+        return False
+    for part in (p for p in _SEP_RE.split(field) if p):
+        if abs(len(part) - len(q)) <= tol and _levenshtein(q, part, tol) <= tol:
+            return True
+    return _levenshtein(q, field, tol) <= tol
+
+
+#: `q` 参与匹配的字段 → 权重。顺序与前端调用点一一对应。
+_Q_FIELDS = (("name", 3), ("description", 1), ("path", 1), ("route", 1))
+
+
 def _match_q(it: Dict[str, Any], ql: str) -> bool:
+    """`q` 的匹配判定：空 ⇒ 全匹配；否则先精确子串，再逐字段编辑距离。
+
+    【保持不变的部分】本函数**只决定「在不在结果里」，不改排序**——
+    排序仍由调用方的 `(route, name)` 稳定序决定。改排序会影响 MCP 门面的既有消费方，
+    属另一个决定，不在本轮悄悄带上。
+    """
     if not ql:
         return True
-    hay = " ".join(str(it.get(k) or "") for k in ("name", "description", "path", "route")).lower()
-    return ql in hay
+    q = str(ql).strip().lower()
+    if not q:
+        return True
+    tol = _fuzzy_tolerance(q)
+    for key, _w in _Q_FIELDS:
+        if _fuzzy_field(str(it.get(key) or "").lower(), q, tol):
+            return True
+    return False
 
 
 @router.get("/list")
 @runlog.track("skill.list")
 async def skill_list(request: Request,
                      q: str = Query(default="", max_length=200,
-                                   description="对 name/description/path/route 做不区分大小写子串过滤"),
+                                   description="对 name/description/path/route 做不区分大小写匹配；"
+                                               "先精确子串，容忍手误则按编辑距离（口径与前端搜索框一致）"),
                      limit: int = Query(default=200, ge=1, le=500),
                      routes: Optional[str] = Query(
                          default=None,
