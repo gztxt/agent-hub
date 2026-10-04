@@ -887,7 +887,16 @@
                              text-overflow: ellipsis; white-space: nowrap; }
             .header h1 { flex: 0 0 auto; min-width: 0; }
             .header .brand-word { display: none; }   /* 窄屏只留彽标，腾出横向空间给状态 */
-            /* ② 字号/行长：窄屏下品牌标题降一档、正文降一档并提高行高以补偿密度。
+            /* ② 窄屏字号（**实测值见括号，别凭直觉改**）：
+               宽屏基线：.home-brand-txt 无 font-size（实测 15px = --fs-base）、
+                         .home-desc = --fs-base(15px)、.home-kicker = --fs-xs(13px)。
+               窄屏取：  .home-brand-txt = --fs-lg(**18px，比宽屏大**)，
+                         .home-desc = --fs-sm(14px，比宽屏小 1px)、行高 1.6。
+               ⚠ 上一版注释写的是「标题降一档」，**那是错的**：--fs-lg(18) > --fs-base(15)，
+               标题在窄屏其实比宽屏**大**。这里保留 18px 是有意的（移动端主标题需要
+               与正文拉开层级），但把它写清楚，免得下一个看到「窄屏 = 更小」的先验又改回去。
+               用户当初抱怨的密度问题是**正文行长**（320px 上每行仅约 12 字），
+               对症的是 .home-desc 的字号与行高，不是标题。
                ⚠ 类名从**真实 DOM** 量出来，不是猜的 —— 第一版写的是
                `.home-title` / `.home-lead` / `.home-stats`，这三个类名在模板里
                **根本不存在** ⇒ CSS 静默不生效，真渲染截图里字号与密度原封未动，
