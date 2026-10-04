@@ -912,6 +912,27 @@
             .home-stat b { font-size: 26px; }
             .home-stat { gap: 8px; }
             .home-wrap { gap: 10px; }
+            /* ④ v0.13.75（2026-10-04 用户真机截图）：`.mem-item` 在窄屏把描述压成 3px。
+               实测 390px：容器 296px，名字 141 + 操作区 128 + gap 16 ⇒ 描述只剩 **3px**，
+               于是每个字一行（用户截图里「行)、小 / 字母描 / 客转文 / 字、」就是这样来的）。
+               根因：`.mem-item` 是 `display:flex` 且 **nowrap**，`<p>` 是 `flex:1`(=1 1 0%)
+               —— 三者抢不下宽度时，0 基准 + 无 `min-width` 让描述被压到近零。
+
+               【为什么早先没抓到】本仓对**同类**结构早就修过一次：`.sp-list > .mem-item > p
+               { min-width: 0 }`（第 618 行）。但**技能中心列表不在 `.sp-list` 里** ⇒
+               同样的病只修了一处。这是「按选择器修 bug」的典型漏网：
+               修的是那一个选择器，不是**那一类形态**。
+
+               窄屏口径：名字与操作区共处第一行（操作区右对齐），描述**独占整行**。
+               `min-width:0` 是必须的 —— 没有它，长英文/URL 在 flex 里也能把行撑爆。 */
+            .mem-item { flex-wrap: wrap; }
+            .mem-item > p { flex: 1 1 100%; min-width: 0; }
+            .mem-item > span:last-child { margin-left: auto; }
+            /* 空描述不留空行：`flex-basis:100%` 的空 <p> 虽高度为 0，换行后仍占一行位置，
+               列表里表现为「名字和操作区中间莫名空一截」（agent-ecosystem 就是这样）。
+               `:empty` 只匹配**完全空**的元素；只有空白字符时交给下面这条压缩行高。 */
+            .mem-item > p:empty { display: none; }
+            .mem-item > p { margin: 0; }
             #chatPane .composer input { height: 38px; }
             .footer { padding: 5px 10px; font-size: var(--fs-xs); }
             .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
