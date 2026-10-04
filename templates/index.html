@@ -518,6 +518,14 @@
         .mem-list { max-height: 420px; overflow-y: auto; }
         .mem-item { border-bottom: 1px solid var(--divider); padding: 10px 2px; font-size: var(--fs-base); line-height: var(--lh-base); display: flex; justify-content: space-between; gap: 8px; }
         .mem-item p { flex: 1; word-break: break-word; }
+        /* 技能描述走 mdInline（仅行内白名单：**粗体** / `行内代码`），
+           样式必须跟这里配套 —— 否则 <strong>/<code> 会以「未设样式的行内元素」出现，
+           粗体看不出加粗、代码没有底色，等于白转译。口径注释见
+           static/hub/01-core-boot.js 的 `mdInline`。 */
+        .mem-item p strong, .mem-item > p strong { font-weight: 600; color: var(--text-1); }
+        .mem-item p code { font-family: var(--font-mono); font-size: 0.94em;
+                           background: var(--surface-2); border: 1px solid var(--divider);
+                           border-radius: 4px; padding: 0 4px; color: var(--text-1); }
         textarea.doc { width: 100%; min-height: 130px; font-size: var(--fs-base); line-height: var(--lh-base); }
         textarea[readonly] { color: var(--text-2); background: var(--surface-2); }
 

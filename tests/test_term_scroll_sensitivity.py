@@ -109,8 +109,9 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.74": ("窄屏第一眼是一块白板", "首帧", "为什么必须在 <head>", "夹具必须判别"),
         "0.13.75": ("每个字一行", "修的是那一个选择器", "判不了像素", "短页面底部有留白"),
         "0.13.76": ("抽屉永远打不开", "点哪都点不到", "从来没点过开", "只验一个时刻"),
+        "0.13.77": ("按不可信输入处理", "存储型 XSS", "顺序不可颠倒", "**规则里的**类名不存在"),
     }
-    CURRENT_VERSION = "0.13.76"
+    CURRENT_VERSION = "0.13.77"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
