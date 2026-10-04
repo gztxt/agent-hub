@@ -46,8 +46,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cdp_min import CDP, launch_chrome, page_target  # noqa: E402
 
 NARROW = [320, 360, 390, 412, 767]
-BASE = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:3102"
-CDP_PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9355
+def _args(argv):
+    """两种传法都收：`run_tests.sh probe <file> <base-url>` 与直接 `<port> <base-url>`。
+
+    `scripts/run_tests.sh probe` 的约定是 **argv[1] 传 base-url**（见其 `probe)` 分支），
+    而本仓另一支探针 `probe_sidebar_width_sweep.py` 用的是 **argv[1] 传 CDP 端口**。
+    两种都在用 ⇒ 这里按「像不像 URL」判别，不让调用方记两套。
+    第一版只认端口，`run_tests.sh probe` 一调就 `ValueError`（已犯）。
+    """
+    base, port = "http://127.0.0.1:3102", 9355
+    for a in argv:
+        if str(a).startswith("http"):
+            base = str(a)
+        else:
+            try:
+                port = int(a)
+            except ValueError:
+                pass
+    return base, port
+
+
+BASE, CDP_PORT = _args(sys.argv[1:])
 
 # 首帧与稳定后都量；A 组用首帧，B/C/D 用稳定后。
 # 未就绪时返回 'null' 而不是 '{}'：**字符串 '{}' 是 truthy**，
