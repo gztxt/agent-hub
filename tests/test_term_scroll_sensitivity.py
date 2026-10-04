@@ -107,8 +107,9 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.72": ("模糊匹配不再是「技能中心专属」", "恒真的 L0 用例", "想写也写不成", "那个 6 是我数错的"),
         "0.13.73": ("同一台机器两套口径", "MCP 门面 `hubmcp.py`", "两侧一起错", "不改排序"),
         "0.13.74": ("窄屏第一眼是一块白板", "首帧", "为什么必须在 <head>", "夹具必须判别"),
+        "0.13.75": ("每个字一行", "修的是那一个选择器", "判不了像素", "短页面底部有留白"),
     }
-    CURRENT_VERSION = "0.13.74"
+    CURRENT_VERSION = "0.13.75"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
