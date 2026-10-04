@@ -98,6 +98,22 @@ ALLPAGES = """(() => { const vis=el=>{const r=el.getBoundingClientRect();
     if(w<min){min=w; const t=el.querySelector('.tag'); who=t?t.textContent.slice(0,16):'?';} }
   return JSON.stringify({n:items.length, min:min===1e9?null:min, who}); })()"""
 
+# 抽屉可展开性（2026-10-04 回归）：窄屏点开侧栏必须真的变成覆盖式抽屉。
+# v0.13.75 引入的 `html.narrow-rail` 标记是首帧专用的，却**打完没摘** ⇒
+# `html.narrow-rail .sidebar:not(.collapsed)` 特异性高于 `.sidebar:not(.collapsed)`，
+# 点「展开」时 JS 移除了 collapsed、几何却被按回 52px ⇒ **抽屉永远打不开**，
+# 而遮罩照样亮（点哪都点不到 = 整页锁死）。
+# 【本探针上一版为什么没抓到】它只量**首帧**，从来没点过开 —— 首帧是对的，交互是坏的。
+EXPAND = """(() => { const b=document.getElementById('btnSideToggle');
+  if(b) b.click(); return 'clicked'; })()"""
+
+SIDEGEO = """(() => { const sb=document.getElementById('sidebar'); if(!sb) return '{}';
+  const m=document.getElementById('sideMask');
+  return JSON.stringify({cls:sb.className,w:Math.round(sb.getBoundingClientRect().width),
+    pos:getComputedStyle(sb).position,
+    rail:document.documentElement.classList.contains('narrow-rail'),
+    maskOn: m ? m.classList.contains('on') : null}); })()"""
+
 BOTTOM = """(() => { const vis=el=>{const r=el.getBoundingClientRect();
                       return r.width>0&&r.height>0;};
   const page=document.querySelector('.page.on'); if(!page) return '{}';
@@ -136,7 +152,12 @@ def run(w, port, profile):
         time.sleep(3.0)
         mem2 = json.loads(cdp.eval(MEMITEM) or "{}")
         allpg = json.loads(cdp.eval(ALLPAGES) or "{}")
-        return first or {}, late, mem2, allpg, bottom
+        # 点**一次**展开，取稳态：EXPAND 自带点击，所以只能调一次，
+        # 再调一次就把抽屉又关上了（第一版这里连点两次，量到的还是收起态）。
+        cdp.eval(EXPAND)
+        time.sleep(1.5)
+        exp = json.loads(cdp.eval(SIDEGEO) or "{}")
+        return first or {}, late, mem2, allpg, bottom, exp
     finally:
         try:
             cdp.close()
@@ -153,13 +174,14 @@ def main():
     fails = []
     print("窄屏真渲染探针 · base=%s" % BASE)
     print("坑①：视口先就位再导航，量的才是真·首帧\n")
-    hdr = ("%-6s %-30s %-14s %-13s %-11s %-9s" %
-           ("vw", "首帧(宽/定位/中心)", "技能描述宽", "逐页最窄描述", "底部留白", "判定"))
+    hdr = ("%-6s %-28s %-13s %-12s %-9s %-20s %s" %
+           ("vw", "首帧(宽/定位)", "技能描述宽", "逐页最窄", "底部留白",
+            "点开后抽屉(宽/定位)", "判定"))
     print(hdr); print("-" * len(hdr.encode("gbk", "ignore")))
     port = CDP_PORT
     for w in NARROW:
         port += 1
-        first, late, mem, allpg, bottom = run(w, port, "/tmp/hub_probe_narrow_%d" % port)
+        first, late, mem, allpg, bottom, exp = run(w, port, "/tmp/hub_probe_narrow_%d" % port)
         # A 首帧：窄屏首帧必须是图标条（≤60px）且不能是 fixed 覆盖层
         ok_first = first.get("w", 999) <= 60 and first.get("pos") != "fixed"
         # B 技能列表描述：修前 3px
@@ -174,15 +196,21 @@ def main():
             bad.append("技能描述 %spx" % mem.get("min"))
         if not ok_all:
             bad.append("%s 描述 %spx" % (allpg.get("who"), cmin))
+        # D 抽屉可展开：点开后必须是覆盖式抽屉（236px/fixed），遮罩随之亮。
+        # 这一条正是 v0.13.75 的回归点，探针上一版只量首帧、从来没点过。
+        ok_exp = exp.get("w", 0) >= 200 and exp.get("pos") == "fixed" and exp.get("maskOn")
+        if not ok_exp:
+            bad.append("抽屉打不开(%spx/%s/遮罩%s)" % (exp.get("w"), exp.get("pos"), exp.get("maskOn")))
         if bad:
             fails.append("%dpx: %s" % (w, "; ".join(bad)))
-        print("%-6d %-30s %-14s %-13s %-11s %-9s" % (
+        print("%-6d %-28s %-13s %-12s %-9s %-20s %s" % (
             w,
-            "%dpx/%s/%s" % (first.get("w"), first.get("pos"),
-                            str(first.get("center"))[:9]),
+            "%dpx/%s" % (first.get("w"), first.get("pos")),
             "%spx(n=%s)" % (mem.get("min"), mem.get("n")),
-            "%s(%s)" % (cmin if cmin is not None else "无p", (allpg.get("who") or "-")[:6]),
+            "%s(%s)" % (cmin if cmin is not None else "无p", (allpg.get("who") or "-")[:5]),
             ("可滚动" if bottom.get("scrollable") else "%spx" % bottom.get("gap")),
+            "%spx/%s/%s" % (exp.get("w"), exp.get("pos"),
+                            "遮罩✓" if exp.get("maskOn") else "遮罩✗"),
             "OK" if not bad else "BAD: " + "; ".join(bad)))
     print()
     if fails:

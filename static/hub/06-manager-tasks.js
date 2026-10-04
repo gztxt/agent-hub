@@ -152,6 +152,18 @@ function initSidebar() {
   const resolve = () => apply(sidebarWantCollapsed(narrow(), lsGet(sidebarPrefKey()),
                                                    lsGet('hub.sidebar')), false);
   resolve();
+  // v0.13.76（2026-10-04 用户报「窄屏左侧菜单栏展开不正常」后的**回归修复**）：
+  // `<head>` 里的 `narrow-rail` 标记是**第一帧专用**的（它让窄屏首屏就是图标条，
+  // 而不是 236px 白板盖住 60~74% 视口）。但我当初**打完就没再摘**，它变成永久标记 ⇒
+  // `html.narrow-rail .sidebar:not(.collapsed)` 的**特异性高于** `.sidebar:not(.collapsed)`，
+  // 用户点“展开”时 JS 确实移除了 `collapsed`，几何却仍被我的规则按回 52px 图标条
+  // ⇒ **抽屉永远打不开**，而遮罩照样亮（用户点哪都点不到 = 整页锁死）。
+  // 实测：展开后 `class=sidebar` 但 `width=52px / position:relative`（应为 236px/fixed）。
+  //
+  // 修法：**JS 一接管就摘标记**，语义回到本意「JS 还没跑（或没跑起来）」。
+  // 失败模式也是对的：bundle 挂了 → 标记留下 → 窄屏仍是可读图标条，
+  // 而不是一块盖住大半屏的白板。
+  document.documentElement.classList.remove('narrow-rail');
   btn.onclick = () => apply(!sb.classList.contains('collapsed'));
   // 跨断点（转屏/窗口拖窄/桌面缩放）重新解析本档偏好；老代码只重画终端，抽屉状态永远停在加载那一刻
   const onBreak = () => resolve();   // apply() 自己会带遮罩，不再加一个平行的掩码同步路径

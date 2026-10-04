@@ -77,7 +77,27 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.75"   # 窄屏 .mem-item 描述被压成 3px（真机截图）+ 真渲染探针入库。两条：
+VERSION = "0.13.76"   # **回归修复**：窄屏侧栏抽屉打不开（上一版引入）。两条：
+                      #   ① **抽屉永远打不开、而遮罩照亮 = 整页锁死**（用户 2026-10-04 报
+                      #     「窄屏左侧菜单栏展开不正常」）。实为 v0.13.75 的回归：
+                      #     `<head>` 里的 `narrow-rail` 是**首帧专用**标记（它让窄屏首屏
+                      #     就是图标条，而不是 236px 白板盖住 60~74% 视口），
+                      #     但我当初**打完就没再摘**，于是它变成永久标记。
+                      #     `html.narrow-rail .sidebar:not(.collapsed)` 的**特异性高于**
+                      #     `.sidebar:not(.collapsed)` ⇒ 用户点「展开」时 JS 确实移除了
+                      #     `collapsed`，几何却仍被按回 52px 图标条。
+                      #     实测：展开后 `class=sidebar` 但 `width=52px / position:relative`
+                      #     （应为 236px/fixed），而遮罩 `on` ⇒ **点哪都点不到**。
+                      #     修法：**JS 一接管就摘标记**，语义回到本意「JS 还没跑（或没跑起来）」；
+                      #     失败模式也是对的 —— bundle 挂了则标记留下，窄屏仍是可读图标条，
+                      #     而不是一块盖住大半屏的白板。
+                      #   ② **探针上一版为什么没抓到**：它只量**首帧**，从来没点过开。
+                      #     首帧是对的、交互是坏的 —— 这正是「只验一个时刻」的盲区。
+                      #     已给 `probe_narrow_layout.py` 加第五组量「点开后抽屉(宽/定位/遮罩)」，
+                      #     验证它会咬：修前五档全红（52px/relative），修后 236px/fixed 全绿。
+                      #     另加静态闸门 `test_marker_must_be_removed_when_js_takes_over`
+                      #     （只管「打」不管「摘」的补丁等于永久补丁）。
+                      # ── 以下为 v0.13.75 的根因，保留供追溯，非本版条目 ──
                       #   ① **技能中心在窄屏每个字一行**（2026-10-04 用户真机截图）：
                       #     窄屏 CSS 是 `.sidebar:not(.collapsed)` 那类**flex 挤压**的同族 ——
                       #     `.mem-item` 是 `display:flex` + **nowrap**，`<p>` 是 `flex:1`(1 1 0%)。
