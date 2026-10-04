@@ -393,7 +393,12 @@ function renderNav() {
          定时任务数算了但永远显示不出来。空内容靠 CSS :empty 不占位。 */
       const badge = p => '<span class="nav-badge" id="badge-' + p + '"></span>';
       body = list.map(([p, label, ic]) =>
-        '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
+        // v0.13.74：补 title/aria-label。收起态（窄屏 48~52px 图标条）下 .lbl 是
+        // display:none，**手机上又没有 hover** ⇒ 这些图标此前既没有可见文字、
+        // 也没有可访问名，屏幕阅读器只能读出「按钮」。label 直接复用现成的变量，
+        // 不新建映射（PAGE_LABELS 才是页名→中文名的唯一真源）。
+        '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '"' +
+        ' title="' + escapeHtml(label) + '" aria-label="' + escapeHtml(label) + '">' +
         ico(ic) + '<span class="lbl">' + label + '</span>' + (HLTH_PAGE[p] ? hlth(p) : '') +
         badge(p) + '</button>').join('');
     } else {
@@ -401,7 +406,9 @@ function renderNav() {
     }
     if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
     return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
-      '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+      // v0.13.74：同上，收起态下手风琴头也只有图标，补 title/aria-label。
+      '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '"' +
+      ' title="' + escapeHtml(NAV_GROUPS[g]) + '" aria-label="' + escapeHtml(NAV_GROUPS[g]) + '">' +
       ico(open ? 'chevron-down' : 'chevron-right', null, 'caret') +
       ico(NAV_ICONS[g], 'md') +
       '<span class="lbl">' + NAV_GROUPS[g] + '</span>' +

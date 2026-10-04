@@ -3,6 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- ── v0.13.74 窄屏首屏几何（必须放在 <head>，不能放 body）──────────────
+         病根（2026-10-04 真渲染实测，生产 v0.13.73）：窄屏 CSS 是
+         `.sidebar:not(.collapsed){position:fixed;width:236px;z-index:46}`，
+         而 `<aside class="sidebar">` **初始没有** `collapsed` 类；那个类要等
+         `initSidebar()` 跑完才加上（它在 bundle 末尾）。实测**用户第一眼**看到的就是
+         一块 236px 白板盖住 **60.5%（390px）~73.8%（320px）** 的视口，
+         正文被从中间切断 —— 就是 09-23「整页被白板糊住」的形态。
+
+         【为什么放在 <head> 而不是 <aside> 后面】第一版写在 `<aside>` 的首个子节点，
+         320px 能生效、**390px 仍闪** —— 浏览器可以在解析到 `<aside>` 开标签后、
+         跑完该子脚本之前就完成首次绘制（实测两次结果不一致，是竞态）。
+         写进 `<head>` 时 body 还不存在，没有任何东西可绘制 ⇒ **竞态从根上不存在**。
+         这里不能直接 `getElementById('sidebar')`（元素还没建），所以改成给
+         `<html>` 挂一个标记类，由 CSS 认它 —— 判据仍然只在 CSS 一处。
+
+         · 只动 classList，**不碰 localStorage** ⇒ 分档偏好不变量②「加载不写盘」照旧成立；
+         · 断点用 `matchMedia('(max-width:767px)')`，与 `01-core-boot.js` 的
+           `HUB_NARROW_MQ` 同值同源 ⇒ 不变量③「断点只允许一处定义」不被破坏；
+         · 真正的档位解析仍由 `initSidebar()` 负责（读本档存档 + 跨断点重算），
+           本段**不预判偏好**，只保证**首帧几何**正确 —— 两件事分开是刻意的。
+         判据见 tests/test_narrow_first_paint.py。 -->
+    <script>
+    (function () {
+        try {
+            if (window.matchMedia('(max-width:767px)').matches) {
+                document.documentElement.classList.add('narrow-rail');
+            }
+        } catch (e) { /* 首屏几何优化失败不阻断启动 */ }
+    })();
+    </script>
     <title>Agent Hub · 本机多 Agent 统一管理中心</title>
     <!-- v0.10.1：品牌图标换成落盘资产（static/，由 agent 生成并验过尺寸/MIME）。
          旧的内联 data-URI 方块与顶部 wordmark 不是同一个图形，手机书签/PWA 安装后会更丑，故删除。
@@ -436,6 +466,11 @@
         .chips > summary { padding: 9px 11px; font-size: var(--fs-base); color: var(--info); cursor: pointer; list-style: none; user-select: none; border-radius: 8px; }
         .chips > summary::-webkit-details-marker { display: none; }
         .only-mob { display: none; }
+        /* v0.13.74：与 `.only-mob` 同形的反向对（宽屏才显示）。
+           两者都只允许在**同一个** @media(max-width:767px) 里切换，断点仍是那一个
+           （分档偏好不变量③）。文案按视口分两份而不是用 JS 改文字：
+           JS 改文案 = 多一份真相源 + 要等 bundle 跑完（又是一次闪）。 */
+        .only-narrow { display: none; }
         .chat-main { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex: 1; min-height: 0; }
         /* 当前实体名：原先靠顶栏面包屑带出，顶栏收起后住在对话工具栏首格 */
         .ent-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); white-space: nowrap; }
@@ -774,6 +809,15 @@
             .sidebar:not(.collapsed) { position: fixed; top: 0; left: 0; bottom: 0; z-index: 46; max-height: 100vh;
                                        width: 236px; flex-basis: 236px; padding: 10px 8px;
                                        box-shadow: 4px 0 20px var(--shadow-lg); }
+            /* v0.13.74 首屏几何（见 <head> 那段注释）：`html.narrow-rail` 由 <head> 里的
+               脚本按当前视口打上，**早于任何绘制**。它只把「窄屏 + 首帧」这一格的默认
+               从抽屉改成图标条；`:not(.collapsed)` 的抽屉规则原封不动保留给
+               `initSidebar()` 解析完之后真正展开的那一格 ⇒ 两态的判定权没有搬家。
+               选择器用 `html.narrow-rail .sidebar:not(.collapsed)` 而不是改
+               `:not(.collapsed)` 本身：后者会把「用户主动展开」也一起改掉。 */
+            html.narrow-rail .sidebar:not(.collapsed) { position: relative; top: auto; left: auto;
+                                       bottom: auto; z-index: auto; max-height: none;
+                                       width: 52px; flex-basis: 52px; box-shadow: none; }
             .sidebar.collapsed .side-toggle .lbl { display: none; }
             .sidebar.collapsed .side-toggle svg.i { width: var(--ico-md); height: var(--ico-md); }
             /* v0.12.3：抽屉与宽屏共用同一套行内规则（.s-badge + 名称，见基础段），
@@ -786,6 +830,8 @@
             .mem-grid { gap: 10px; }
             .mem-grid > * { min-width: 0; }
             .only-mob { display: block; }
+            .only-wide { display: none; }
+            .only-narrow { display: block; }
             .chips > summary { display: flex; align-items: center; justify-content: space-between; }
             .chips > summary::after { content: ''; width: var(--ico-sm); height: var(--ico-sm); flex: none;
                 background: currentColor;
@@ -828,6 +874,28 @@
             .ebar-btn { padding: 0 6px; }
             .msgs { padding: 10px; }
             #chatPane .composer { padding: 8px; }
+            /* ── v0.13.74 窄屏可读性/密度（2026-10-04 真渲染 320/390 实测后）─────
+               实测问题：① 顶栏状态字直接被视口右缘**切断**（无省略号，320/390 都如此）；
+               ② 320px 上正文每行仅约 12 字，行长过短、字号偏大，屏效利用率低；
+               ③ 下方约 25% 屏高完全空白。
+               下面只调**排布密度与截断**，不砍功能、不改宽屏。 */
+            /* ① 顶栏截断：给状态区一个可省略的窗口。原先只给 #hAgents 做了 ellipsis，
+               而「Hub 在岗」是 `flex:0 0 auto` 的 nowrap，撑不下时直接溢出被裁 ⇒
+               改成：状态区整体可收缩、内部各自 nowrap + ellipsis、字标与齿轮不收缩。 */
+            .hstats { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+            .hstats > span { flex: 0 1 auto; min-width: 0; overflow: hidden;
+                             text-overflow: ellipsis; white-space: nowrap; }
+            .header h1 { flex: 0 0 auto; min-width: 0; }
+            .header .brand-word { display: none; }   /* 窄屏只留彽标，腾出横向空间给状态 */
+            /* ② 字号/行长：窄屏下标题与正文降一档，正文提高行高以补偿密度。 */
+            .home-title { font-size: var(--fs-lg); }
+            .home-lead { font-size: var(--fs-sm); line-height: 1.65; }
+            .mem-item p, .home-lead p { font-size: var(--fs-sm); }
+            .home-stat { gap: 8px; }
+            .home-stat b { font-size: 26px; }
+            /* ③ 空白利用：统计卡与按钮区在窄屏单列更满，行高略收。 */
+            .home-stats { gap: 8px; }
+            .toolbar { gap: 6px; }
             #chatPane .composer input { height: 38px; }
             .footer { padding: 5px 10px; font-size: var(--fs-xs); }
             .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
@@ -1050,7 +1118,13 @@
                             <p class="home-sub">本机多 Agent 统一管理中心</p>
                         </div>
                     </div>
-                    <p class="home-desc">左侧手风琴收拢全部 <b id="cntAgent">–</b> 个 Agent 与 <b id="cntInfra">–</b> 项基础设施，点选即在右侧打开对应工作台（终端 / 嵌入 / 对话 / 详情按各自能力动态给出）。顶部搜索框支持按名称、ID、端口筛选。</p>
+                    <!-- v0.13.74：窄屏文案改成**描述窄屏上真实存在的形态**。
+                         旧文案（09-20 用户原话背景）描述的是「左侧手风琴 + 顶部搜索框」，
+                         而窄屏根本没有手风琴（图标条）、也没有顶部搜索框 ⇒
+                         文案与形态不匹配，在 320px 上白占 1/3 屏高讲了个用户看不到的东西。
+                         用 CSS 断点分两份，而不是用 JS 改文字（多一份真相源）。 -->
+                    <p class="home-desc only-wide">左侧手风琴收拢全部 <b id="cntAgent">–</b> 个 Agent 与 <b id="cntInfra">–</b> 项基础设施，点选即在右侧打开对应工作台（终端 / 嵌入 / 对话 / 详情按各自能力动态给出）。顶部搜索框支持按名称、ID、端口筛选。</p>
+                    <p class="home-desc only-narrow">左侧 <b id="cntAgent2">–</b> 个 Agent 与 <b id="cntInfra2">–</b> 项基础设施。点左侧图标条进入；点图标条顶部按钮可展开带名称的完整列表。</p>
                     <div class="home-stat" id="homeStat">
                         <div class="hs"><div class="n" id="hsAgent">–</div><div class="t">Agent</div></div>
                         <div class="hs" title="可用 = vitals 实测能服的 Agent（装了≠能用：入口壳假卡、账号额度耗尽均不计入）"><div class="n" id="hsRunning">–</div><div class="t">可用</div></div>
@@ -2185,6 +2259,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=8aae899e"></script>
+    <script src="/static/hub.js?v=11ea30f4"></script>
 </body>
 </html>

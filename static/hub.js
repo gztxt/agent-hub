@@ -513,6 +513,11 @@ function renderHomeStats() {
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   set('cntAgent', ag.length);
   set('cntInfra', infra.length);
+  // v0.13.74：窄屏文案是**另一份 DOM**（.only-narrow 隐藏宽屏那份），
+  // 计数器要同样写两份，否则窄屏上会一直显示模板里的占位「–」。
+  // 两份文案由 CSS 断点二选一，数字只从这一个地方发 —— 不另起真相源。
+  set('cntAgent2', ag.length);
+  set('cntInfra2', infra.length);
   set('hsAgent', ag.length);
   set('hsRunning', running);   /* 标签在模板里已改「可用」：取 vitals 结论，无结论时退为在线 */
   set('hsInfra', infra.length);
@@ -3110,6 +3115,15 @@ async function loadSkills() {
   loadSkillZombies();
 }
 
+/* 技能中心的匹配字段表：**必须与 `src/skill.py` 的 `_Q_FIELDS` 同表同权重**。
+ * 加 `realpath`（权重 1）是为了能按来源仓名找技能——`path` 是软链那一侧，
+ * `mattpocock-skills` 这类仓名只出现在 `realpath` 里，不加就搜不到。
+ * 两边只要有一处漏改，`tests/test_skill_list_q_parity.py` 就会红（分数逐条比对）。
+ * 别在这里「顺手简化」成只有 name+desc。 */
+function skillFields(s) {
+  return [[s.name, 3], [s.description, 1], [s.path, 1], [s.route, 1], [s.realpath, 1]];
+}
+
 function toggleSkillZombieOnly() {
   SKILL_ZOMBYE_ONLY = !SKILL_ZOMBYE_ONLY;
   $('skillZombieOnly').classList.toggle('on', SKILL_ZOMBYE_ONLY);
@@ -3122,7 +3136,7 @@ function renderSkillList() {
   // 模糊打分 + 排序：精确命中（1000 分）在前，近似命中在后且按接近度排。
   const scored = SKILLS
     .filter(s => (!route || (s.routes || []).includes(route) || s.route === route))
-    .map(s => ({ s, score: fuzzyMatch([[s.name, 3], [s.description, 1]], q) }))
+    .map(s => ({ s, score: fuzzyMatch(skillFields(s), q) }))
     .filter(x => !q || x.score > 0)
     .sort((a, b) => (b.score - a.score) || String(a.s.name || '').localeCompare(String(b.s.name || '')));
   const rows = scored.map(x => x.s);
@@ -3146,7 +3160,7 @@ function renderSkillList() {
       : '';
     // 近似徽标：这条是靠编辑距离进来的，不是精确子串。**必须标出来**，
     // 否则用户看到一条「搜不完全对」的记录却不知道为什么。
-    const sc = fuzzyMatch([[s.name, 3], [s.description, 1]], q);
+    const sc = fuzzyMatch(skillFields(s), q);
     const near = (q && sc > 0 && sc < 1000)
       ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
       : '';
@@ -4094,7 +4108,12 @@ function renderNav() {
          定时任务数算了但永远显示不出来。空内容靠 CSS :empty 不占位。 */
       const badge = p => '<span class="nav-badge" id="badge-' + p + '"></span>';
       body = list.map(([p, label, ic]) =>
-        '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '">' +
+        // v0.13.74：补 title/aria-label。收起态（窄屏 48~52px 图标条）下 .lbl 是
+        // display:none，**手机上又没有 hover** ⇒ 这些图标此前既没有可见文字、
+        // 也没有可访问名，屏幕阅读器只能读出「按钮」。label 直接复用现成的变量，
+        // 不新建映射（PAGE_LABELS 才是页名→中文名的唯一真源）。
+        '<button class="nav-item' + (curPage === p ? ' on' : '') + '" data-sys="' + p + '"' +
+        ' title="' + escapeHtml(label) + '" aria-label="' + escapeHtml(label) + '">' +
         ico(ic) + '<span class="lbl">' + label + '</span>' + (HLTH_PAGE[p] ? hlth(p) : '') +
         badge(p) + '</button>').join('');
     } else {
@@ -4102,7 +4121,9 @@ function renderNav() {
     }
     if (!body) body = '<div class="nav-empty">' + (AGENTS.length ? '无匹配' : '加载中…') + '</div>';
     return '<div class="nav-acc' + (open ? ' open' : '') + '">' +
-      '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+      // v0.13.74：同上，收起态下手风琴头也只有图标，补 title/aria-label。
+      '<button class="nav-acc-head" data-group="' + g + '" aria-expanded="' + (open ? 'true' : 'false') + '"' +
+      ' title="' + escapeHtml(NAV_GROUPS[g]) + '" aria-label="' + escapeHtml(NAV_GROUPS[g]) + '">' +
       ico(open ? 'chevron-down' : 'chevron-right', null, 'caret') +
       ico(NAV_ICONS[g], 'md') +
       '<span class="lbl">' + NAV_GROUPS[g] + '</span>' +

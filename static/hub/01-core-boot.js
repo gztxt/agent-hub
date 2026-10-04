@@ -513,6 +513,11 @@ function renderHomeStats() {
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   set('cntAgent', ag.length);
   set('cntInfra', infra.length);
+  // v0.13.74：窄屏文案是**另一份 DOM**（.only-narrow 隐藏宽屏那份），
+  // 计数器要同样写两份，否则窄屏上会一直显示模板里的占位「–」。
+  // 两份文案由 CSS 断点二选一，数字只从这一个地方发 —— 不另起真相源。
+  set('cntAgent2', ag.length);
+  set('cntInfra2', infra.length);
   set('hsAgent', ag.length);
   set('hsRunning', running);   /* 标签在模板里已改「可用」：取 vitals 结论，无结论时退为在线 */
   set('hsInfra', infra.length);

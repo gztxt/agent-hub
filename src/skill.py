@@ -542,44 +542,71 @@ def _levenshtein(a: str, b: str, limit: int) -> int:
     return prev[len(b)]
 
 
-_SEP_RE = re.compile(r"[\s,;:()（）\-_/.]+")
+#: 分隔符类。**必须与 JS 的 `/[\s,，、:：()（）\-_/.]+/` 逐字相同**——
+#: 少一个 `，`/`、` 不会报错，只会安静地少切词 ⇒ 编辑距离算在更长的整段上 ⇒ 少召回。
+#: 2026-10-03 对账时真抓到过这个漂移（JS 有、Python 无），已补 `，`、`、` 并在
+#: `tests/test_skill_list_q_parity.py` 加了带中文标点的夹具钉住它。
+_SEP_RE = re.compile(r"[\s,，、;:：()（）\-_/.]+")
 
 
-def _fuzzy_field(field: str, q: str, tol: int) -> bool:
-    """单字段是否命中（精确子串先走快路，再逐段算编辑距离）。"""
-    if not field:
-        return False
-    if q in field:                      # 精确子串压倒一切近似（同前端）
-        return True
-    if not tol:
-        return False
+def _fuzzy_field_score(field: str, q: str, tol: int) -> int:
+    """单字段得分，与 JS `_fuzzyFieldScore` **逐条对齐**。
+
+    对齐点是「先切段逐段比、再整串比一次」这个顺序，不是公式——
+    顺序反了会在短段命中时把整串的长失配也带进来。
+    """
+    best = 0
     for part in (p for p in _SEP_RE.split(field) if p):
-        if abs(len(part) - len(q)) <= tol and _levenshtein(q, part, tol) <= tol:
-            return True
-    return _levenshtein(q, field, tol) <= tol
+        if abs(len(part) - len(q)) > tol:
+            continue
+        d = _levenshtein(q, part, tol)
+        if d <= tol:
+            best = max(best, (tol + 1 - d) * 10)
+    d2 = _levenshtein(q, field, tol)
+    if d2 <= tol:
+        best = max(best, (tol + 1 - d2) * 10)
+    return best
 
 
-#: `q` 参与匹配的字段 → 权重。顺序与前端调用点一一对应。
-_Q_FIELDS = (("name", 3), ("description", 1), ("path", 1), ("route", 1))
+#: `q` 参与匹配的字段 → 权重。**权重与前端的调用点一一对应**：
+#: 技能中心传的是同一张表，故两侧分数可直接比对（不是只比「命不命中」）。
+#: `realpath` 是 v0.13.74 补的：不加它就搜不到「按来源仓名找技能」
+#: （`q=mattpocock` 命中 0，因为 `path` 是**软链那一侧**，`mattpocock-skills`
+#: 只出现在 `realpath` 里）。
+_Q_FIELDS = (("name", 3), ("description", 1), ("path", 1), ("route", 1), ("realpath", 1))
+
+
+def _q_score(it: Dict[str, Any], ql: str) -> int:
+    """`q` 对一条技能的得分：0 = 不命中，>0 = 命中（越大越靠前）。
+
+    与 JS `fuzzyMatch(pairs, q)` **逐行对齐**：空查询返 1（表示「全匹配」），
+    任一字段精确子串命中即返 1000（压倒一切近似），否则取「各字段近似分 × 权重」的最大值。
+
+    【为什么返回分数而不只是 bool】v0.13.74 起 `/list` 按分数排序（精确在前、近似在后），
+    与前端一致；只返 bool 就得在上层再算一遍，两处算法又要分家。
+    """
+    q = str(ql or "").strip().lower()
+    if not q:
+        return 1
+    tol = _fuzzy_tolerance(q)
+    best = 0
+    for key, weight in _Q_FIELDS:
+        t = str(it.get(key) or "").lower()
+        if not t:
+            continue
+        if q in t:
+            return 1000                      # 精确子串压倒一切近似（同前端）
+        if not tol:
+            continue
+        s = _fuzzy_field_score(t, q, tol)
+        if s > 0:
+            best = max(best, s * weight)
+    return best
 
 
 def _match_q(it: Dict[str, Any], ql: str) -> bool:
-    """`q` 的匹配判定：空 ⇒ 全匹配；否则先精确子串，再逐字段编辑距离。
-
-    【保持不变的部分】本函数**只决定「在不在结果里」，不改排序**——
-    排序仍由调用方的 `(route, name)` 稳定序决定。改排序会影响 MCP 门面的既有消费方，
-    属另一个决定，不在本轮悄悄带上。
-    """
-    if not ql:
-        return True
-    q = str(ql).strip().lower()
-    if not q:
-        return True
-    tol = _fuzzy_tolerance(q)
-    for key, _w in _Q_FIELDS:
-        if _fuzzy_field(str(it.get(key) or "").lower(), q, tol):
-            return True
-    return False
+    """`q` 的命中判定（保留布尔出口，供只需要「在不在结果里」的地方用）。"""
+    return _q_score(it, ql) > 0
 
 
 @router.get("/list")
@@ -639,6 +666,14 @@ async def skill_list(request: Request,
     unique, aliases = _dedup(disk_items)
     ql = (q or "").strip().lower()
     merged = [x for x in unique + tdai_items if _match_q(x, ql)]
+    # v0.13.74：排序与前端口径对齐（精确在前、近似按接近度在后）。
+    # **为什么现在才改**：之前只做「在不在结果里」，排序留的是 `(route, name)` 稳定序，
+    # 于是 MCP 门面搜 `crawl1ai` 会把近似命中和精确命中混在一起排，用户看不出哪个更相关。
+    # 同分时退回原稳定序 ⇒ 排序是**全序且可复现**的，不会因为同分而抖动。
+    # 无 `q` 时**不重排**（score 恒 1，等于保持原序）—— 免得把「列出全部」的既有次序打乱。
+    if ql:
+        merged = sorted(merged, key=lambda x: (-_q_score(x, ql),
+                                               str(x.get("route") or ""), str(x.get("name") or "")))
     merged = merged[:limit]
 
     engines = [b["name"] for b in backends if b["ok"] and b["count"]]
