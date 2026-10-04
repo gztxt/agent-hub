@@ -110,6 +110,36 @@ class NarrowFirstPaintTest(unittest.TestCase):
         self.assertIn('id="btnSideToggle"', HTML,
                       "找不到侧栏展开按钮 ⇒ 窄屏首帧收起后就再也打不开了")
 
+    # ── 类名存在性（v0.13.74 补）───────────────────────────────────────────
+    def test_narrow_typography_selectors_exist_in_dom(self):
+        """本批在窄屏块里写下的**每一个类选择器**都必须真实存在于模板 DOM 里。
+
+        【为什么要这条】v0.13.74 第一版把窄屏字号规则写成 `.home-title` / `.home-lead` /
+        `.home-stats` —— 这三个类名在模板里**根本不存在**。后果：CSS 静默不生效，
+        真渲染截图里字号与密度**原封未动**，而当时**全部测试全绿**，
+        因为没有任何一条断言去看它。**CSS 写错类名不报错**，只会安静地什么都不做 ——
+        与本仓「文字存在 ≠ 已生效」（TDZ / vitals_loop / 跨档镜像）同一个家族，
+        但这条更隐蔽：它连报错的机会都不给。
+
+        口径：只校验**本批新写的那几条**，不做全量 CSS-DOM 交叉校验
+        （那会把「有意不匹配的类名」也一并炸出来，噪声大于收益）。
+        以后往窄屏块里加选择器，就往这个列表里加一条。
+        """
+        narrow_block = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", HTML, re.S).group(1)
+        # 本批在窄屏块里新写的类选择器（不含 .sidebar / .header 等既有结构）
+        NEW_SELECTORS = (".home-brand-txt", ".home-desc", ".home-kicker",
+                         ".home-stat", ".home-wrap", ".only-wide", ".only-narrow")
+        for sel in NEW_SELECTORS:
+            with self.subTest(sel=sel):
+                self.assertIn('class="', HTML, "")
+                # 类名要在 DOM 里出现过：找 `class="..."` 里含该词的写法
+                found = re.search(r'class="[^"]*\b%s\b[^"]*"' % re.escape(sel[1:]), HTML)
+                self.assertIsNotNone(found,
+                                     "窄屏块里写了 %s，但模板 DOM 里没有这个类 ⇒ CSS 静默不生效"
+                                     % sel)
+                self.assertIn(sel, narrow_block,
+                              "%s 应在窄屏块内生效" % sel)
+
 
 if __name__ == "__main__":
     unittest.main()
