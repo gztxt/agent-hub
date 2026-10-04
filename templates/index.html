@@ -887,15 +887,22 @@
                              text-overflow: ellipsis; white-space: nowrap; }
             .header h1 { flex: 0 0 auto; min-width: 0; }
             .header .brand-word { display: none; }   /* 窄屏只留彽标，腾出横向空间给状态 */
-            /* ② 字号/行长：窄屏下标题与正文降一档，正文提高行高以补偿密度。 */
-            .home-title { font-size: var(--fs-lg); }
-            .home-lead { font-size: var(--fs-sm); line-height: 1.65; }
-            .mem-item p, .home-lead p { font-size: var(--fs-sm); }
-            .home-stat { gap: 8px; }
+            /* ② 字号/行长：窄屏下品牌标题降一档、正文降一档并提高行高以补偿密度。
+               ⚠ 类名从**真实 DOM** 量出来，不是猜的 —— 第一版写的是
+               `.home-title` / `.home-lead` / `.home-stats`，这三个类名在模板里
+               **根本不存在** ⇒ CSS 静默不生效，真渲染截图里字号与密度原封未动，
+               而当时全部测试全绿（因为没有一条断言看它）。
+               「CSS 写错类名不报错，只会安静地什么都不做」——与本仓
+               「文字存在 ≠ 已生效」同族，且更隐蔽：它连报错的机会都不给。
+               现由 tests/test_narrow_first_paint.py 的
+               `test_narrow_typography_selectors_exist_in_dom` 钉住。 */
+            .home-brand-txt { font-size: var(--fs-lg); }
+            .home-desc { font-size: var(--fs-sm); line-height: 1.6; }
+            .home-kicker { font-size: var(--fs-xs); }
+            /* ③ 空白利用：统计卡数字降一档、间距收紧，让下方少留空。 */
             .home-stat b { font-size: 26px; }
-            /* ③ 空白利用：统计卡与按钮区在窄屏单列更满，行高略收。 */
-            .home-stats { gap: 8px; }
-            .toolbar { gap: 6px; }
+            .home-stat { gap: 8px; }
+            .home-wrap { gap: 10px; }
             #chatPane .composer input { height: 38px; }
             .footer { padding: 5px 10px; font-size: var(--fs-xs); }
             .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
