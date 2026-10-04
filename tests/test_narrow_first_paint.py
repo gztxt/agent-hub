@@ -39,11 +39,17 @@ BREAKPOINT = 767          # int，别带单位：带 px 会在 int() 上炸（�
 #: 「不得另写 innerWidth<768」这句话本身也含 innerWidth。凡是**扫源码文本**的断言，
 #: 都必须先剥注释，否则它在给自己抓自己。
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+#: CSS/JS 注释。模板里窄屏规则写在 <style> 内，注释是 `/* */` 而不是 `<!-- -->`；
+#: 只剥 HTML 注释的话，CSS 注释里写的**反例**会被正则当成真规则扫进去
+#: （本文件已因此假红：注释里的 `.mem-item > p { min-width: 0 }` 被当成了窄屏规则）。
+#: 已知局限：模板里的 JS 正则若含 `/*` 字面量会被误剥 —— 当前模板没有这种情况，
+#: 真出现了应改成逐段解析，而不是继续往这个正则上堆。
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 
 
 def _code() -> str:
-    """剥掉 HTML 注释后的模板正文（仅本闸门用于扫源码文本）。"""
-    return _HTML_COMMENT.sub("", HTML)
+    """剥掉 HTML 与 CSS/JS 注释后的模板正文（仅本闸门用于扫源码文本）。"""
+    return _CSS_COMMENT.sub("", _HTML_COMMENT.sub("", HTML))
 
 
 class NarrowFirstPaintTest(unittest.TestCase):
@@ -125,7 +131,7 @@ class NarrowFirstPaintTest(unittest.TestCase):
         （那会把「有意不匹配的类名」也一并炸出来，噪声大于收益）。
         以后往窄屏块里加选择器，就往这个列表里加一条。
         """
-        narrow_block = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", HTML, re.S).group(1)
+        narrow_block = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", _code(), re.S).group(1)
         # 本批在窄屏块里新写的类选择器（不含 .sidebar / .header 等既有结构）
         NEW_SELECTORS = (".home-brand-txt", ".home-desc", ".home-kicker",
                          ".home-stat", ".home-wrap", ".only-wide", ".only-narrow")
@@ -139,6 +145,43 @@ class NarrowFirstPaintTest(unittest.TestCase):
                                      % sel)
                 self.assertIn(sel, narrow_block,
                               "%s 应在窄屏块内生效" % sel)
+
+
+class NarrowMemItemTest(unittest.TestCase):
+    """`.mem-item` 在窄屏不得把描述压成「一个字母宽」（2026-10-04 用户真机截图）。
+
+    【病】`.mem-item` 是 `display:flex` + **nowrap**，`<p>` 是 `flex:1`(=1 1 0%)。
+    390px 实测：容器 296 = 名字 141 + 操作区 128 + gap 16 ⇒ 描述只剩 **3px**
+    ⇒ 每个字一行。用户截图里那段「行)、小 / 字母描 / 客转文 / 字、」就是这么来的。
+
+    【为什么早先没抓到】本仓对**同类**结构修过一次：`.sp-list > .mem-item > p { min-width: 0 }`。
+    但**技能中心列表不在 `.sp-list` 里** ⇒ 同样的病只修了一处。
+    这是「按选择器修 bug」的典型漏网：修的是那一个选择器，不是**那一类形态**。
+
+    本闸门只做**静态**判据（描述独占整行 + 必须允许换行）；
+    真实像素由 `tests/probe_narrow_memitem.py` 出（那个才量得出 3px 还是 292px）。
+    """
+
+    #: 一律从**剥掉注释**的模板里取窄屏块：注释里写着 `.mem-item > p { min-width: 0 }`
+    #: 当反例，而正则会把它当成真规则扫进去 —— 本文件已经因此假红过一次
+    #: （`localStorage` 只出现在「不碰 localStorage」这句注释里）。同一个坑不踩第二次。
+    NARROW = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", _code(), re.S).group(1)
+
+    def test_mem_item_wraps_at_narrow(self):
+        self.assertRegex(self.NARROW, r"\.mem-item\s*\{[^}]*flex-wrap:\s*wrap",
+                         "窄屏块里没有 `.mem-item{flex-wrap:wrap}` ⇒ 描述会被压到 3px")
+
+    def test_mem_item_description_takes_a_full_row(self):
+        """描述必须 `flex-basis:100%`（独占整行）+ `min-width:0`。
+
+        两者缺一不可：缺 basis 它跟名字抢宽度；缺 min-width 则长英文/URL
+        在 flex 里也能把行撑爆（`min-width:auto` 是 flex item 的默认值）。
+        """
+        m = re.search(r"\.mem-item > p\s*\{([^}]*)\}", self.NARROW)
+        self.assertIsNotNone(m, "窄屏块里没有 `.mem-item > p` 规则")
+        body = m.group(1)
+        self.assertIn("min-width: 0", body, "描述缺 min-width:0 ⇒ 长串会撑爆行")
+        self.assertRegex(body, r"flex:[^;]*100%", "描述没独占整行 ⇒ 仍与名字/操作区抢宽度")
 
 
 if __name__ == "__main__":
