@@ -105,8 +105,9 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # 不是事后编的摘要——该闸门的作用是「注释掉了根因就红」，所以关键字必须可寻址。
         "0.13.71": ("归档根与发现点是两张表", "架空 `EXCLUDED_DIRS`", "crawl1ai", "≈近似"),
         "0.13.72": ("模糊匹配不再是「技能中心专属」", "恒真的 L0 用例", "想写也写不成", "那个 6 是我数错的"),
+        "0.13.73": ("同一台机器两套口径", "MCP 门面 `hubmcp.py`", "两侧一起错", "不改排序"),
     }
-    CURRENT_VERSION = "0.13.72"
+    CURRENT_VERSION = "0.13.73"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
