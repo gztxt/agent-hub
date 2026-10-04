@@ -136,6 +136,48 @@ class NarrowFirstPaintTest(unittest.TestCase):
         self.assertLess(i_res, i_rm,
                         "摘除动作在 resolve() 之前 ⇒ 首帧标记可能在接管前就摘了，首帧又会闪")
 
+    def test_collapsed_hide_rule_covers_every_badge_class_in_markup(self):
+        """收起态的隐藏规则必须覆盖模板里**真实存在的**每个徽标类名。
+
+        2026-10-04 用户报「收起后总览后面数字没有隐藏」。根因：规则写的是 `.badge`，
+        而侧栏徽标的真实类名是 `.nav-badge`（`05-chat-and-history.js` 里拼的是
+        `class="nav-badge"`）—— 选择器对不上，CSS **静默不生效**，
+        48px 图标条上一直挤着个「10」。
+
+        与 v0.13.75 那次「类名写错、样式不生效」同族，但这次反过来：
+        不是**写出来的**类名不存在，而是**规则里的**类名不存在。
+
+        口径：把模板与分片里出现过的徽标类名收集起来，逐个要求被收起态规则覆盖。
+        真渲染判据在 `tests/probe_narrow_layout.py` 的第六组量
+        （收起态侧栏内不得有可见数字）—— 那条不看类名，只看「有没有数字露在外面」，
+        同族漏网都能抓到。
+        """
+        # 模板 + 分片里真实出现的徽标类。
+        # 【这里踩过一次】先用 `class="[^"]*\b(badge|nav-badge)\b` 抓，抓到的**只有 badge** ——
+        # 因为 `[^"]*` 贪婪吃掉了前缀 `nav-`，交给分支的只剩 `badge`；把分支按长度排序
+        # 也救不了（能吃掉的永远只剩尾巴）。**正确做法是把 class 属性值切成 token 再比对**，
+        # 而不是用正则去「找类名」。这与 v0.13.74「CSS 里写错类名静默不生效」同族：
+        # 类名是 token，不是一段可以正则搜的子串。
+        WANT = {"badge", "nav-badge", "s-badge"}
+        found = set()
+        for src in [_code()] + [
+                q.read_text(encoding="utf-8") for q in
+                sorted((_REPO / "static" / "hub").glob("*.js")) if not q.name.endswith(".bak")]:
+            for m in re.finditer(r'class="([^"]*)"', src):
+                found |= (set(m.group(1).split()) & WANT)
+        classes = found
+        self.assertTrue(classes, "收集不到任何徽标类名 —— 本闸门已空转")
+        # 收起态规则有**多条**（.nav-hist / .nav-search / … 各自一条），
+        # 只 grep 第一条会漏掉真正的徽标规则 —— 第一版就是这么写的，假红一次。
+        # 这里收集**全部** `.sidebar.collapsed … { … }` 再逐个类名找。
+        rules = re.findall(r"\.sidebar\.collapsed[^{}]*\{[^}]*\}", _code(), re.S)
+        self.assertTrue(rules, "找不到收起态隐藏规则")
+        rule = "\n".join(rules)
+        for c in classes:
+            with self.subTest(cls=c):
+                self.assertIn("." + c, rule,
+                              "收起态隐藏规则没覆盖 .%s ⇒ 收起后它仍可见" % c)
+
     def test_sidebar_toggle_button_still_present(self):
         """首帧默认收起之后，用户必须**有办法展开** —— 收起按钮不能被顺手藏掉。"""
         self.assertIn('id="btnSideToggle"', HTML,

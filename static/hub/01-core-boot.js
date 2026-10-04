@@ -6,6 +6,46 @@
 const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
 const hubNarrow = () => HUB_NARROW_MQ.matches;
 
+/* ── 行内 markdown（仅白名单两件套，2026-10-04）─────────────────────────────
+ * 技能描述取自 `SKILL.md` 的 frontmatter，那些文件里本来就写着 markdown
+ * （如 `**仅当任务落在 wigolo / obscura 覆盖不到的平台时使用**`），
+ * 而本仓一律按纯文本渲染 ⇒ 星号原样显示，看着像乱码。
+ *
+ * 【安全口径：只渲染「行内」且只认两个标记】
+ * 支持：`**粗体**`、`` `行内代码` ``。
+ * **不支持**：链接 `[x](url)`、图片、标题、列表、表格、原始 HTML。
+ * 理由不是「不想要」，是**不能要**：
+ *   · 描述来自 **20+ 个发现点**，其中包含第三方仓（mattpocock-skills / hallmark /
+ *     Agent-Reach / crawl4ai）—— 它们是**外部内容**，不是本仓自己写的文案；
+ *   · hub 的 origin 里有**终端**（能起 pty）。一个能写进 SKILL.md frontmatter 的
+ *     恶意描述，一旦渲染成 `<img onerror=…>` 或 `<a href="javascript:…">`，
+ *     就是**存储型 XSS** 且能直接摸到终端。所以「渲染 markdown」这件事本身
+ *     必须按**处理不可信输入**来做，不是按「显示 nicer 一点」来做。
+ *
+ * 【为什么先转义再替换，顺序不可颠倒】
+ * 先 `escapeHtml` ⇒ 串里不再有裸 `< > & "`，此后再插入的 `<strong>` / `<code>`
+ * 是**唯一**由我们放进去的标签。若反序（先按 markdown 切、再转义），
+ * 切出来的「标签」会被自己的转义吃掉，且永远想不起该放行哪些。
+ *
+ * 【为什么不做斜体】`_italic_`（或 `*i*`）会把 `snake_case_name`、`a * b` 这类
+ * **标识符与通配符**吃成斜体 —— 技能描述里路径和变量名很常见，是实打实的误伤。
+ * 真要用斜体得先定词边界规则，那是另一个决定。本轮只做两个误伤面为零的标记。
+ */
+const MD_CODE_PH = '\u0001';   // 行内代码的占位符；输入里的同字符会被先剥掉
+function mdInline(s) {
+  // 占位符冲突防护：输入里若本来就含 \u0001，先剥掉，否则下面的还原正则会错位。
+  let t = escapeHtml(String(s == null ? '' : s)).replace(/\u0001/g, '');
+  const codes = [];
+  // 行内代码**先**摘出来占位：否则 `**` 落在代码里也会被当成粗体切开。
+  t = t.replace(/`([^`\n]+)`/g, function (_m, c) {
+    codes.push(c); return MD_CODE_PH + (codes.length - 1) + MD_CODE_PH;
+  });
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(new RegExp(MD_CODE_PH + '(\\d+)' + MD_CODE_PH, 'g'),
+                function (_m, i) { return '<code>' + codes[+i] + '</code>'; });
+  return t;
+}
+
 /* ── 模糊搜索（全站共用，2026-10-03）────────────────────────────────────
  * 放在 01 而不是 04-terminal-ws：本函数被 04/05/09/10 **五个分片**用
  *（技能中心、agents 命令面板、侧栏搜索、端口表、本地项目、GitHub 项目），

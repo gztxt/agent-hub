@@ -6,6 +6,46 @@
 const HUB_NARROW_MQ = window.matchMedia('(max-width: 767px)');
 const hubNarrow = () => HUB_NARROW_MQ.matches;
 
+/* ── 行内 markdown（仅白名单两件套，2026-10-04）─────────────────────────────
+ * 技能描述取自 `SKILL.md` 的 frontmatter，那些文件里本来就写着 markdown
+ * （如 `**仅当任务落在 wigolo / obscura 覆盖不到的平台时使用**`），
+ * 而本仓一律按纯文本渲染 ⇒ 星号原样显示，看着像乱码。
+ *
+ * 【安全口径：只渲染「行内」且只认两个标记】
+ * 支持：`**粗体**`、`` `行内代码` ``。
+ * **不支持**：链接 `[x](url)`、图片、标题、列表、表格、原始 HTML。
+ * 理由不是「不想要」，是**不能要**：
+ *   · 描述来自 **20+ 个发现点**，其中包含第三方仓（mattpocock-skills / hallmark /
+ *     Agent-Reach / crawl4ai）—— 它们是**外部内容**，不是本仓自己写的文案；
+ *   · hub 的 origin 里有**终端**（能起 pty）。一个能写进 SKILL.md frontmatter 的
+ *     恶意描述，一旦渲染成 `<img onerror=…>` 或 `<a href="javascript:…">`，
+ *     就是**存储型 XSS** 且能直接摸到终端。所以「渲染 markdown」这件事本身
+ *     必须按**处理不可信输入**来做，不是按「显示 nicer 一点」来做。
+ *
+ * 【为什么先转义再替换，顺序不可颠倒】
+ * 先 `escapeHtml` ⇒ 串里不再有裸 `< > & "`，此后再插入的 `<strong>` / `<code>`
+ * 是**唯一**由我们放进去的标签。若反序（先按 markdown 切、再转义），
+ * 切出来的「标签」会被自己的转义吃掉，且永远想不起该放行哪些。
+ *
+ * 【为什么不做斜体】`_italic_`（或 `*i*`）会把 `snake_case_name`、`a * b` 这类
+ * **标识符与通配符**吃成斜体 —— 技能描述里路径和变量名很常见，是实打实的误伤。
+ * 真要用斜体得先定词边界规则，那是另一个决定。本轮只做两个误伤面为零的标记。
+ */
+const MD_CODE_PH = '\u0001';   // 行内代码的占位符；输入里的同字符会被先剥掉
+function mdInline(s) {
+  // 占位符冲突防护：输入里若本来就含 \u0001，先剥掉，否则下面的还原正则会错位。
+  let t = escapeHtml(String(s == null ? '' : s)).replace(/\u0001/g, '');
+  const codes = [];
+  // 行内代码**先**摘出来占位：否则 `**` 落在代码里也会被当成粗体切开。
+  t = t.replace(/`([^`\n]+)`/g, function (_m, c) {
+    codes.push(c); return MD_CODE_PH + (codes.length - 1) + MD_CODE_PH;
+  });
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(new RegExp(MD_CODE_PH + '(\\d+)' + MD_CODE_PH, 'g'),
+                function (_m, i) { return '<code>' + codes[+i] + '</code>'; });
+  return t;
+}
+
 /* ── 模糊搜索（全站共用，2026-10-03）────────────────────────────────────
  * 放在 01 而不是 04-terminal-ws：本函数被 04/05/09/10 **五个分片**用
  *（技能中心、agents 命令面板、侧栏搜索、端口表、本地项目、GitHub 项目），
@@ -3165,7 +3205,8 @@ function renderSkillList() {
       ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
       : '';
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
-    '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
+    // 描述走 mdInline（行内白名单 + 先转义），不再 escapeHtml —— 见 01-core-boot 的口径注释
+    '<p>' + mdInline(String(s.description || '').slice(0, 160)) +
     '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) +
     ' · ' + (z ? '末次调用：无（从未调用）' : '末次调用：记账未覆盖此技能') + '</span></p>' +
     '<span style="align-self:flex-start;display:flex;gap:4px">' + used + near +
@@ -3254,7 +3295,7 @@ async function skillLabSearch() {
         (x.matched_in && x.matched_in.length ? '（' + escapeHtml(x.matched_in.join(' ')) + '）' : '') +
         ' · ' + escapeHtml((x.routes || [x.route]).join(', ')) +
         ' · 约 ' + (x.tokens_est || 0) + ' tok</span>' +
-        '<br>' + escapeHtml(String(x.description || '').slice(0, 120)) + '</p></div>';
+        '<br>' + mdInline(String(x.description || '').slice(0, 120)) + '</p></div>';
     }).join('') || '<div class="hint">无命中</div>' +
       '<div class="hint" style="padding:8px 10px">注入时 hub 取 top-3 全描述、其余仅名字；' +
       '被预算裁掉的条目 = agent 根本看不到它。</div>';
@@ -3311,7 +3352,7 @@ async function loadSkillBudget() {
   boxBusy('skillBudget');
   try {
     const d = await api('/api/skill/budget?max_tokens=' + tok);
-    const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + escapeHtml(f.description.slice(0, 80)) : ''));
+    const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + mdInline(f.description.slice(0, 80)) : ''));
     const names = (d.name_only || []).map(n => escapeHtml(n));
     // 三档分区：full（全描述）/ name_only（仅名）/ truncated（被裁）
     const pct = Math.min(100, Math.round((d.used_est || 0) * 100 / Math.max(1, d.budget || 1)));
