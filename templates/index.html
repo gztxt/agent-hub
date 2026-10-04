@@ -371,7 +371,15 @@
         .sess-item .s-t { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                           display: inline-block; vertical-align: bottom; }
         .sidebar.collapsed .nav-search, .sidebar.collapsed .nav-acc-body { display: none; }
-        .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-group-title::after,
+        /* 2026-10-04 用户报「收起后总览后面数字没有隐藏」：这条规则写的是 `.badge`，
+           而侧栏里数字徽标的**真实类名是 `.nav-badge`**（见 05-chat-and-history.js 的
+           `'<span class="nav-badge" id="badge-' + p + '"></span>'`）—— 两边对不上，
+           于是它从来没被隐藏过，48px 图标条上挤着一个「10」。
+           `.badge` 本身也留着（技能列表的「N 天零调用」等仍在用），不能删，只能补。
+           教训与 v0.13.75 同族：**规则里写选择器时，得对着渲染后的真实类名核一遍**，
+           对不上时它不会报错，只是安静地什么都不做。 */
+        .sidebar.collapsed .lbl, .sidebar.collapsed .badge, .sidebar.collapsed .nav-badge,
+        .sidebar.collapsed .nav-group-title::after,
         .sidebar.collapsed .nav-acts, .sidebar.collapsed .nav-port { display: none; }
         .sidebar.collapsed .nav-group-title { justify-content: center; padding: 0 0 6px; font-size: var(--fs-xs); }
         .sidebar.collapsed button[data-page], .sidebar.collapsed button.side-item, .sidebar.collapsed .nav-acc-head, .sidebar.collapsed .nav-item {
@@ -2296,6 +2304,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=17c4386b"></script>
+    <script src="/static/hub.js?v=e013d74a"></script>
 </body>
 </html>

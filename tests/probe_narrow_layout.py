@@ -114,6 +114,21 @@ SIDEGEO = """(() => { const sb=document.getElementById('sidebar'); if(!sb) retur
     rail:document.documentElement.classList.contains('narrow-rail'),
     maskOn: m ? m.classList.contains('on') : null}); })()"""
 
+# 收起态侧栏内**不得有可见的数字**（2026-10-04 用户报「收起后总览后面数字没有隐藏」）。
+# 根因：收起态隐藏规则写的是 `.badge`，而侧栏徽标的真实类名是 `.nav-badge`
+#（05-chat-and-history.js 里 `'<span class="nav-badge" id="badge-'+p+'"></span>'`）
+# —— 选择器与真实类名对不上，规则**静默不生效**，48px 图标条上一直挤着个「10」。
+# 这条量的价值：不看类名，只看「有没有数字还露在外面」 ⇒ 同族漏网（徽标/序号/计数）
+# 都能被它抓到，而不只是这一处。
+RAILDIGIT = """(() => { const vis=el=>{const r=el.getBoundingClientRect();
+                          return r.width>0&&r.height>0;};
+  const sb=document.getElementById('sidebar'); if(!sb) return '{}';
+  const out=[];
+  for(const el of sb.querySelectorAll('*')){
+    const t=(el.textContent||'').trim();
+    if(vis(el) && /^\\d{1,3}$/.test(t)) out.push({t:t, cls:el.className||el.tagName});}
+  return JSON.stringify({collapsed:sb.classList.contains('collapsed'), digits:out}); })()"""
+
 BOTTOM = """(() => { const vis=el=>{const r=el.getBoundingClientRect();
                       return r.width>0&&r.height>0;};
   const page=document.querySelector('.page.on'); if(!page) return '{}';
@@ -152,12 +167,13 @@ def run(w, port, profile):
         time.sleep(3.0)
         mem2 = json.loads(cdp.eval(MEMITEM) or "{}")
         allpg = json.loads(cdp.eval(ALLPAGES) or "{}")
+        raildig = json.loads(cdp.eval(RAILDIGIT) or "{}")
         # 点**一次**展开，取稳态：EXPAND 自带点击，所以只能调一次，
         # 再调一次就把抽屉又关上了（第一版这里连点两次，量到的还是收起态）。
         cdp.eval(EXPAND)
         time.sleep(1.5)
         exp = json.loads(cdp.eval(SIDEGEO) or "{}")
-        return first or {}, late, mem2, allpg, bottom, exp
+        return first or {}, late, mem2, allpg, bottom, exp, raildig
     finally:
         try:
             cdp.close()
@@ -181,7 +197,7 @@ def main():
     port = CDP_PORT
     for w in NARROW:
         port += 1
-        first, late, mem, allpg, bottom, exp = run(w, port, "/tmp/hub_probe_narrow_%d" % port)
+        first, late, mem, allpg, bottom, exp, raildig = run(w, port, "/tmp/hub_probe_narrow_%d" % port)
         # A 首帧：窄屏首帧必须是图标条（≤60px）且不能是 fixed 覆盖层
         ok_first = first.get("w", 999) <= 60 and first.get("pos") != "fixed"
         # B 技能列表描述：修前 3px
@@ -201,6 +217,10 @@ def main():
         ok_exp = exp.get("w", 0) >= 200 and exp.get("pos") == "fixed" and exp.get("maskOn")
         if not ok_exp:
             bad.append("抽屉打不开(%spx/%s/遮罩%s)" % (exp.get("w"), exp.get("pos"), exp.get("maskOn")))
+        # E 收起态图标条上不得露出数字（.nav-badge 漏隐藏）
+        digs = raildig.get("digits") or []
+        if raildig.get("collapsed") and digs:
+            bad.append("收起态露出数字 %s" % ",".join(d.get("t","?") for d in digs[:3]))
         if bad:
             fails.append("%dpx: %s" % (w, "; ".join(bad)))
         print("%-6d %-28s %-13s %-12s %-9s %-20s %s" % (

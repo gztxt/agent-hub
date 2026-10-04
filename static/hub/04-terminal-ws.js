@@ -668,7 +668,8 @@ function renderSkillList() {
       ? '<span class="badge" title="无精确子串命中，这条靠模糊匹配（容忍手误）召回">≈近似</span>'
       : '';
     return '<div class="mem-item"><span class="tag agent" style="align-self:flex-start">' + escapeHtml(s.name) + '</span>' +
-    '<p>' + escapeHtml(String(s.description || '').slice(0, 160)) +
+    // 描述走 mdInline（行内白名单 + 先转义），不再 escapeHtml —— 见 01-core-boot 的口径注释
+    '<p>' + mdInline(String(s.description || '').slice(0, 160)) +
     '<br><span class="hint">' + escapeHtml((s.routes || [s.route]).join(', ')) +
     ' · ' + (z ? '末次调用：无（从未调用）' : '末次调用：记账未覆盖此技能') + '</span></p>' +
     '<span style="align-self:flex-start;display:flex;gap:4px">' + used + near +
@@ -757,7 +758,7 @@ async function skillLabSearch() {
         (x.matched_in && x.matched_in.length ? '（' + escapeHtml(x.matched_in.join(' ')) + '）' : '') +
         ' · ' + escapeHtml((x.routes || [x.route]).join(', ')) +
         ' · 约 ' + (x.tokens_est || 0) + ' tok</span>' +
-        '<br>' + escapeHtml(String(x.description || '').slice(0, 120)) + '</p></div>';
+        '<br>' + mdInline(String(x.description || '').slice(0, 120)) + '</p></div>';
     }).join('') || '<div class="hint">无命中</div>' +
       '<div class="hint" style="padding:8px 10px">注入时 hub 取 top-3 全描述、其余仅名字；' +
       '被预算裁掉的条目 = agent 根本看不到它。</div>';
@@ -814,7 +815,7 @@ async function loadSkillBudget() {
   boxBusy('skillBudget');
   try {
     const d = await api('/api/skill/budget?max_tokens=' + tok);
-    const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + escapeHtml(f.description.slice(0, 80)) : ''));
+    const full = (d.full || []).map(f => escapeHtml(f.name) + (f.description ? ' — ' + mdInline(f.description.slice(0, 80)) : ''));
     const names = (d.name_only || []).map(n => escapeHtml(n));
     // 三档分区：full（全描述）/ name_only（仅名）/ truncated（被裁）
     const pct = Math.min(100, Math.round((d.used_est || 0) * 100 / Math.max(1, d.budget || 1)));
