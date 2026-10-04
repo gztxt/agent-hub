@@ -3825,7 +3825,14 @@ async function loadMcp() {
     const t = await api('/mcp/tools');
     const errs = Object.entries(t.errors || {});
     $('mcTools').innerHTML = (t.tools || []).map(x =>
-      '<div class="mem-item" style="cursor:pointer" onclick="pickTool(\'' + x.server + '\',\'' + x.name + '\')" id="mt_' + x.server + '_' + x.name + '"><span class="tag agent">' + escapeHtml(x.server_name) + '</span><p><b>' + x.name + '</b> <span class="hint">' + escapeHtml(x.description) + '</span></p></div>').join('') ||
+      // v0.13.78：① 描述改走 mdInline（与技能描述同口径）；
+      //            ② **工具名 `x.name` 原先既没转义、也没过 jsStr** ——
+      //               它同时进了 HTML 正文（`<b>` 内）与 `onclick` 的 JS 字面量，
+      //               两个语境都不设防。工具名来自 MCP server（外部注册），
+      //               本仓 `jsStr` 的注释早写明「escapeHtml 只处理 HTML 上下文，
+      //               HTML 实体转义不足以让任意 id 安全进 JS 字面量」，此处却没用。
+      //               现补：`escapeHtml` 管 HTML 语境、`jsStr` 管 JS 字面量语境。
+      '<div class="mem-item" style="cursor:pointer" onclick="pickTool(' + jsStr(x.server) + ',' + jsStr(x.name) + ')" id="mt_' + escapeHtml(x.server) + '_' + escapeHtml(x.name) + '"><span class="tag agent">' + escapeHtml(x.server_name) + '</span><p><b>' + escapeHtml(x.name) + '</b> <span class="hint">' + mdInline(x.description) + '</span></p></div>').join('') ||
       '<div class="hint">无工具——注册 server 后此处聚合</div>' +
       (errs.length ? '<div class="hint" style="color:var(--danger-text)">异常 server: ' + errs.map(x => x[0] + '(' + x[1].slice(0, 40) + ')').join('; ') + '</div>' : '');
   } catch (e) { $('mcTools').innerHTML = '<span style="color:var(--danger-text)">' + e.message + '</span>'; }
@@ -3911,7 +3918,7 @@ function cmdGo(id) { closeCmd(); gotoChat(id); }
 /* ── v0.7 左侧手风琴导航：单开模式 + 搜索 + 展开态持久化 ──
    20 个实体全部收拢进左栏（AGENTS 8 / 基础设施 12），系统功能仍走 go(page) ── */
 const NAV_GROUPS = { agents: 'AGENTS', infra: '基础设施', system: '系统', settings: '设置' };
-const NAV_ICONS = { agents: 'cpu', infra: 'server', system: 'sliders', settings: 'settings' };   // 收起成图标条时仍可辨认（sprite id）
+const NAV_ICONS = { agents: 'hubmark', infra: 'server', system: 'sliders', settings: 'settings' };   // 收起成图标条时仍可辨认（sprite id）
 const NAV_ORDER = ['agents', 'infra', 'system', 'settings'];
 const NAV_SUB_KINDS = [['gateway', '网关'], ['service', '服务'], ['tool', '工具'], ['memory', '记忆']];
 const SYS_PAGES = [['ports', '端口', 'share'], ['telemetry', '遥测', 'activity'], ['memory', '记忆中心', 'database'],

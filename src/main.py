@@ -77,7 +77,26 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.77"   # 行内 markdown 白名单渲染（mdInline）+ 收起态徽标未隐藏。两条：
+VERSION = "0.13.78"   # 侧栏图标撞车 + mdInline 口径统一到 MCP 工具（顺带补两处转义）。三条：
+                      #   ① **收起态图标条第 4、5 个形状完全一样**（用户 2026-10-04 报「分不清是什么」）。
+                      #     真因是 `cpu` 一次被用了**三处**：静态「资源」、`NAV_ICONS.agents`、
+                      #     `SET_PAGES` 的「模型」—— 收起态里前两处**并排可见**，直接造成误读。
+                      #     一次清完三处：「资源」cpu → **`monitor`**（它监视 CPU+内存+进程，
+                      #     cpu 这个隐喻本来就偏窄）；「AGENTS」cpu → **`hubmark`**（hub 中心 +
+                      #     4 个 agent 节点 + 辐条，语义正对）；「模型」保留 cpu（AI 模型常见隐喻）。
+                      #     两处**顺带查过** `monitor`/`hubmark` 是否已被导航占用 —— 只在
+                      #     agent 卡片徽标与页眉 logo 用，不在图标条，避免「改了 A 又造出 B 的撞车」。
+                      #   ② **`/list?q=` 与 MCP 工具描述口径统一**：MCP `tools/list` 的
+                      #     `description` 原走 `escapeHtml` ⇒ 星号原样显示。现与技能描述同走 `mdInline`。
+                      #   ③ **顺带修一处 XSS 洞（超出用户点名范围，必须报）**：MCP 工具行里
+                      #     `<b>' + x.name + '</b>` 与 `onclick="pickTool('' + x.name + '')"`
+                      #     **既没转义、也没过 `jsStr`** —— 同一个串同时进 **HTML 正文**与
+                      #     **onclick 的 JS 字面量**两个语境，两处都不设防。工具名来自 MCP server
+                      #     （外部注册）。本仓 `jsStr` 的注释早就写明「`escapeHtml` 只处理 HTML
+                      #     上下文，HTML 实体转义**不足以**让任意串安全进 JS 字面量」，此处却没用。
+                      #     现补：HTML 语境 `escapeHtml`、JS 字面量语境 `jsStr`。
+                      # ── 以下为 v0.13.77 的根因，保留供追溯，非本版条目 ──
+                      #   ① **技能描述按不可信输入处理，只渲染两个行内标记**：
                       #   ① **技能描述按不可信输入处理，只渲染两个行内标记**。
                       #     描述取自 `SKILL.md` 的 frontmatter，而这些文件来自 **20+ 个发现点**，
                       #     含第三方仓（mattpocock-skills / hallmark / Agent-Reach / crawl4ai）

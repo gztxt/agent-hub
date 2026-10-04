@@ -168,17 +168,36 @@ class MdInlineWiringTest(unittest.TestCase):
     """接线：三个技能描述渲染点都必须用 mdInline，而不是 escapeHtml。"""
 
     SITES = [
-        ("static/hub/04-terminal-ws.js", 3,
+        ("static/hub/04-terminal-ws.js",
          ["mdInline(String(s.description", "mdInline(String(x.description", "mdInline(f.descript"]),
+        # MCP 工具描述（来源：MCP server 的 tools/list，同样是外部内容）
+        ("static/hub/05-chat-and-history.js", ["mdInline(x.description)"]),
     ]
 
     def test_all_description_sites_use_mdinline(self):
-        for rel, _n, needles in self.SITES:
+        for rel, needles in self.SITES:
             src = (_REPO / rel).read_text(encoding="utf-8")
             for needle in needles:
                 with self.subTest(site=needle):
                     self.assertIn(needle, src,
                                   "%s 里的技能描述渲染点没走 mdInline" % needle)
+
+    def test_mcp_tool_name_is_escaped_for_both_contexts(self):
+        """MCP 工具名同时进 **HTML 正文** 与 **onclick 的 JS 字面量**，两个语境都要设防。
+
+        工具名来自 MCP server（外部注册）。原实现两处都没设防：
+        `<b>' + x.name + '</b>` 直接拼 HTML，`onclick="pickTool('' + x.name + '')"` 直接拼 JS。
+        本仓 `jsStr` 的注释早就写明 HTML 实体转义不足以让任意串安全进 JS 字面量。
+        """
+        src = strip_comments((_REPO / "static" / "hub" / "05-chat-and-history.js")
+                            .read_text(encoding="utf-8"))
+        line = [l for l in src.split("\n")
+                if "pickTool(" in l and "onclick" in l]
+        self.assertTrue(line, "没找到 MCP 工具行")
+        l = line[0]
+        self.assertIn("jsStr(x.name)", l, "onclick 的 JS 字面量没走 jsStr")
+        self.assertIn("escapeHtml(x.name)", l, "HTML 正文里的工具名没转义")
+        self.assertNotIn("<b>' + x.name + '</b>", l, "工具名仍是裸拼进 HTML")
 
     def test_skill_center_description_uses_mdinline_not_escapehtml(self):
         """技能中心那一处是最常被看到的；逐行核对它没有退回 escapeHtml。"""
