@@ -2197,7 +2197,16 @@
     </div>
 
     <div class="footer">Agent Hub v{{ version }}<span class="foot-long"> · 融合 Agent_Manager (Apache-2.0) 设计理念</span> · <span id="ftTime"></span></div>
-    <div id="toast"></div>
+    <!-- 2026-10-05 无障碍：toast 是全站唯一的错误/成功通知通道（134 处调用），
+         此前**全站 0 处** aria-live / role="status" ⇒ 屏幕阅读器用户完全听不到
+         「加载失败」「已保存」这类关键提示。
+         role="status" + aria-live="polite"：新 toast 追加进容器时被朗读，且不打断
+         当前朗读（错误用 alert 才抢话，而那要改 toast() 的热路径，134 个调用方）。
+         ⚠ 刻意**不加** aria-atomic="true" —— 那会让每次追加都重播整个堆栈
+         （多条同时出现时体验反而更差）。aria-atomic="false" 是显式写出默认语义。
+         ⚠ 只改容器属性，**不改 toast() 签名**：它返回节点供
+         「链路恢复后收掉同一条提示」用（01-core-boot.js:290 + 03:184 / 02:221）。 -->
+    <div id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
     <!-- ── 端侧自检面板（仅 `?diag=1` 时可见）─────────────────────────────
        2026-09-23 事故：同一地址在浏览器正常、在 pi-web 自研 APP 里异常，而本机对手机
        零探针能力 ⇒ 任何“服务端全绿”都无法判端侧到底卡在哪个环节。本面板只读不写：
