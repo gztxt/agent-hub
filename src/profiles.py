@@ -36,6 +36,36 @@ CODEBUDDY_CLI = os.getenv("CODEBUDDY_CLI",
 # 进程扫描缓存（一次 discovery 周期复用）
 _proc_cache = {"ts": 0.0, "procs": []}
 
+# ── 外部探测缓存（2026-10-05，v0.13.79）──────────────────────────────
+# 为什么加：`/api/agents` 实测 57ms 里，`docker ps -a` 独占 16.5ms、`systemctl
+# list-units` 独占 5.1ms（主会话 2026-10-05 实测），而前端每 30s 调一次、
+# updateBadges 每 60s 又调一次 ⇒ 每分钟白烧 3 次同样的两个子进程。
+# 与 `_proc_cache` 同档（3s）：短到用户感知不到状态陈旧，长到足以覆盖一次轮询。
+#
+# ⚠ **写路径必须绕过**（`force_fresh=True`）：`resources.kill_resource` 用
+# `running_systemd_units()` 的结果把关 SIGTERM/SIGKILL（resources.py:325-327）——
+# 若那里吃到陈旧缓存，可能**误杀已停的**或**拒杀刚起的**。读路径（列表/面板）
+# 无此风险，故默认走缓存、由写路径显式声明要新鲜值。
+_UNITSD_TTL_S = float(os.getenv("AGENT_PROBE_TTL", "3"))   # 与 _proc_cache 同档
+_unitsds_cache = {"ts": 0.0, "units": None}
+_docker_cache = {"ts": 0.0, "states": None}
+
+
+def _cached(cache: dict, key: str, ttl_s: float, produce):
+    """手搓 TTL 缓存（与 _proc_cache 同形）。
+
+    刻意不抽公共类：全仓四种缓存形制（skill/vitals/gwprobe/_gz_cache），
+    此刻统一它属于「批 9 延后」的重构范围，先让每处照抄自己那儿的范式。
+    """
+    import time
+    now = time.monotonic()
+    if cache[key] is not None and (now - cache["ts"]) < ttl_s:
+        return cache[key]
+    val = produce()
+    cache["ts"] = now
+    cache[key] = val
+    return val
+
 
 def list_processes() -> List[dict]:
     """[{pid, comm, cmdline}] —— /proc 只读，cmdline 截 300 字符"""
@@ -58,35 +88,49 @@ def list_processes() -> List[dict]:
     return procs
 
 
-def running_systemd_units() -> set:
-    import subprocess
-    try:
-        r = subprocess.run(["systemctl", "--user", "list-units", "--type=service",
-                            "--state=running", "--plain", "--no-legend"],
-                           capture_output=True, text=True, timeout=8)
-        return {ln.split()[0].removesuffix(".service") for ln in r.stdout.splitlines() if ln.strip()}
-    except Exception:  # noqa: BLE001
-        return set()
+def running_systemd_units(*, force_fresh: bool = False) -> set:
+    """在跑的 systemd user 单元名集合（去 .service 后缀）。
+
+    `force_fresh=True` 绕过缓存 —— **只有写路径该用**（见 `_unitsds_cache` 上方的
+    警告：kill 路径拿陈旧值会误杀/拒杀）。读路径别传，保持零成本。
+    """
+    def _produce() -> set:
+        import subprocess
+        try:
+            r = subprocess.run(["systemctl", "--user", "list-units", "--type=service",
+                                "--state=running", "--plain", "--no-legend"],
+                               capture_output=True, text=True, timeout=8)
+            return {ln.split()[0].removesuffix(".service") for ln in r.stdout.splitlines() if ln.strip()}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    if force_fresh:
+        return _produce()
+    return _cached(_unitsds_cache, "units", _UNITSD_TTL_S, _produce)
 
 
-def docker_states() -> Dict[str, str]:
+def docker_states(*, force_fresh: bool = False) -> Dict[str, str]:
     """{容器名: running|exited}"""
-    import json as _json
-    import subprocess
-    out: Dict[str, str] = {}
-    try:
-        r = subprocess.run(["docker", "ps", "-a", "--format", "{{json .}}"],
-                           capture_output=True, text=True, timeout=10)
-        for ln in r.stdout.splitlines():
-            try:
-                c = _json.loads(ln)
-                out[c.get("Names") or c.get("Name") or "?"] = \
-                    "running" if "running" in (c.get("State") or "").lower() else "exited"
-            except _json.JSONDecodeError:
-                continue
-    except Exception:  # noqa: BLE001
-        pass
-    return out
+    def _produce() -> Dict[str, str]:
+        import json as _json
+        import subprocess
+        out: Dict[str, str] = {}
+        try:
+            r = subprocess.run(["docker", "ps", "-a", "--format", "{{json .}}"],
+                               capture_output=True, text=True, timeout=10)
+            for ln in r.stdout.splitlines():
+                try:
+                    c = _json.loads(ln)
+                    out[c.get("Names") or c.get("Name") or "?"] = \
+                        "running" if "running" in (c.get("State") or "").lower() else "exited"
+                except _json.JSONDecodeError:
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+    if force_fresh:
+        return _produce()
+    return _cached(_docker_cache, "states", _UNITSD_TTL_S, _produce)
 
 
 PROFILES: List[dict] = [

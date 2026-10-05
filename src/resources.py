@@ -179,9 +179,14 @@ def _kill_pid(pid: int, sig: int = signal.SIGTERM) -> bool:
 
 async def _collect_agent_resources() -> List[dict]:
     """聚合所有画像的进程资源信息。"""
+    # P0-5（2026-10-05 补）：这三个探测都同步跑外部命令（/proc 遍历、
+    # systemctl 8s timeout、docker 10s timeout），在 async 里裸调会卡住事件循环 ——
+    # 一台 docker 卡住就是整个 hub 的 WebSocket 帧停摆，正是本文件 :104-107 记的形状。
+    # list_processes 另有 3s 缓存兜底，但首次仍付全额；units/docker 走各自的 TTL 缓存。
     procs = profiles.list_processes()
-    units = profiles.running_systemd_units()
-    dockers = profiles.docker_states()
+    units, dockers = await asyncio.gather(
+        asyncio.to_thread(profiles.running_systemd_units),
+        asyncio.to_thread(profiles.docker_states))
 
     # 先按画像匹配 PID，再批量采样（避免对 400+ 进程逐个 sleep）
     all_profiles = profiles.all_profiles(include_blocked=True)
@@ -319,9 +324,15 @@ async def kill_resource(
         sig = signal.SIGKILL
 
     # 收集目标进程
+    # ⚠ **写路径必须用 force_fresh=True 绕过 TTL 缓存**（2026-10-05）：下一行的
+    # `status != "running"` 直接把关 SIGTERM/SIGKILL。若这里吃到最多 3s 的陈旧值：
+    #   · 单元刚停 → 缓存说 running → **误杀一个已经不在的进程组**
+    #   · 单元刚起 → 缓存说 stopped → **拒杀一个真在跑的**（409）
+    # 读路径（列表/面板）承担不了这个后果，所以新鲜度由本行显式声明。
     procs = profiles.list_processes()
-    units = profiles.running_systemd_units()
-    dockers = profiles.docker_states()
+    units, dockers = await asyncio.gather(
+        asyncio.to_thread(profiles.running_systemd_units, force_fresh=True),
+        asyncio.to_thread(profiles.docker_states, force_fresh=True))
     status = profiles.detect_status(prof, procs, units, dockers)
     if status != "running":
         raise HTTPException(409, "Agent not running")
