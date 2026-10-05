@@ -518,6 +518,11 @@ function lanUrl(url) {
 
 let agentFailStreak = 0;
 async function loadAgents() {
+  /* 2026-10-05：页面隐藏时早退。/api/agents 是全站最重的只读端点（25 个 agent，
+   * 每次跑 docker ps + systemctl —— 见 profiles.py 的 TTL 缓存），30s 一次在后台
+   * 标签里纯属白烧。守卫放**函数体内**不动 setInterval 注册（06:339）。
+   * 语义无副作用：loadAgents 失败时本就「沿用旧值」，早退不改变可见行为。 */
+  if (document.hidden) return;
   try {
     const d = await api('/api/agents');
     AGENTS = d.agents || [];
@@ -574,6 +579,9 @@ function setHealthDot(cls, title) {
   if (title) d.title = title;
 }
 async function pollHealth() {
+  /* 2026-10-05：页面隐藏时早退（15s 一次的健康灯在后台标签里白跑）。
+   * 守卫放函数体内，不动 06:340 的 setInterval 注册。 */
+  if (document.hidden) return;
   try {
     const d = await api('/health');
     setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));

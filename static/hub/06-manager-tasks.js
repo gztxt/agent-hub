@@ -224,9 +224,16 @@ function setBadge(page, n) {
 }
 /* 徽章只取现有接口的现成数据，不新增后端 */
 async function updateBadges() {
+  /* 2026-10-05：页面隐藏时早退（本函数一次 3 个 fetch，60s 一轮）。 */
+  if (document.hidden) return;
+  /* 2026-10-05：agent 徽章改读全局 AGENTS，不再自己 fetch /api/agents。
+   * 理由（实测）：loadAgents 每 30s 拉一次 /api/agents 灌进 AGENTS（01:520），
+   * 而本函数每 60s 又拉同一 URL ⇒ 每 30s 两次、每 60s 三次重复请求。
+   * 而 /api/agents 是全站最重的只读端点（25 个 agent，每次跑 docker ps + systemctl）。
+   * 顺带消掉一个竞态：两条路径可能用**不同快照**渲染出不一致的徽章计数。
+   * /mcp/servers 与 /api/jobs 保留 fetch —— 那是确属不同的数据，AGENTS 里没有。 */
   try {
-    const d = await (await fetch('/api/agents')).json();
-    const all = d.agents || [];
+    const all = AGENTS || [];
     setBadge('classroom', all.filter(a => a.kind === 'agent').length);
     setBadge('chat', all.length);
   } catch (e) { /* 静默：徽章是增强，失败不影响主流程 */ }
@@ -333,6 +340,14 @@ function tick() {
 setInterval(tick, 1000); tick();
 setInterval(loadAgents, 30000);  // T4：8s→30s（左栏手风琴与首页摘要随 loadAgents 一起刷新，无需高频）
 pollHealth(); setInterval(pollHealth, 15000);  // T5：健康灯独立于 agent 列表轮询
+/* 2026-10-05：回到可见时立刻补一次。loadAgents / pollHealth / updateBadges 都加了
+   `if (document.hidden) return` 的隐藏守卫（省后台流量），但守卫只省「隐藏时」的，
+   若没有唤醒路径，笔记本合盖再打开就会先看到一份过期快照直到下个周期。
+   这里一次补齐三路；`loadActivity` 的唤醒在 12-activity.js 里（各自就近）。 */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  loadAgents(); updateBadges(); pollHealth();
+});
 setInterval(() => {
   if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
   if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();

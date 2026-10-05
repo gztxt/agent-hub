@@ -160,7 +160,14 @@ function lpRenderList() {
   const visible = LP.filter(p => !lpHiddenSet.has(p.path) || showHidden);
   const ordered = visible.filter(p => lpStars.has(p.path))
     .concat(visible.filter(p => !lpStars.has(p.path)));
-  const idx = ordered.map(p => [p, LP.indexOf(p)])
+  /* 2026-10-05：原 `LP.indexOf(p)` 在 map 里对每个项目做一次线性查找 ⇒ O(n²)。
+   * 改一次性建 **path→下标** 的 Map。用 path 而不是对象引用作键：LP 来自后端
+   * JSON 数组（`d.projects`），同一次渲染内对象引用稳定，但 path 才是项目的
+   * 唯一标识（lpStars / lpHiddenSet 也都以 path 为键，口径一致）。
+   * 若真出现重复 path，Map 保留**最后**一个下标，而 indexOf 给**第一个** ——
+   * 这类重复本就不该存在（后端按目录枚举），且只影响列表里那一行的序号显示。 */
+  const order = new Map(LP.map((p, i) => [p.path, i]));
+  const idx = ordered.map(p => [p, order.get(p.path)])
     .filter(([p]) => !q || fuzzyMatch([[p.name, 3], [p.path, 1]], q) > 0);
   box.innerHTML = idx.map(([p, i]) => lpRowHtml(p, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配项目' : '无项目') + '</div>';

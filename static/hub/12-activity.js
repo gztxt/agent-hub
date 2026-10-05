@@ -36,6 +36,13 @@ function activityMap(sessions) {
 }
 
 async function loadActivity() {
+  /* 2026-10-05：页面隐藏时早退（别在后台标签里白拉）。
+   * ⚠ 守卫放在**函数体内**而不是 `setInterval` 注册处 ——
+   * tests/test_activity_indicator.py:114 断言的字面量是
+   * `setInterval(loadActivity,\s*\d+)`，动注册会撞红。
+   * 语义无副作用：停表期间不更新 ACTIVITY，而「拉不到就保持旧值」本来就是
+   * 本函数的既定失败语义（见下面 catch），所以早退不改变可见行为。 */
+  if (document.hidden) return;
   try {
     /* 只读**已存档**的 token，绝不走 termHeaders()。
        改前踩的坑（真渲染探针抓的，renderer 直接挂死）：
@@ -102,3 +109,8 @@ function renderActivity() {
    这里只读不写，不与 TERM_HB 抢。 */
 loadActivity();
 setInterval(loadActivity, 8000);
+/* 回到可见时**立刻补一次**。否则笔记本合盖唤醒后，指示会停在休眠前的快照
+   直到下一个 8s 周期 —— 用户第一眼看到的是过期数据。
+   （这一条闸门没有约束，是我按「隐藏守卫必须有唤醒路径」补的；
+    闸门真正约束的只有上面那条 setInterval 字面量。） */
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadActivity(); });

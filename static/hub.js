@@ -518,6 +518,11 @@ function lanUrl(url) {
 
 let agentFailStreak = 0;
 async function loadAgents() {
+  /* 2026-10-05：页面隐藏时早退。/api/agents 是全站最重的只读端点（25 个 agent，
+   * 每次跑 docker ps + systemctl —— 见 profiles.py 的 TTL 缓存），30s 一次在后台
+   * 标签里纯属白烧。守卫放**函数体内**不动 setInterval 注册（06:339）。
+   * 语义无副作用：loadAgents 失败时本就「沿用旧值」，早退不改变可见行为。 */
+  if (document.hidden) return;
   try {
     const d = await api('/api/agents');
     AGENTS = d.agents || [];
@@ -574,6 +579,9 @@ function setHealthDot(cls, title) {
   if (title) d.title = title;
 }
 async function pollHealth() {
+  /* 2026-10-05：页面隐藏时早退（15s 一次的健康灯在后台标签里白跑）。
+   * 守卫放函数体内，不动 06:340 的 setInterval 注册。 */
+  if (document.hidden) return;
   try {
     const d = await api('/health');
     setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));
@@ -4410,9 +4418,16 @@ function setBadge(page, n) {
 }
 /* 徽章只取现有接口的现成数据，不新增后端 */
 async function updateBadges() {
+  /* 2026-10-05：页面隐藏时早退（本函数一次 3 个 fetch，60s 一轮）。 */
+  if (document.hidden) return;
+  /* 2026-10-05：agent 徽章改读全局 AGENTS，不再自己 fetch /api/agents。
+   * 理由（实测）：loadAgents 每 30s 拉一次 /api/agents 灌进 AGENTS（01:520），
+   * 而本函数每 60s 又拉同一 URL ⇒ 每 30s 两次、每 60s 三次重复请求。
+   * 而 /api/agents 是全站最重的只读端点（25 个 agent，每次跑 docker ps + systemctl）。
+   * 顺带消掉一个竞态：两条路径可能用**不同快照**渲染出不一致的徽章计数。
+   * /mcp/servers 与 /api/jobs 保留 fetch —— 那是确属不同的数据，AGENTS 里没有。 */
   try {
-    const d = await (await fetch('/api/agents')).json();
-    const all = d.agents || [];
+    const all = AGENTS || [];
     setBadge('classroom', all.filter(a => a.kind === 'agent').length);
     setBadge('chat', all.length);
   } catch (e) { /* 静默：徽章是增强，失败不影响主流程 */ }
@@ -4519,6 +4534,14 @@ function tick() {
 setInterval(tick, 1000); tick();
 setInterval(loadAgents, 30000);  // T4：8s→30s（左栏手风琴与首页摘要随 loadAgents 一起刷新，无需高频）
 pollHealth(); setInterval(pollHealth, 15000);  // T5：健康灯独立于 agent 列表轮询
+/* 2026-10-05：回到可见时立刻补一次。loadAgents / pollHealth / updateBadges 都加了
+   `if (document.hidden) return` 的隐藏守卫（省后台流量），但守卫只省「隐藏时」的，
+   若没有唤醒路径，笔记本合盖再打开就会先看到一份过期快照直到下个周期。
+   这里一次补齐三路；`loadActivity` 的唤醒在 12-activity.js 里（各自就近）。 */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  loadAgents(); updateBadges(); pollHealth();
+});
 setInterval(() => {
   if (document.getElementById('page-tasks').classList.contains('on')) { loadRuns(); if (currentRun) openRun(currentRun); }
   if (document.getElementById('page-jobs').classList.contains('on')) loadJobs();
@@ -4930,7 +4953,14 @@ function lpRenderList() {
   const visible = LP.filter(p => !lpHiddenSet.has(p.path) || showHidden);
   const ordered = visible.filter(p => lpStars.has(p.path))
     .concat(visible.filter(p => !lpStars.has(p.path)));
-  const idx = ordered.map(p => [p, LP.indexOf(p)])
+  /* 2026-10-05：原 `LP.indexOf(p)` 在 map 里对每个项目做一次线性查找 ⇒ O(n²)。
+   * 改一次性建 **path→下标** 的 Map。用 path 而不是对象引用作键：LP 来自后端
+   * JSON 数组（`d.projects`），同一次渲染内对象引用稳定，但 path 才是项目的
+   * 唯一标识（lpStars / lpHiddenSet 也都以 path 为键，口径一致）。
+   * 若真出现重复 path，Map 保留**最后**一个下标，而 indexOf 给**第一个** ——
+   * 这类重复本就不该存在（后端按目录枚举），且只影响列表里那一行的序号显示。 */
+  const order = new Map(LP.map((p, i) => [p.path, i]));
+  const idx = ordered.map(p => [p, order.get(p.path)])
     .filter(([p]) => !q || fuzzyMatch([[p.name, 3], [p.path, 1]], q) > 0);
   box.innerHTML = idx.map(([p, i]) => lpRowHtml(p, i)).join('') ||
     '<div class="hint" style="padding:10px">' + (q ? '无匹配项目' : '无项目') + '</div>';
@@ -5653,6 +5683,13 @@ function activityMap(sessions) {
 }
 
 async function loadActivity() {
+  /* 2026-10-05：页面隐藏时早退（别在后台标签里白拉）。
+   * ⚠ 守卫放在**函数体内**而不是 `setInterval` 注册处 ——
+   * tests/test_activity_indicator.py:114 断言的字面量是
+   * `setInterval(loadActivity,\s*\d+)`，动注册会撞红。
+   * 语义无副作用：停表期间不更新 ACTIVITY，而「拉不到就保持旧值」本来就是
+   * 本函数的既定失败语义（见下面 catch），所以早退不改变可见行为。 */
+  if (document.hidden) return;
   try {
     /* 只读**已存档**的 token，绝不走 termHeaders()。
        改前踩的坑（真渲染探针抓的，renderer 直接挂死）：
@@ -5719,6 +5756,11 @@ function renderActivity() {
    这里只读不写，不与 TERM_HB 抢。 */
 loadActivity();
 setInterval(loadActivity, 8000);
+/* 回到可见时**立刻补一次**。否则笔记本合盖唤醒后，指示会停在休眠前的快照
+   直到下一个 8s 周期 —— 用户第一眼看到的是过期数据。
+   （这一条闸门没有约束，是我按「隐藏守卫必须有唤醒路径」补的；
+    闸门真正约束的只有上面那条 setInterval 字面量。） */
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadActivity(); });
 /* 13-term-touch.js —— 终端移动端触摸层（P1：惯性滚动 / 长按选区 / 双指缩放字号）
  *
  * 为什么有这层：xterm.js 在触摸设备上只做 1:1 跟手，**松手即停、没有惯性**，
