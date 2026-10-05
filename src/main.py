@@ -63,6 +63,7 @@ import gwprobe                      # 上游网关（CCR）连通性 + 模型注
 import healthx                      # /health 派生量的纯函数层（L0 不 import src.main，故抽出来）
 import sessions_export as export_mod
 import export_batch                   # 导出取消息的批量 IN（L0 可测的纯函数层，同 staticguard 范式）
+import models_cache                   # 模型清单的成功路径缓存（同上，纯函数层）
 import writeauth                    # 导出端点按写端点同等鉴权（复用 decide 的 fail-closed）
 import audit as audit_mod           # 资产变更审计的只读查询门面（GET /api/audit/list）
 import runlog as runlog_mod         # 运行日志：三中心检索留痕 + GET /api/runlog 查询门面
@@ -482,6 +483,11 @@ def _spawn(coro) -> asyncio.Task:
 
 
 app = FastAPI(title="Agent Hub", version=VERSION)
+
+#: `/api/models` 的成功缓存，按 adapter 分桶（claude / jcode / …）。
+#: 模块级 = 跨请求存活，这是缓存的本意；不随 app 重启清空是刻意的
+#: （模型清单重启后立刻重取一次即可，不需要持久化）。
+_models_cache: dict = {}
 
 
 def _parse_cors_origins() -> list:
@@ -1100,12 +1106,18 @@ async def settings_term_token(request: Request, req: PasscodeRequest):
 # ── 模型代理（前端动态加载：CCR/jcode 等 OpenAI 兼容 /v1/models）────
 
 @app.get("/api/models")
-async def list_models(agent_id: Optional[str] = None):
+async def list_models(agent_id: Optional[str] = None,
+                      force: bool = Query(default=False)):
     """统一模型列表端点。
 
     默认拉 claude(CCR:3456) 的 /v1/models 作为"全局可对话模型"
     （v0.10.0 起 hub-self 已移除，claude/jcode 共用同一 CCR 模型表）。
-    按 vendor/display_name 去重后返回；带分组（qwen/deepseek/nvidia/openrouter/agnes）。"""
+    按 vendor/display_name 去重后返回；带分组（qwen/deepseek/nvidia/openrouter/agnes）。
+
+    2026-10-05 加**成功路径缓存**（`models_cache.py`，60s）：原先每次都新建
+    ClientSession 打上游且 `timeout=total=8` 且无缓存 ⇒ CCR 一挂，模型下拉**每次卡 8 秒**。
+    `force=true` 沿用 `skill_status`（skill.py:857）的既有惯例绕缓存。
+    ⚠ 失败/超时**不写缓存**（models_cache 里那条注释是本改动最要紧的判据）。"""
     adapter_id = agent_id or "claude"
     adapter = get_adapter(adapter_id)
     base = None
@@ -1113,19 +1125,45 @@ async def list_models(agent_id: Optional[str] = None):
         base = adapter.base_url
     if not base:
         return {"models": [], "groups": {}, "error": "no compatible adapter"}
-    import aiohttp as _aio
-    out: list = []
+
+    # 按 adapter 分桶缓存（claude 与 jcode 共用 CCR，但接口各自可换）
+    _bucket = _models_cache.setdefault(adapter_id, models_cache.TTLCache())
+
+    async def _fetch() -> dict:
+        """⚠ 这个函数**不抛异常**（改前就不抛，语义保持），失败信息装进 `error` 键。
+
+        而 `models_cache.cached_models` 的判据是「`error` 为空才缓存」——
+        两者必须配套：若这里把失败**抛**出去，缓存层就拿不到 payload；
+        若这里失败却**返回**一个无 error 键的空清单，缓存层就会把失败缓存 60s
+        （2026-10-05 影子实测踩过，见 models_cache.cached_models 的 docstring）。
+        """
+        import aiohttp as _aio
+        out: list = []
+        try:
+            async with _aio.ClientSession() as s:
+                async with s.get(f"{base}/v1/models",
+                                 headers=adapter.build_headers() if hasattr(adapter, "build_headers") else {},
+                                 timeout=_aio.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        out = data.get("data") or []
+                    else:
+                        # 非 200 也要带 error，否则会被缓存层当成「成功但清单为空」
+                        return {**_shape_models([], adapter_id),
+                                "error": "上游返回 HTTP %d" % r.status}
+        except Exception as e:  # noqa: BLE001 —— 语义与改前逐字一致：不抛，回 error 键
+            return {"models": [], "groups": {}, "error": str(e)[:200]}
+        return _shape_models(out, adapter_id)
+
     try:
-        async with _aio.ClientSession() as s:
-            async with s.get(f"{base}/v1/models",
-                             headers=adapter.build_headers() if hasattr(adapter, "build_headers") else {},
-                             timeout=_aio.ClientTimeout(total=8)) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    out = data.get("data") or []
-    except Exception as e:  # noqa: BLE001
-        return {"models": out, "groups": {}, "error": str(e)[:200]}
-    # 去重 + 分组
+        payload, was_cached = await models_cache.cached_models(_bucket, _fetch, force=force)
+    except Exception as e:  # noqa: BLE001 —— 兜底：_fetch 已不抛，这里是最后一道
+        return {"models": [], "groups": {}, "error": str(e)[:200]}
+    return {**payload, "cached": was_cached}
+
+
+def _shape_models(out: list, adapter_id: str) -> dict:
+    """把上游的原始 model 列表去重 + 分组（判据与缓存无关，故抽成独立纯函数）。"""
     seen = set()
     groups: dict = {}
     cleaned = []
