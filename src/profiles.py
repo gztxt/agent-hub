@@ -138,10 +138,19 @@ PROFILES: List[dict] = [
     {"id": "claude", "name": "Claude Code", "kind": "agent",
      "detect": {"proc": [r"(^|/)claude( |$)", r"claude\.js", "@anthropic-ai/claude-code"]},
      "cli": "claude", "port": None,
-     "ui": {"url": "http://127.0.0.1:3010", "port": 3010, "unit": "cloudcli", "label": "CloudCLI"},
+     "ui": None,
      "terminal": {"cmd": "claude", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": {"adapter": "claude"},
-     "desc": "Anthropic 编码 Agent（CLI/TUI）；Web UI 宿主=cloudcli 单元 :3010；对话经 CCR"},
+     "desc": "Anthropic 编码 Agent（CLI/TUI）；对话经 CCR；"
+              "（v0.13.80 起 CloudCLI 独立原生界面已拆出为 cloudcli 子菜单，"
+              "claude 卡保留纯终端+对话）"},
+    {"id": "cloudcli", "name": "CloudCLI", "kind": "agent",
+     "detect": {"systemd": ["cloudcli"]},
+     "cli": None, "port": 3010,
+     "ui": {"url": "http://127.0.0.1:3010", "port": 3010, "unit": "cloudcli", "label": "CloudCLI"},
+     "terminal": None, "chat": None,
+     "desc": "Claude Code 的 Web 原生宿主（cloudcli 单元 :3010）：会话列表+项目直达，"
+              "独立子菜单，embed 面板下方挂 CloudCLI 项目直达面板（renderCloudcliProjects）"},
     {"id": "pi", "name": "Pi Agent", "kind": "agent",
      "detect": {"proc": [r"next-server", r"(^|/)pi( |$)"], "systemd": ["pi-web"]},
      "cli": None, "port": 30141, "ui": "http://127.0.0.1:30141",

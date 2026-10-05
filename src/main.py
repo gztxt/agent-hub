@@ -79,7 +79,10 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.79"   # 本轮八批优化的收口版。三条根因，逐条展开在下面：
+VERSION = "0.13.80"   # 本轮：Agents 菜单 CloudCLI 独立子菜单（cloudcli 从 claude 卡拆出为独立画像卡，embedBody 槽位+renderCloudcliProjects 项目直达面板）
+#   根因：cloudcli 宿主嵌在 claude 卡里时，点 Claude Code 菜单行进 embed（cloudcli 原生界面），
+#   终端页对 cloudcli 用户不可达；cloudcli 原生界面也没有独立子菜单入口。
+#   拆开后：claude=纯终端+对话（ui=None），cloudcli=独立卡（kind=agent, :3010）+embed+项目直达。
 #   ① **闸门自己会说谎，所以先修它**：`FORCE_COLOR=3` 让 node 把 `console.log(数字)`
 #     染成 ANSI ⇒ `int('\x1b[33m60\x1b[39m')` 直接 ValueError ⇒ 22 条用例**假红**。
 #     而「全绿/全红」是本轮一切判据的前提 —— 判据本身不可信时，后面八批的

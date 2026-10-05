@@ -116,8 +116,14 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # 关键字取自 src/main.py 的 VERSION 注释里实际写下的字句。
         "0.13.79": ("FORCE_COLOR", "假红", "逐版根因已于 2026-10-05 归档",
                     "逐字搬运", "只缓存成功路径"),
+        # 0.13.80：CloudCLI 独立子菜单拆出，claude 卡不再挂 :3010 宿主。
+        # 根因：cloudcli 宿主嵌在 claude 卡里时，点 Claude Code 菜单行会进
+        # embed（cloudcli 原生界面），终端页对 cloudcli 用户不可达；同时
+        # cloudcli 原生界面没有独立子菜单入口，项目直达只能走 claude 详情抽屉。
+        # 拆开后：claude=纯终端+对话，cloudcli=独立卡+embed原生界面+项目直达面板。
+        "0.13.80": ("cloudcli", "独立子菜单", "embedBody", "renderCloudcliProjects"),
     }
-    CURRENT_VERSION = "0.13.79"
+    CURRENT_VERSION = "0.13.80"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

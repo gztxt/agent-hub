@@ -284,11 +284,13 @@ class TestFrontendSurface(unittest.TestCase):
             self.assertIn(f"async function {fn}(", self.w04, f"{fn} 缺失 ⇒ 点击无反应")
 
     def test_start_navigates_embed_with_dataset_sync(self):
-        """iframe 直达必须同步 dataset.src（防 applyChatMode 重置回实体 ui.url）。"""
+        """iframe 直达必须同步 dataset.src（防 applyChatMode 重置回实体 ui.url）。
+        v0.13.80：入口从 claude 详情抽屉拆出为独立 cloudcli 子菜单（embed 面板下方
+        项目直达），兜底路径仍保留在 claude 抽屉 ⇒ 两处任一命中即合规。"""
         m = re.search(r"async function cloudcliStart\(.*?\n\}", self.w04, re.S)
         self.assertTrue(m)
         body = m.group(0)
-        self.assertIn("gotoChat('claude')", body, "先进 embed 模式再覆写 src")
+        self.assertIn("gotoChat('cloudcli')", body, "先进独立 cloudcli 子菜单 embed 面板再覆写 src")
         self.assertIn("f.dataset.src = url", body, "dataset 不同步=下次切模式被重置")
         self.assertIn("f.src = url", body)
         self.assertIn("/api/cloudcli/start", body)
@@ -308,6 +310,41 @@ class TestFrontendSurface(unittest.TestCase):
         html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="detailDrawer"', html, "复用 detailDrawer——不新建 section")
 
+    def test_embed_body_slot_exists(self):
+        """v0.13.80：独立 cloudcli 子菜单 embed 面板下方需 #embedBody 槽位
+        （renderCloudcliProjects 渲染锚点，旧缓存无槽位时 loadCloudcliProjects 兜底）。"""
+        html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="embedBody"', html, "embedBody 槽位缺失 ⇒ 嵌入面板渲染走兜底路径")
+
+    def test_cloudcli_profile_independent_card(self):
+        """v0.13.80：cloudcli 拆出为独立画像卡（Agents 菜单子项），claude 卡不再挂
+        cloudcli 宿主 ui ⇒ 终端页纯终端、原生界面独立子菜单。
+        用 AST 精确切出各画像 dict 卡（不靠正则猜换行）。"""
+        import ast
+        src = (_REPO / "src" / "profiles.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        cards = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                    and node.target.id == "PROFILES":
+                val = node.value
+            elif isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "PROFILES" for t in node.targets):
+                val = node.value
+            else:
+                continue
+            if isinstance(val, ast.List):
+                for el in val.elts:
+                    if isinstance(el, ast.Dict) and el.keys and el.values \
+                            and isinstance(el.keys[0], ast.Constant) \
+                            and el.keys[0].value == "id":
+                        ids = el.values[0].value if isinstance(el.values[0], ast.Constant) else str(el.values[0])
+                        cards[ids] = ast.get_source_segment(src, el)
+        self.assertIn("cloudcli", cards, "cloudcli 独立画像缺失 ⇒ Agents 菜单无子菜单")
+        self.assertIn("3010", cards["cloudcli"], "cloudcli 卡未挂 :3010 ⇒ 原生界面无入口")
+        self.assertIn("agent", cards["cloudcli"], "cloudcli 必须是 kind=agent 才能进 Agents 菜单")
+        self.assertNotIn("3010", cards.get("claude", ""),
+                         "claude 画像残留 cloudcli 宿主端口 ⇒ 旧路径未清干净")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

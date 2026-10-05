@@ -266,12 +266,15 @@ async function chatSessDel() {
 
 /* ── 记忆中心 ─────────────────────────────────────── */
 
-/* ── CloudCLI 项目直达（v0.13.29）──────────────────────────────────────
- * 用户诉求：「cloudcli 项目检索要完善、无法加载本机所有项目、精确显示项目名称、
+/* ── CloudCLI 项目直达（v0.13.29 → v0.13.80 双出口）────────────────────────────
+ * v0.13.80（2026-10-05）：cloudcli 拆出为 Agents 菜单独立子菜单，其原生界面
+ * （:3010 embed）下方内嵌项目直达面板（renderCloudcliProjects，02-nav-and-poll.js）；
+ * 本函数降级为「嵌入面板渲染失败时的兜底」：claude 详情抽屉点入时走这条旧路径。
+ * 用户诉求（原始）：「cloudcli 项目检索要完善、无法加载本机所有项目、精确显示项目名称、
  * 点击对应项目快速开始」。
  * 列表：GET /api/cloudcli/projects（直读 auth.db，与 cloudcli 服务活死解耦）；
  * 启动：POST /api/cloudcli/start {path} → {sessionId, url} → iframe 直达
- * /session/{id}（先 gotoChat('claude') 进 embed 模式再覆写 src——dataset 同步
+ * /session/{id}（gotoChat('cloudcli') 进 embed 面板后覆写 src——dataset 同步
  * 防 applyChatMode 重置；embed 顶栏地址行同步）。
  * 嵌入 iframe 的鉴权态由 cloudcli 自己的 localStorage 管（跨源但同浏览器持久，
  * 知识文档 50 号已证）；hub 不传 token 不越权。 */
@@ -315,10 +318,12 @@ async function cloudcliStart(path) {
       body: JSON.stringify({ path: path })
     });
     const full = 'http://127.0.0.1:3010' + (d.url || '');
-    /* 先进 embed 模式（gotoChat 会触发 applyChatMode 重置 iframe src），
-       再覆写 src 到 /session/{id}——dataset 必须同步，否则下次 applyChatMode
-       会把它重置回实体 ui.url。地址行（embedUrlHint 的 span）同步显示。 */
-    if (typeof gotoChat === 'function') gotoChat('claude');
+    /* v0.13.80：cloudcli 独立子菜单成为原生界面入口。会话创建在 :3010 根域，
+       跨源 iframe 里 cloudcli 自己的 localStorage 鉴权态与根页面同源（:3010），
+       与 hub 面板里嵌的是否同一 iframe 无关。gotoChat('cloudcli') 进 embed 面板
+       再覆写 src 到 /session/{id}（dataset 必须同步，防 applyChatMode 重置回实体
+       ui.url）。地址行（embedUrlHint 的 span）同步显示。 */
+    if (typeof gotoChat === 'function') gotoChat('cloudcli');
     const f = $('embedFrame');
     if (f) {
       const url = lanUrl(full);

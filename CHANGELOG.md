@@ -1,3 +1,13 @@
+## v0.13.80 — CloudCLI 独立子菜单（Agents 菜单拆出原生界面+项目直达面板）
+
+> 2026-10-05：cloudcli 从 claude 卡拆出为独立画像卡（kind=agent，systemd 检测 :3010）。
+> claude 卡 ui=None（纯终端+对话），cloudcli 卡 embed 原生界面下方内嵌 CloudCLI 项目直达
+> 面板（#embedBody 槽位 + renderCloudcliProjects，02-nav-and-poll.js）。
+> 会话创建入口从 gotoChat('claude') 改为 gotoChat('cloudcli')。
+> L0 1327 全绿；/api/agents 实测：claude=term+chat+detail，cloudcli=embed+open+detail。
+
+---
+
 ## v0.13.79 — 八批优化收口：闸门可信度 + 性能地基 + XSS + 前端卫生 + 文档归位
 
 > 本版是 2026-10-05 一轮系统性优化的收口。**起点是一个测试基础设施缺陷**：

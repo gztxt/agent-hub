@@ -1458,13 +1458,51 @@ let chatMode = lsGet(MODE_KEY + chatPick) || '';
 function sessKey(id) { return 'hub.sess.' + id; }
 
 function entityById(id) { return AGENTS.find(a => a.id === id); }
+/* 原生界面形态（统一对话页内，embed 面板）下的「CloudCLI 项目直达」面板。
+   用户 2026-10-05 指令：CloudCLI 的独立原生界面从 Claude Code 卡里拆出，
+   作为 Agents 菜单下独立子菜单（cloudcli）；claude 终端页保持纯终端，
+   但**嵌进 CloudCLI 原生界面里**（本函数负责：渲染 embed 面板后把项目清单追加到
+   iframe 下方，点「开始会话」直达对应项目的新会话，不再需要进 Claude Code 详情抽屉）。 */
+function renderCloudcliProjects() {
+  if (typeof loadCloudcliProjects !== 'function') return;
+  const body = document.getElementById('embedBody');
+  if (!body) {  // 降级：embedBody 尚未挂到 index.html（旧缓存）→ 走旧抽屉路径
+    loadCloudcliProjects();
+    return;
+  }
+  if (body.querySelector('#ccProjects')) return;   // 防重复渲染（切换 agent 多次）
+  const holder = document.createElement('div');
+  holder.id = 'ccProjects';
+  holder.innerHTML = '<div class="hint" style="margin:8px 10px 2px">CloudCLI 项目（本机全部 · 点「开始会话」直达）</div><div class="hint" style="padding:0 10px">加载中…</div>';
+  body.appendChild(holder);
+  api('/api/cloudcli/projects').then(d => {
+    if (!d.ok) { holder.innerHTML = '<div class="hint" style="margin:8px 10px 2px">CloudCLI 项目</div>' +
+      '<div class="hint" style="padding:0 10px;color:var(--st-error,var(--danger))">加载失败：' + escapeHtml(d.error || '?') + '</div>'; return; }
+    const rows = (d.projects || []).map(p =>
+      '<div class="mem-item" style="gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer" ' +
+      'onclick="cloudcliStart(' + jsStr(p.path) + ')">' +
+      '<p style="min-width:0;margin:0"><b>' + escapeHtml(p.name) + '</b>' + (p.starred ? ' ★' : '') +
+      (p.sessions ? ' <span class="hint">' + p.sessions + ' 会话</span>' : '') +
+      '<br><span class="hint" style="font-family:var(--font-mono);font-size:var(--fs-xs)">' +
+      escapeHtml(String(p.path).slice(0, 60)) +
+      (p.last_activity ? ' · ' + String(p.last_activity).slice(5, 16).replace('T', ' ') : '') + '</span></p>' +
+      '<button class="btn sm" style="align-self:center" onclick="event.stopPropagation();cloudcliStart(' + jsStr(p.path) + ')">▶ 开始会话</button></div>').join('');
+    holder.innerHTML = '<div class="hint" style="margin:8px 10px 2px">CloudCLI 项目（' + (d.count || 0) + ' 个 · 点行或「开始会话」直达）</div>' +
+      '<div class="tscroll" style="max-height:220px;overflow-y:auto">' + (rows || '<div class="hint" style="padding:0 10px">无项目</div>') + '</div>';
+  }).catch(e => {
+    holder.innerHTML = '<div class="hint" style="margin:8px 10px 2px">CloudCLI 项目</div>' +
+      '<div class="hint" style="padding:0 10px;color:var(--st-error,var(--danger))">加载失败：' + escapeHtml(e.message || '') + '</div>';
+  });
+}
 /* 工作台默认形态 —— **唯一真源**（openEntity 也走这里；两处各写一份优先级必然漂移）。
    有原生终端的 Agent 先给终端：它的独立 Web 宿主（claude←cloudcli :3010）自带一套登录，
    嵌进 hub 就是一张要重新登录的白页，而终端页里的 TUI 与本机命令行完全一致。
-   宿主界面保留为可切换的第二形态（终端页头部「原生界面」按钮）。 */
+   宿主界面保留为可切换的第二形态（终端页头部「原生界面」按钮）。
+   cloudcli 独立子菜单：无终端卡（纯服务型），默认形态 = embed（原生界面）+ 项目直达面板。 */
 function defaultModeOf(a) {
   const es = (a && a.entries) || [];
   const has = t => es.some(e => e.type === t);
+  if (a && a.id === 'cloudcli') return 'embed';
   if (a && a.kind === 'agent' && has('term')) return 'term';
   if (has('embed')) return 'embed';
   if (has('term')) return 'term';
@@ -1532,6 +1570,9 @@ function applyChatMode() {
     const f = $('embedFrame');
     if (f.dataset.src !== url) { f.src = url; f.dataset.src = url; }
     probeEmbed(url);
+    /* 独立 cloudcli 子菜单：embed 面板下挂 CloudCLI 项目直达（渲染到 #embedBody 槽位，
+       旧缓存无槽位时 loadCloudcliProjects 兜底走 claude 详情抽屉旧路径）。 */
+    if (chatPick === 'cloudcli') renderCloudcliProjects();
   } else if (chatMode === 'term') {
     $('termTitle').textContent = (a.name || chatPick);   // 用户 09-20：行首只留实体名，不加“· 终端会话”后缀，给芯片腾位
     ensureTerm();
@@ -2811,12 +2852,15 @@ async function chatSessDel() {
 
 /* ── 记忆中心 ─────────────────────────────────────── */
 
-/* ── CloudCLI 项目直达（v0.13.29）──────────────────────────────────────
- * 用户诉求：「cloudcli 项目检索要完善、无法加载本机所有项目、精确显示项目名称、
+/* ── CloudCLI 项目直达（v0.13.29 → v0.13.80 双出口）────────────────────────────
+ * v0.13.80（2026-10-05）：cloudcli 拆出为 Agents 菜单独立子菜单，其原生界面
+ * （:3010 embed）下方内嵌项目直达面板（renderCloudcliProjects，02-nav-and-poll.js）；
+ * 本函数降级为「嵌入面板渲染失败时的兜底」：claude 详情抽屉点入时走这条旧路径。
+ * 用户诉求（原始）：「cloudcli 项目检索要完善、无法加载本机所有项目、精确显示项目名称、
  * 点击对应项目快速开始」。
  * 列表：GET /api/cloudcli/projects（直读 auth.db，与 cloudcli 服务活死解耦）；
  * 启动：POST /api/cloudcli/start {path} → {sessionId, url} → iframe 直达
- * /session/{id}（先 gotoChat('claude') 进 embed 模式再覆写 src——dataset 同步
+ * /session/{id}（gotoChat('cloudcli') 进 embed 面板后覆写 src——dataset 同步
  * 防 applyChatMode 重置；embed 顶栏地址行同步）。
  * 嵌入 iframe 的鉴权态由 cloudcli 自己的 localStorage 管（跨源但同浏览器持久，
  * 知识文档 50 号已证）；hub 不传 token 不越权。 */
@@ -2860,10 +2904,12 @@ async function cloudcliStart(path) {
       body: JSON.stringify({ path: path })
     });
     const full = 'http://127.0.0.1:3010' + (d.url || '');
-    /* 先进 embed 模式（gotoChat 会触发 applyChatMode 重置 iframe src），
-       再覆写 src 到 /session/{id}——dataset 必须同步，否则下次 applyChatMode
-       会把它重置回实体 ui.url。地址行（embedUrlHint 的 span）同步显示。 */
-    if (typeof gotoChat === 'function') gotoChat('claude');
+    /* v0.13.80：cloudcli 独立子菜单成为原生界面入口。会话创建在 :3010 根域，
+       跨源 iframe 里 cloudcli 自己的 localStorage 鉴权态与根页面同源（:3010），
+       与 hub 面板里嵌的是否同一 iframe 无关。gotoChat('cloudcli') 进 embed 面板
+       再覆写 src 到 /session/{id}（dataset 必须同步，防 applyChatMode 重置回实体
+       ui.url）。地址行（embedUrlHint 的 span）同步显示。 */
+    if (typeof gotoChat === 'function') gotoChat('cloudcli');
     const f = $('embedFrame');
     if (f) {
       const url = lanUrl(full);
