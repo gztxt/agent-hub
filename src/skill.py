@@ -212,6 +212,25 @@ SKIP_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__", ".venv"})
 _INFO_TTL_S = float(os.getenv("SKILL_STATUS_TTL", "60"))
 _STATUS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
 
+# ── 按路由的扫描缓存 + single-flight（2026-10-05，v0.13.79）────────────────
+# 为什么加（实测，生产 :3102）：`/api/skill/list` 177ms、`/api/skill/budget` 159ms，
+# 而**每一次**都重跑 4 路全盘 `os.walk(followlinks=True)`（`/status` 早有 60s TTL，
+# `:212-213`，只是没被这四条路由复用）。技能文件是人工编辑的低频变更 ⇒ 短 TTL 足够。
+#
+# 为什么还要 single-flight（第二层，不加就等于没加）：
+# `_STATUS_CACHE` 是**裸 dict 的「读-判-写」**。N 个并发首请求会**全部 miss**，
+# 各自启动 20 路 os.walk 打进 `asyncio.to_thread`（`asyncio` 默认线程池
+# `min(32, cpu+4)`）—— 而「打爆线程池」与「多个请求各自重扫」是同一件事的两面。
+# 加按路由的锁后，第二个调用方 await 第一个的扫描结果，而不是自己开一份。
+#
+# 缓存放在 `_scan_async`（`:428`）而不是各端点：它是**全部 5 处调用的唯一收口**
+# （:644 / :803 / :975 / :1003 / :1080）⇒ 改一处即覆盖所有路由，不会漏。
+_SCAN_TTL_S = float(os.getenv("SKILL_SCAN_TTL", "30"))
+_scan_cache: Dict[str, Dict[str, Any]] = {}
+_scan_locks: Dict[str, "asyncio.Lock"] = {}
+# ⚠ 模块级构造 asyncio.Lock 在 Python 3.10+ 是安全的（不再绑 loop），
+# 本机 3.11.2 实测。若哪天降到 3.8/3.9，这两行要改成惰性创建。
+
 
 def disk_routes() -> Tuple[str, ...]:
     """磁盘路名单。**每次调用时现算**，不在 import 期固化成常量——
@@ -425,7 +444,7 @@ def _scan_one(route: str, root) -> Dict[str, Any]:
             "skipped_outside": skipped}
 
 
-async def _scan_async(route: str, root) -> Dict[str, Any]:
+async def _scan_one_uncached(route: str, root) -> Dict[str, Any]:
     """磁盘 IO 放子线程 + 超时闸门。超时按"该路本次弃用"表态，不拖垮整个请求。"""
     t0 = time.perf_counter()
     try:
@@ -439,6 +458,54 @@ async def _scan_async(route: str, root) -> Dict[str, Any]:
         return {"ok": False, "items": [],
                 "ms": round((time.perf_counter() - t0) * 1000, 1),
                 "error": tdai_client.scrub(f"{type(e).__name__}: {e}")[:200]}
+
+
+def _invalidate_scan_cache(route: str = None) -> None:
+    """清扫描缓存。**装/删技能后必须调** —— 否则新技能最多 30s 才出现在列表里。
+
+    与 ttl 等 30s 相比，主动失效更好：用户装完技能立刻去刷新列表是常态，
+    让他看到「还没出现」再去排查，是本仓反复强调的「静默形态」之一。
+    调用点：`skill_install` / `skill_remove`（见下）。
+    """
+    if route is None:
+        _scan_cache.clear()
+    else:
+        _scan_cache.pop(route, None)
+
+
+async def _scan_async(route: str, root) -> Dict[str, Any]:
+    """按路由的 TTL 缓存 + single-flight；未命中才真扫。
+
+    ⚠ **缓存命中时 `ms` 必须重算、`cached` 置 True**（2026-10-05）：
+    缓存里的 `ms` 是**上次扫描**的耗时。若原样返回，面板会显示「这一路 177ms」
+    而请求实际只花了 0.1ms —— 那是**误导性诊断数据**，正是本仓「全指标绿而
+    功能层已死」同族的静默形态。改成「本次命中缓存的耗时 + cached 标记」后，
+    面板仍能看出「这次没重扫」，且 ms 始终代表本次请求的真实成本。
+    """
+    now = time.monotonic()
+    hit = _scan_cache.get(route)
+    if hit is not None and (now - hit["ts"]) < _SCAN_TTL_S:
+        return {**hit["data"], "ms": round((time.perf_counter() - now) * 1000, 2),
+                "cached": True}
+
+    # single-flight：同路由的并发首请求，第二个起 await 第一个的结果，
+    # 而不是自己再开一份 os.walk（那正是「打爆线程池」的成因）。
+    lock = _scan_locks.get(route)
+    if lock is None:
+        lock = _scan_locks[route] = asyncio.Lock()
+    async with lock:
+        # 等锁期间可能已被别人扫完 ⇒ 再查一次（double-check）
+        now = time.monotonic()
+        hit = _scan_cache.get(route)
+        if hit is not None and (now - hit["ts"]) < _SCAN_TTL_S:
+            return {**hit["data"], "ms": round((time.perf_counter() - now) * 1000, 2),
+                    "cached": True}
+        data = await _scan_one_uncached(route, root)
+        # ⚠ 只缓存成功结果：失败/超时**不写缓存**，否则一次磁盘抖动会被
+        # 缓存成「这一路没有技能」并持续 30s —— 把瞬时故障固化成稳定错误。
+        if data.get("ok"):
+            _scan_cache[route] = {"ts": time.monotonic(), "data": data}
+        return data
 
 
 async def _tdai_async() -> Dict[str, Any]:
@@ -920,6 +987,7 @@ async def skill_install(req: InstallRequest, request: Request):
     db.log_asset_event("skill", req.name, "bind", writeauth.actor_of(request), {
         "from_route": req.from_route, "created": created, "existed": existed,
         "src_realpath": src_rp})
+    _invalidate_scan_cache(req.from_route)   # 新装的要立刻可见，不等 30s TTL
     return {"status": "installed", "name": req.name, "created": created,
             "existed": existed, "src": src_rp}
 
@@ -942,6 +1010,7 @@ async def skill_remove(name: str = Query(min_length=1, max_length=100),
     os.unlink(target)
     db.log_asset_event("skill", name, "unbind", writeauth.actor_of(request), {
         "route": route, "realpath": os.path.realpath(target)})
+    _invalidate_scan_cache(route)   # 删掉的要立刻消失，不等 30s TTL
     return {"status": "removed", "name": name, "route": route}
 
 
