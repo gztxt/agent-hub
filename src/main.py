@@ -62,6 +62,7 @@ import tdai_client
 import gwprobe                      # 上游网关（CCR）连通性 + 模型注册清单的缓存式体检
 import healthx                      # /health 派生量的纯函数层（L0 不 import src.main，故抽出来）
 import sessions_export as export_mod
+import export_batch                   # 导出取消息的批量 IN（L0 可测的纯函数层，同 staticguard 范式）
 import writeauth                    # 导出端点按写端点同等鉴权（复用 decide 的 fail-closed）
 import audit as audit_mod           # 资产变更审计的只读查询门面（GET /api/audit/list）
 import runlog as runlog_mod         # 运行日志：三中心检索留痕 + GET /api/runlog 查询门面
@@ -1014,12 +1015,18 @@ async def export_sessions(request: Request, format: str = "json", agent_id: Opti
     rows = [dict(r) for r in db.query(sql, tuple(params))]
 
     meta = {"agent_id": agent_id or "*", "limit": n_lim, "with_messages": bool(with_messages)}
+    # 2026-10-05：消息正文**一次 IN 查完**（旧实现每会话一次查询，上限 5000 ⇒ 最坏
+    # 5001 次，且每次过 db 的全局锁，把所有其他 DB 使用者一起串行化）。
+    # 判据与分块逻辑在 src/export_batch.py（纯函数，L0 可测 —— L0 禁 import src.main）。
+    if with_messages and rows:
+        msgs_by_sid = export_batch.fetch_messages(db.query, [r.get("id") for r in rows])
+    else:
+        msgs_by_sid = {}
     if fmt == "csv" and with_messages:
         # CSV 是扁平表 ⇒ 导出正文时以「一行一条消息」呈现（表头恒定，下游可断言）
         mrows: list = []
         for r in rows:
-            for m in db.query("SELECT role,content,created_at FROM chat_messages "
-                              "WHERE session_id=? ORDER BY id ASC", (r.get("id"),)):
+            for m in msgs_by_sid.get(r.get("id")) or []:
                 mrows.append({"session_id": r.get("id"), "role": m.get("role"),
                               "created_at": m.get("created_at"), "content": m.get("content")})
         body, ctype, fname, meta = export_mod.render(
@@ -1030,8 +1037,7 @@ async def export_sessions(request: Request, format: str = "json", agent_id: Opti
                 r["transcript"] = [
                     {"role": m.get("role"), "created_at": m.get("created_at"),
                      "content": m.get("content")}
-                    for m in db.query("SELECT role,content,created_at FROM chat_messages "
-                                      "WHERE session_id=? ORDER BY id ASC", (r.get("id"),))]
+                    for m in msgs_by_sid.get(r.get("id")) or []]
         body, ctype, fname, meta = export_mod.render(
             rows, export_mod.SESSION_COLUMNS, fmt, "sessions", meta=meta, redact=bool(redact))
 
