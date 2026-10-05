@@ -118,6 +118,19 @@ def main(argv):
         os.environ["MEMINDEX_DB"] = str(_anchor / "hub-l0test-fixtures" / "no-such-memindex.db")
         print("[tier] 已把 memindex 投影钉到不存在的路径（L0 不读生产索引）")
 
+    # 2026-10-05：摘掉 FORCE_COLOR（同一个「L0 不该继承调用者环境」的关切）。
+    # 本机 shell 里 FORCE_COLOR=3 是常态，于是 node 把 console.log(数字) 染成 ANSI：
+    #   node -e "console.log(60)" → '\x1b[33m60\x1b[39m'
+    # 依赖「node 输出一个纯数字」的用例用 int(...) 解析它，直接 ValueError ——
+    # test_search_fuzzy / test_skill_list_q_parity 实测 22 例假红（2026-10-05）。
+    # ⚠ NO_COLOR / NODE_DISABLE_COLORS 在 FORCE_COLOR 存在时**无效**：node 自己会打印
+    #   "Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set"
+    # 然后照样染色（实测）⇒ 唯一可靠解是摘掉变量本身，不是再叠一个反向开关。
+    # 为什么这里能修：测试是 `unittest.TestSuite().run()` **进程内**跑的（本文件），
+    # os.environ 的改动会传播到每个 subprocess.run(["node", ...])。
+    # L0 的定义是「结论必须一模一样」——继承调用者的终端着色显然不在这个定义内。
+    os.environ.pop("FORCE_COLOR", None)
+
     if fake_home:
         # 假 HOME 必须落在 ~/hub-l0test-fixtures 下、**不能落 /tmp**：
         # v0.13.31 P1 扫描闸把 /tmp 整前缀剔除（EXCLUDE_PATH_PREFIXES），假 HOME
