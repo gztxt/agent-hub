@@ -152,7 +152,7 @@ function renderCmdList(q) {
     .sort((x, y) => (y.score - x.score) || String(x.a.name || '').localeCompare(String(y.a.name || '')))
     .slice(0, 12).map(x => x.a);
   box.innerHTML = items.map(a =>
-    '<div class="cmd-item" onclick="cmdGo(\'' + a.id + '\')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
+    '<div class="cmd-item" onclick="cmdGo(' + jsStr(a.id) + ')"><span>' + escapeHtml(a.name) + '</span><span class="hint">' + escapeHtml(a.id) + '</span></div>').join('') ||
     '<div class="hint" style="padding:8px">无匹配实体</div>';
 }
 function cmdGo(id) { closeCmd(); gotoChat(id); }
