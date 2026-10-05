@@ -111,8 +111,20 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.76": ("抽屉永远打不开", "点哪都点不到", "从来没点过开", "只验一个时刻"),
         "0.13.77": ("按不可信输入处理", "存储型 XSS", "顺序不可颠倒", "**规则里的**类名不存在"),
         "0.13.78": ("形状完全一样", "既没转义、也没过", "HTML 正文", "JS 字面量"),
+        # 0.13.79：全指标绿而闸门说谎的那一条 —— FORCE_COLOR 让 node 把数字染成
+        # ANSI，22 条用例假红，而「全绿/全红」本身就是本轮一切判据的前提。
+        # 关键字取自 src/main.py 的 VERSION 注释里实际写下的字句。
+        "0.13.79": ("FORCE_COLOR", "假红", "逐版根因已于 2026-10-05 归档",
+                    "逐字搬运", "只缓存成功路径"),
     }
-    CURRENT_VERSION = "0.13.78"
+    CURRENT_VERSION = "0.13.79"
+
+    #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
+    #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
+    #: 本闸门的「不许随 bump 蒸发」意图**不变**，只是把「在哪」从 main.py 放宽到
+    #: 「main.py 或 CHANGELOG 任一处」—— 判据是**内容还在**，不是**文件没变**。
+    #: ⚠ MAIN_PY 是**已读出的文本**不是 Path（见 :31），所以路径要从 REPO 拼。
+    CHANGELOG_MD = REPO / "CHANGELOG.md"
 
     def test_version_comment_records_root_cause(self):
         # 版本钉随版本号走：它是一道**随行闸门**，逼迫 bump 的人回头看根因注释还在不在，
@@ -125,14 +137,31 @@ class TestScrollSensitivityPinned(unittest.TestCase):
                           % (self.CURRENT_VERSION, kw))
 
     def test_earlier_version_root_causes_survive(self):
-        """更早批次的根因关键字必须**仍在** main.py 里——版本钉只跟当前版走，
-        但注释不许随 bump 蒸发，否则 0.13.65「全指标绿而功能层已死」那条教训就没了。"""
+        """更早批次的根因关键字必须**仍在**（main.py 或 CHANGELOG）——版本钉只跟当前版走，
+        但注释不许随 bump 蒸发，否则 0.13.65「全指标绿而功能层已死」那条教训就没了。
+
+        2026-10-05：历史块搬进 CHANGELOG.md（`scripts/extract_changelog.py` 逐字搬运，
+        368 行），main.py 只留指针。原判据只查 MAIN_PY ⇒ 归档后 22 条关键字判红。
+        这是**闸门与新约定冲突**，不是代码坏了；改判据而不是把归档退回去——
+        因为「两份各自会漂的副本」正是本仓反复吃亏的东西（CHANGELOG 与 README
+        的测试计数就漂过一轮）。
+        """
+        try:
+            changelog = self.CHANGELOG_MD.read_text(encoding="utf-8")
+        except OSError:
+            changelog = ""
+        # ⚠ MAIN_PY 已是**文本**（见 :31），别再 .read_text() —— 那是本条的第二版。
+        where = MAIN_PY + "\n" + changelog
+        missing = []
         for ver, kws in self.VERSION_ROOT_CAUSES.items():
             if ver == self.CURRENT_VERSION:
                 continue
             for kw in kws:
-                self.assertIn(kw, MAIN_PY,
-                              "%s 的根因关键字 %s 已从 main.py 消失" % (ver, kw))
+                if kw not in where:
+                    missing.append("%s: %s" % (ver, kw))
+        self.assertEqual([], missing,
+                         "这些版本的根因关键字从 main.py 与 CHANGELOG.md 双双消失了：%s"
+                         % missing)
 
 
 if __name__ == "__main__":

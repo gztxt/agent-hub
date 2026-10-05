@@ -1,3 +1,69 @@
+## v0.13.79 — 八批优化收口：闸门可信度 + 性能地基 + XSS + 前端卫生 + 文档归位
+
+> 本版是 2026-10-05 一轮系统性优化的收口。**起点是一个测试基础设施缺陷**：
+> `FORCE_COLOR=3` 让 node 把 `console.log(数字)` 染成 ANSI，22 条用例假红 ——
+> 而「全绿/全红」是本轮一切判据的前提。逐条见各批 commit。
+
+① **闸门自己会说谎，所以先修它**：`FORCE_COLOR=3` 让 node 把 `console.log(数字)`
+染成 ANSI ⇒ `int('\x1b[33m60\x1b[39m')` 直接 ValueError ⇒ 22 条用例**假红**。
+而「全绿/全红」是本轮一切判据的前提 —— 判据本身不可信时，后面八批的
+「已验证」全是自欺。`NO_COLOR` 在 `FORCE_COLOR` 存在时**无效**（node 自己
+警告后忽略），唯一可靠解是从 `run_tier.py` 里摘掉变量。这类**假红比没有
+闸门更坏**：它逼人改断言求绿。本仓的假红禁令见 `tests/tiers.py:107-114`。
+② **性能主症是缓存缺失，不是算法慢**：`/api/skill/list` 174ms 每次全盘重扫、
+`/api/agents` 57ms 里 `docker ps` 独占 16.5ms、`/api/kb/status` 冷启动 1.49s ——
+而 `/status` 早有 60s TTL 范式，只是没被其余四条路由复用。**逐字搬运**式的
+「抽取而非编写」也用在这里：历史根因搬进 CHANGELOG 是同一手法。
+③ **闸门盲区下的漏网比缺陷本身更值得记**：`renderTaskTable` 四处裸拼 innerHTML
+（LLM 返回的 `task_id` 无字符集校验直达 DOM ⇒ 存储型 XSS），**而同一函数
+下一格有 `escapeHtml`** ⇒ 证明是漏网非有意。三处同型，所以新闸门的主判据是
+**形状**（同行两种写法）而不是逐点列举 —— 后者修完就忘。
+同类教训已在册 6 次（TDAI 透传三错、chat 端点每请求 500、WS 双消费者偷字节…）。
+④ **只缓存成功路径**：模型清单那次我先写成「fetch 没抛异常 ⇒ 成功」，影子实测
+证明错 —— `async with s.get()` 连接失败时**不抛异常**，只回空清单 ⇒ 缓存了失败
+（用户看到「没有模型」，真因是上游连不上）。判据必须是 `payload["error"]` 为空。
+── v0.13.70 及更早的逐版根因已于 2026-10-05 归档至 ──
+── CHANGELOG.md（脚本 scripts/extract_changelog.py 逐字搬运）──
+此处**只保留当前版本**的根因，避免两份会各自漂移的副本。
+（上一版 v0.13.78 的根因随本批归档至 CHANGELOG.md §v0.13.78）原三条：
+① **收起态图标条第 4、5 个形状完全一样**（用户 2026-10-04 报「分不清是什么」）。
+真因是 `cpu` 一次被用了**三处**：静态「资源」、`NAV_ICONS.agents`、
+`SET_PAGES` 的「模型」—— 收起态里前两处**并排可见**，直接造成误读。
+一次清完三处：「资源」cpu → **`monitor`**（它监视 CPU+内存+进程，
+cpu 这个隐喻本来就偏窄）；「AGENTS」cpu → **`hubmark`**（hub 中心 +
+4 个 agent 节点 + 辐条，语义正对）；「模型」保留 cpu（AI 模型常见隐喻）。
+两处**顺带查过** `monitor`/`hubmark` 是否已被导航占用 —— 只在
+agent 卡片徽标与页眉 logo 用，不在图标条，避免「改了 A 又造出 B 的撞车」。
+② **`/list?q=` 与 MCP 工具描述口径统一**：MCP `tools/list` 的
+`description` 原走 `escapeHtml` ⇒ 星号原样显示。现与技能描述同走 `mdInline`。
+③ **顺带修一处 XSS 洞（超出用户点名范围，必须报）**：MCP 工具行里
+`<b>' + x.name + '</b>` 与 `onclick="pickTool('' + x.name + '')"`
+**既没转义、也没过 `jsStr`** —— 同一个串同时进 **HTML 正文**与
+**onclick 的 JS 字面量**两个语境，两处都不设防。工具名来自 MCP server
+（外部注册）。本仓 `jsStr` 的注释早就写明「`escapeHtml` 只处理 HTML
+上下文，HTML 实体转义**不足以**让任意串安全进 JS 字面量」，此处却没用。
+现补：HTML 语境 `escapeHtml`、JS 字面量语境 `jsStr`。
+
+## v0.13.78 — 侧栏图标撞车 + mdInline 口径统一 + MCP 工具名转义
+
+① **收起态图标条第 4、5 个形状完全一样**（用户 2026-10-04 报「分不清是什么」）。
+真因是 `cpu` 一次被用了**三处**：静态「资源」、`NAV_ICONS.agents`、
+`SET_PAGES` 的「模型」—— 收起态里前两处**并排可见**，直接造成误读。
+一次清完三处：「资源」cpu → **`monitor`**（它监视 CPU+内存+进程，
+cpu 这个隐喻本来就偏窄）；「AGENTS」cpu → **`hubmark`**（hub 中心 +
+4 个 agent 节点 + 辐条，语义正对）；「模型」保留 cpu（AI 模型常见隐喻）。
+两处**顺带查过** `monitor`/`hubmark` 是否已被导航占用 —— 只在
+agent 卡片徽标与页眉 logo 用，不在图标条，避免「改了 A 又造出 B 的撞车」。
+② **`/list?q=` 与 MCP 工具描述口径统一**：MCP `tools/list` 的
+`description` 原走 `escapeHtml` ⇒ 星号原样显示。现与技能描述同走 `mdInline`。
+③ **顺带修一处 XSS 洞（超出用户点名范围，必须报）**：MCP 工具行里
+`<b>' + x.name + '</b>` 与 `onclick="pickTool('' + x.name + '')"`
+**既没转义、也没过 `jsStr`** —— 同一个串同时进 **HTML 正文**与
+**onclick 的 JS 字面量**两个语境，两处都不设防。工具名来自 MCP server
+（外部注册）。本仓 `jsStr` 的注释早就写明「`escapeHtml` 只处理 HTML
+上下文，HTML 实体转义**不足以**让任意串安全进 JS 字面量」，此处却没用。
+现补：HTML 语境 `escapeHtml`、JS 字面量语境 `jsStr`。
+
 ## v0.13.65 — 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）
 
 > 方案 `docs/superpowers/specs/2026-10-02-unified-memory-injection-design.md`（未跟踪文件，本批一并入库）。
@@ -68,6 +134,394 @@ cp src/memory.py.bak-20261002_172241-fix-ver-label src/memory.py   # 若走备�
    分步的意义是一次只动「能力」或「默认」一件事，出问题能二分定位。
 
 ---
+
+## v0.13.77
+
+① **技能描述按不可信输入处理，只渲染两个行内标记**：
+① **技能描述按不可信输入处理，只渲染两个行内标记**。
+描述取自 `SKILL.md` 的 frontmatter，而这些文件来自 **20+ 个发现点**，
+含第三方仓（mattpocock-skills / hallmark / Agent-Reach / crawl4ai）
+—— 它们是**外部内容**，不是本仓自己写的文案。hub 的 origin 里有
+**终端**（能起 pty），所以「渲染 markdown」必须按处理不可信输入做：
+能写进 frontmatter 的恶意描述一旦渲染成 `<img onerror=…>` 或
+`<a href="javascript:…">`，就是**存储型 XSS** 且能直接摸到终端。
+口径：只认 `**粗体**` 与 `` `行内代码` ``；链接/图片/标题/列表/
+原始 HTML 一律**不渲染**（保持转义后的字面文本）。
+**顺序不可颠倒**：先 `escapeHtml` 再替换 —— 串里不再有裸 `< > & "`，
+此后插入的 `<strong>`/`<code>` 是**唯一**由我们放进去的标签。
+**不做斜体**：`_italic_` 会把 `snake_case_name`、`*.py` 吃成斜体，
+技能描述里标识符与路径很常见，是实打实的误伤。
+② **收起态侧栏的「总览 10」徽标没隐藏**（用户 2026-10-04 报）：
+收起态隐藏规则写的是 `.badge`，而侧栏徽标的**真实类名是 `.nav-badge`**
+⇒ 选择器对不上，CSS **静默不生效**，48px 图标条上一直挤着个「10」。
+与 09-24 那次方向相反：那次是**写出来的**类名不存在，这次是
+**规则里的**类名不存在。两者都不报错，都只是安静地什么都不做。
+
+## v0.13.76
+
+① **抽屉永远打不开、而遮罩照亮 = 整页锁死**（用户 2026-10-04 报
+「窄屏左侧菜单栏展开不正常」）。实为 v0.13.75 的回归：
+`<head>` 里的 `narrow-rail` 是**首帧专用**标记（它让窄屏首屏
+就是图标条，而不是 236px 白板盖住 60~74% 视口），
+但我当初**打完就没再摘**，于是它变成永久标记。
+`html.narrow-rail .sidebar:not(.collapsed)` 的**特异性高于**
+`.sidebar:not(.collapsed)` ⇒ 用户点「展开」时 JS 确实移除了
+`collapsed`，几何却仍被按回 52px 图标条。
+实测：展开后 `class=sidebar` 但 `width=52px / position:relative`
+（应为 236px/fixed），而遮罩 `on` ⇒ **点哪都点不到**。
+修法：**JS 一接管就摘标记**，语义回到本意「JS 还没跑（或没跑起来）」；
+失败模式也是对的 —— bundle 挂了则标记留下，窄屏仍是可读图标条，
+而不是一块盖住大半屏的白板。
+② **探针上一版为什么没抓到**：它只量**首帧**，从来没点过开。
+首帧是对的、交互是坏的 —— 这正是「只验一个时刻」的盲区。
+已给 `probe_narrow_layout.py` 加第五组量「点开后抽屉(宽/定位/遮罩)」，
+验证它会咬：修前五档全红（52px/relative），修后 236px/fixed 全绿。
+另加静态闸门 `test_marker_must_be_removed_when_js_takes_over`
+（只管「打」不管「摘」的补丁等于永久补丁）。
+
+## v0.13.75
+
+① **技能中心在窄屏每个字一行**（2026-10-04 用户真机截图）：
+窄屏 CSS 是 `.sidebar:not(.collapsed)` 那类**flex 挤压**的同族 ——
+`.mem-item` 是 `display:flex` + **nowrap**，`<p>` 是 `flex:1`(1 1 0%)。
+实测 390px：容器 296 = 名字 141 + 操作区 128 + gap 16 ⇒ 描述只剩 **3px**
+（900px 时是 275px），于是「行)、小 / 字母描 / 客转文 / 字、」这样一行一字。
+**本仓对同类结构修过一次**（`.sp-list > .mem-item > p{min-width:0}`，
+第 618 行），但**技能中心列表不在 `.sp-list` 里** ⇒ 只修了一处。
+这是「按选择器修 bug」的典型漏网：修的是那一个选择器，不是**那一类形态**。
+窄屏口径：`flex-wrap:wrap` + 描述 `flex:1 1 100%;min-width:0` 独占整行
++ 操作区右对齐 + 空描述 `:empty{display:none}`。
+实测 390px 描述 **3px → 292px**；assets 页无回归（两版 266px）。
+② **真渲染探针入库** `tests/probe_narrow_layout.py`（CDP）：
+量首帧几何 / 技能描述宽 / 逐页最窄描述 / 底部留白四组可断言的量。
+为什么要它：静态闸门只判「机制写对了没」，**判不了像素**——
+CSS 写错类名、flex 基准给错、首帧竞态，这三类**都不会让任何静态测试变红**。
+已验证它会咬：修前 `EXIT=1`（320/360/390/412 四档红，描述 0~20px），
+修后 `EXIT=0`（五档全 OK）。
+探针自身也踩了两次坑（已修）：就绪判定把字符串 `'{}'` 当有效值（truthy）
+⇒ 假绿；底部留白在切到 200 行技能列表**之后**才量，`.page.on` 仍是那页
+⇒ 输出 -50811px 废话。
+底部留白**只报不判**：上一轮试过把它均匀分布到各块之间，
+截图一看**更丑**（空白跑到页面中段，把图例和操作按钮割开），已回退。
+「短页面底部有留白」是正常形态，不是缺陷。
+
+## v0.13.74
+
+① **窄屏第一眼是一块白板**（09-23 事故形态复现，生产实测）：
+① **窄屏第一眼是一块白板**（09-23 事故形态复现，生产实测）：
+窄屏 CSS 是 `.sidebar:not(.collapsed){position:fixed;width:236px;z-index:46}`，
+而 `<aside>` 初始**没有** `collapsed` 类 —— 那要等 bundle 末尾的
+`initSidebar()` 才加上。实测用户第一眼看到 **236px 盖住
+60.5%(390px)~73.8%(320px)** 的视口，正文被从中间切断。
+既有闸门 `verify_narrow_default_iconbar.py` 断言的是**稳定后**
+collapsed=true，所以这段一直没人管 —— 缺的不是某条规则的正确性，
+是**「首帧」这个时刻压根没有判据**（新缺口，不在原五条不变量内）。
+修法：`<head>` 里按当前视口给 `<html>` 挂 `narrow-rail`，
+CSS 用 `html.narrow-rail .sidebar:not(.collapsed)` 把**首帧**那一格
+从抽屉改成图标条。**为什么必须在 <head>**：第一版写在 `<aside>` 的
+首个子节点，320px 生效但 **390px 仍闪** —— 浏览器可在解析到开标签后、
+跑完该脚本前完成首次绘制（竞态，两档结果不一致）。移进 <head> 后
+body 尚不存在，无物可绘 ⇒ 竞态从根上不存在。
+真渲染复验：首帧 **236px/fixed → 52px/relative**，五档全 OK。
+另修：顶栏状态字被视口右缘**切断**（无省略号）、窄屏字号/行长、
+图标栏按钮**没有 title/aria-label**（收起态 .lbl 是 display:none，
+手机又无 hover ⇒ 既无可见文字也无可访问名）、
+以及那段描述「手风琴 + 顶部搜索框」的文案在窄屏白占 1/3 屏高
+（窄屏根本没有手风琴）—— 改为 CSS 断点分两份文案。
+② `/api/skill/list?q=`：匹配字段补 `realpath`（此前搜不到
+「按来源仓名找技能」，`q=mattpocock` 命中 0，因 `path` 是软链那一侧），
+并改为按分数排序（精确在前、近似在后，与前端一致）。
+对账闸门同步加强为**比对分数**而非只比命中/不命中。
+过程中抓到一处真漂移：JS 的分隔符类含 `，`/`、`/`，Python 早先没有
+⇒ 少切词。已补齐，并把「夹具必须判别」也做成闸门
+（第一版中文标点夹具走的是精确子串快路，压根没进切词逻辑，删掉漂移照样绿）。
+
+## v0.13.73
+
+① **同一台机器两套口径**：v0.13.72 把前端搜索框改成模糊后，`q` 仍是纯子串
+① **同一台机器两套口径**：v0.13.72 把前端搜索框改成模糊后，`q` 仍是纯子串
+⇒ UI 里搜得到，而走 `/api/skill/list?q=` 的两条链路
+（**MCP 门面 `hubmcp.py`——pi/Claude 注入真正走的那条**、
+资产面板三路检索 `07-asset-panel.js`）搜不到。
+`q` 已改为：先精确子串，再**逐字段**算编辑距离，容忍度阶梯
+（≤4 不容忍 / ≥5 容忍 1 / ≥8 容忍 2）与前端逐字一致。
+刻意**不**把四字段拼成大串再算距离：拼接后分隔符会抵掉失配。
+**只改「在不在结果里」，不改排序**——改排序会影响 MCP 门面既有
+消费方，属另一个决定，不在本版悄悄带上。
+② **两份实现靠闸门锁住，不靠自觉**：Python 与 JS 各写一份（语言不通，
+无法共用），「口径同源」的可执行定义是「两侧对**同一批夹具**给出
+同一个判定」。`tests/test_skill_list_q_parity.py` 把 12 条夹具分别喂给
+node 与 Python 逐条比对，两侧一致**且**都要符合夹具声明的期望
+（防「两侧一起错」也绿）。
+已用注入回归验证它真会咬：把 Python 退回纯子串 ⇒ 6 红；
+把容忍度阶梯改错一格 ⇒ 1 红；还原 ⇒ 全绿。
+
+## v0.13.72
+
+① **模糊匹配不再是「技能中心专属」**：搜 `crawl1ai`（数字 1）找不到
+`crawl4ai` 这类手误，此前只有技能中心改了；本版把 `fuzzyMatch` 从
+`04-terminal-ws` 搬进 `01-core-boot`（它被 5 个分片用，挂在 terminal
+那一片会让下一个找它的人以为「只有终端用」），并接入全部搜索框：
+侧栏搜索 / agents 命令面板 / 端口表 / 本地项目 / GitHub 项目 / 技能中心。
+**口径不变**：精确子串恒 1000 分压倒近似，短查询(<5字)不容忍编辑距离，
+近似行标 `≈近似` 徽标——面板必须能回答「为什么这条出现在这里」。
+⚠ 连带改判上版说法：上版汇报称「还有 6 处纯 includes()」，实测只有
+**5 处**——「终端历史」与「经理任务」**根本没有客户端搜索框**
+（前者只有成员判断、后者无输入框），那个 6 是我数错的。
+② **一个恒真的 L0 用例**：`test_skill_visibility_sync` 的干跑用例原先
+直接 `os.listdir($HOME/.claude/skills)`（→ `hermetic-clean` 档报
+`FileNotFoundError`，因为假 HOME 里那个目录本就不存在）。改成「不存在
+就当空」虽然不报错，但**仍是恒真**：把 `apply_plan` 挪到 `--apply`
+判断之前（制造「干跑却真写了」的回归）重跑，测试依然绿——
+因为 `os.symlink` 在父目录不存在时抛 `FileNotFoundError`，被
+`except OSError` 吞进 `failed`，那个环境下**想写也写不成**。
+⇒ 改为「测试自建源与目标目录，且源里真有 2 条待链技能」，
+并补一条**前提守卫**先证明真写确实写得进去。
+已用注入回归验证：改坏时红、还原时绿（不验证就会把假绿当修好）。
+
+## v0.13.71
+
+① **归档根与发现点是两张表**：`_DEFAULT_DIRS` 答「各 CLI 自己会读哪」，
+而 09-25 装的 hallmark / mattpocock-skills / Agent-Reach 与既有的
+crawl4ai，其 `SKILL.md` 都在 `技术文档/<仓>/…`。`_inside()` 按 realpath
+判 ⇒ 这四仓的软链被自己的防越界闸门拒读，**实测 62 条**（与
+PT-20261002-13 记的数字逐条对上，现已清零）。口径依据归档军规
+「源码唯一权威副本必须落在 `技术文档/<项目名>/`」。
+刻意**不**把整个 `技术文档/` 当根：那会架空 `EXCLUDED_DIRS` 已定的
+snapshots(664) / 全量备份(247) / `.orca-audit` / `Hermes-backup` 四条结论。
+② **搜索框的纯 includes() 让手误等于不存在**：搜 `crawl1ai`（数字 1）
+找不到 `crawl4ai`。改为「精确优先（恒 1000 分，压倒近似）+ 编辑距离
+近似」，近似行标 `≈近似` 徽标 —— 面板必须能回答「为什么这条出现在这里」。
+── 以下为 v0.13.70（D5/D6）时的根因，保留供追溯，非本版条目 ──
+① **退出码会让 Claude 拒绝输入**：UserPromptSubmit 同步阻塞在用户
+输入之前，hook 返回非零就是把「技能没检索到」升级成「用户发不出
+消息」⇒ 脚本吞掉一切异常并 exit 0。实测 6 种形态（正常 / 不可达 /
+404 旧后端 / 垃圾 stdin / 空 stdin / 斜杠命令）全部 exit=0 stderr=0；
+对生产 v0.13.65 打过去是 404⇒静默⇒升级前不干扰 Claude。
+注入链路此前只有 pi 一条，Claude 连检索出口都没有（skill.read 恒 0）。
+与 D4 同参同源：都打 /api/skill/relevant、都 rerank=false
+（rerank=true 实测 took_ms=1064.5ms，两条通道预算都小于它）。
+改法：外科式文本插入 + 写前在内存里验「别人的每个键的值未变」——
+该文件今早被 3 个别的会话写过（06:50/07:00/09:22）。
+② **窄授权不得读成宽授权**：`pi` 路主动扣下。`~/.pi/agent/**` 是受
+保护面，用户给的是单文件授权（hub-facade.ts）而非整棵树。
+③ **禁改面拒绝**并说明原因（jcode/hermes/qwenpaw/codebuddy），
+不是静默跳过。
+④ **报冲突不覆盖**：已存在但指向别处的一律跳过——覆盖会毁掉别人
+手工做的链接。只软链不复制、同 realpath 幂等、默认 dry-run。
+opencode 由 B3 证伪（不扫 ~/.config/opencode/skill），不作目标；
+它真正扫的 claude+agents 两路已在表里 ⇒ 顺带覆盖。
+实测四路建成 66 条，幂等复跑 0 新增 / 72 已就位 / 0 冲突。
+闸门 tests/test_skill_visibility_sync.py（L0 12 例，含「干跑不得改动
+真实 Agent 目录」与「冲突不得被覆盖」两条负向用例）。
+
+（以下为 0.13.69 D7 技能中心前端改版）
+#   病根：页面里**存着第二个真相**——技能页长期写死「7 路发现点」，
+而 D1 早已把路由改成 20 路。第二个真相比第一个危险，因为它
+看起来永远正确、不会随后端变，只能靠人去发现它过期。
+本版：① 删掉写死文案，路数/条数一律由 /api/skill/list 的
+SKILL_ROUTES.length 与 items.length 现算；
+② 新增发现点自检（/api/skill/status：四态 + 排除段 + 拒读数）；
+③ 新增相关性实验室（/api/skill/relevant：命中词 + 耗时 + jev 状态）；
+④ 注入预算卡补进度条与「被裁 = agent 看不到它」；
+⑤ 列表加「N 天零调用」徽章与「只看零调用」筛选。
+**置信度封顶必须在界面上写出来**：零调用榜的 medium 藏起来
+就会被读成 high（d.direct_source=not-implemented 同理）。
+**闸门 tests/test_skill_center_ui.py 改为 L0**（计划书原写 verify_*）：
+仓内 README 的 verify_/probe_ 属 L2 live、需服务、手工单跑、
+不被 discover -p "test_*.py" 收进来 ⇒ 按那个名字写的东西
+**在提交时根本不会跑**，那不叫闸门叫摆设。
+**闸门自己蒙对过一次，已修**：首版 rerank 断言拿注释里的
+「默认 rerank=false」字样去过，而代码里是
+`'&n=5&rerank=' + (useJev ? 'true' : 'false')`，并无该字面量。
+「文字存在 ≠ 已生效」那一族（TDZ / vitals_loop / 跨档镜像声明 同族）——
+**蒙对的闸门比没闸门更危险**。现改为剥注释后判代码，
+并补「jev 开关出厂不得带 checked」一条；两条均已反向验证会红。
+窄屏：未新增任何断点值，复用 01-core-boot.js 的 HUB_NARROW_MQ
+（分档偏好不变量③）；新增 .sk-budget 预算条用独立类名，
+不复用 .bar/.chip 以免改坏别处。
+
+（以下为 0.13.68 D3 技能调用记账与零调用僵尸榜）
+#   病根：本批只接了 hub 通道（profile_events 里 source='rest' 的
+skill.read / skill.inject），各家 agent **直读自己技能目录的旁路
+统计未实现**。设计书 §7 的口径是「两源皆零 → confidence=high」，
+而第二源不存在时那条口径不成立——照抄会得到一个看着确定、实际是
+仪表盘盲区自欺的榜。故本批**把封顶值做成可断言字段**：
+每行 confidence 恒 medium + direct_source="not-implemented"，
+顶层再回显 counted（账里有痕迹的技能数，0 = 压根没记账），
+前端与测试据此区分「真的没人用」和「没有仪表盘」。
+src/skill_usage.py  counts()/zombies()/snapshot()：
+读不到 DB **绝不抛**（面板要能开），回落方向保守——多提醒不漏提醒；
+零调用技能**绝不自动删**，只出 suggested_action，且单路可见优先
+widen_visibility（它可能压根没机会被选中，不能先判它该退）。
+闸门 tests/test_skill_usage.py（L0 29 例，用假 db 模块驱动 counts()
+顺带断言 SQL 参数形状：真 API 是 db.query，计划书里的 db.fetchall
+并不存在，照抄会直接 AttributeError）。
+runlog.SUBJECTS 增 skill.relevant / skill.inject（D4/D5 注入链记账用）。
+B3 侦察反证 D1 第 20 路 opencode 是**假发现点**（opencode 1.18.34
+只扫 ~/.claude/skills、~/.agents/skills、项目 {skill,skills} 与配置键
+skills.paths；opencode.json 无 skills 键 ⇒ 接线不存在），
+顺带量出 62 条第三方技能对 agent-hub 不可见 ⇒ 已登记
+**PT-20261002-13**，本批不夹带（它动生产常量与安全白名单）。
+生产未重启（重启授权留到 D3 之后一次执行）。
+
+（以下为 0.13.67 D2 技能相关性检索：GET /api/skill/relevant）   病根：/api/skill/list?q= 只是大小写不敏感**子串**过滤，
+「说一段任务描述 → 找回对的技能」机制上不存在；而 hub-facade.ts
+的 input→context 通道只能拿到记忆（skill.read=0），没有技能候选可注入。
+src/skill_relevance.py  零新依赖 BM25F：ASCII 按词 + 连字符名额外拆子词，
+CJK 只出相邻二字（单字查询走长度为 1 的回落）；W_NAME 2.5 / W_DESC 1.0。
+src/jev_client.py  jev 异步精排：8s 超时、600s 缓存、连续 2 次失败熔断，
+**不进必成功关键路径**。依据实测：choice 中文置信常 1.00 而 score
+主观刻度掉到 ~0.3 ⇒ jev 只逐行回传分数与置信度，**不改写排序**，
+排序权威仍是 BM25。
+闸门 tests/test_skill_relevance.py（L0 37 例，含端点级 tmp 根 TestClient）。
+**两处真实盘取证修正**（分词器的错不抛异常，只安静地少召回）：
+① 同时出单字+二字时高频字（能/不/登）各带 IDF 累加成噪声，把
+arkcli-auth/deploy 抬进“登录态加载不出但能新建”的前四名；
+② _LATIN_RE 把 '-' 当词内字符 ⇒ agent-dispatch 整名不可分，
+查询里写 dispatch 则**全部 365 条技能 name命中恒为空**。
+旁证：codex/skill-creator 在真实结果里各出现两次 = PT-20261002-12
+记的 realpath 去重缺陷，正在输出里显形。**生产重启未执行**（沿用禁重启边界）。
+上一版 v0.13.66 技能中心统一列表（D1 补齐 20 路发现点 + 排除清单 + state 四态）：
+病根：技能门面只扫 7 路 ⇒ 家长 10 家里 6 家约 300 条技能不在册，
+「按任务自动发现技能」从机制上就漏（PT-20261002-11 的 R1 可见性缺口）。
+D1  src/skill.py：_DEFAULT_DIRS 7→20 路；EXCLUDED_DIRS 15 条**带理由**
+（marketplace 缓存/安装暂存/备份/快照/厂商同源副本），排除项进 /api/skill/status
+不静默；_scan_one 加 reason 三态 + skill_state() 四态（ok/empty/missing/error）
+——原 available 布尔把「这家没装」与「我们配错」混成一句话；
+expand_roots/route_roots 支持 glob（qoder-alpha 扩展目录名是内容哈希，
+写死必然升级即 missing），_scan_many 多根部分失败不判整路失败。
+取证修正三处曾记错的实况：find 不带 -L 不跟随软链 ⇒ opencode 实为 2 条非 0；
+qoderwake 的 runtime-generations/{A,B} 与 resources/builtin-skills 是
+realpath 不同的同源副本（各 11 条）⇒ 列入排除否则 11 报成 44；
+hermes 120 与 hermes-agent 58 实测**零重叠**（去重机制另在 L0 造重叠验证）。
+闸门 tests/test_skill_routes.py（L0 23 例 + L1 4 例）。**生产重启未执行**（沿用禁重启边界）。
+上一版 v0.13.65 统一记忆注入通道（D1 接联邦 + D1.5 开默认快路口径）：
+病根实测：/api/memory/context 收了 9 路联邦源 ID、过白名单校验不报 400，
+却在函数体里被静默丢弃 ⇒ 回包 backends 只有 tdai_profile/local，
+fed.sources=0、正文 1585 字符、联邦段完全缺席。HTTP 200 无异常无告警
+（本仓反复警告的「全指标绿而功能层已死」同族）。
+D1  src/memory.py：注入包接联邦 + 第 4 段（预算内轮转取，未返回/失败的
+逐路点名写进段里，不静默丢弃）；src/memfed.py：search_fed 加**可选**
+wall_s 墙钟（默认 None＝既有 27 例语义逐字不变），超预算记 skipped_budget
+且不取消（to_thread 不可取消）——坐在会话起始链路上，宁可少一路也不能卡死开局。
+D1.5 /api/memory/search 与前端兜底默认由 local,tdai 升到快路联邦集
+（memory.FED_FAST_SOURCES 单一真源）；慢三路 pi/codex/archived 实测
+rg 1.9~2.5s 且必然超时 ⇒ 不进默认，等 A4 索引投影。
+src/hubmcp.py：hub_memory_context 开 sources 口子（空串取唯一真源），
+工具层不抄第二份默认字符串。
+闸门 tests/test_memfeed_inject.py（L0 16 例 G1~G8，含 AST 零写与
+「预算掐掉的源必须写在段里」）。**生产重启未执行**（沿用禁重启边界）。
+上一版 v0.13.64 后端：终端移动端三零件（借鉴 cloudcli 行为规格，不复制其 AGPL 代码）：
+P1 触摸层 static/hub/13-term-touch.js：惯性滚 / 长按选区 / 双指缩放，
+宽屏不绑定；P2/P3 src/term.py：auth_url 逐观看者旁路 + ANSI 去重，
+API 只收 agent_id、命令取画像白名单（不退化为 bash -c）。
+10-02 复核补记：惯性尾巴曾被 ttScrollByPx 每帧 Math.round 逐帧取整吞掉
+（v 衰减到 <750px/s 后每帧不足半行，衰减段≈7 成路程整段消失：理论 ≈11 行、
+实测 2 行）⇒ 改为跨帧余量 ttResidPx；L2 判据 T2b 同步收紧为「松手再滑 ≥3 行」。
+证据：docs/TERM-MOBILE-IMPROVE-PLAN-20261001.md §9.1；台账 PT-20261002-10。
+上一版（v0.13.63）根因档案保留在下方，它被 L0 闸门 test_term_scroll_sensitivity
+钉住（改这里之前先读那段注释）：
+终端滚轮「无法上翻 / 到不了页顶」：xterm 6.0 的 scrollSensitivity 仍取默认 1
+6.0 的 consumeWheelEvent 里有 `if (|deltaY| < 50) r *= 0.3` 再
+Math.floor 取整 ⇒ 标准一格滚轮（deltaY=120、行高 24px）只走
+120/24*0.3=1.5 → 1~2 行。CDP 真派发实测：sens=1 → 2.1 行/格、
+3 → 6.2、5 → 10.5、10 → 20.8（严格线性，与 deltaY 不成比例）。
+2000 行 scrollback 从底部滚到顶要 ~940 格 ⇒ 体感就是「滚不动」。
+A/B 实测 5.5.0 与 6.0.0 行为一致 ⇒ 非升级引入；5.5 按 deltaY/行高
+走（自然 5 行/格），6.0 的 0.3 折把体验砍到 1/5。
+修法：Terminal 构造显式 scrollSensitivity: 5（对齐自然值），
+端到端实测滚到顶 1979 行只需 190 格（-80%），Alt/Ctrl/Shift 仍走
+fastScrollSensitivity(=5) 不丢快速滚动。
+注：滚动条「看不见」是 6.0 Auto 档设计（hover 才显、离开 500ms 淡出），
+真渲染量到 opacity=1 / pointer-events=auto，非缺陷，故不动样式。
+↑ v0.13.62：历史「点得进去」——列表与续聊校验共用同一套 codex source 判据
+↑ v0.13.62：v0.13.61 的半边修复收尾 ——
+列表侧放了 vscode 会话，校验侧仍写死 source='cli' ⇒ 点「续聊」
+必 404「session_id 不在实盘清单内」（列表能看见却点不动）。
+抽 _codex_real_user_sql() 作唯一判据真源，两侧共用一份。
+↑ v0.13.61：侧栏 agent 名下「最新会话」停在 09-28 的根因 ——
+sessions_store._t_codex 写死 where source='cli'，而 09-29 起
+用户在 IDE 扩展里开的会话 source 记为 'vscode' ⇒ 最新会话被整体
+过滤。改成「排除噪音」（exec 探针 + subagent 子线程）而非白名单，
+免得 codex 下次新增入口再次静默漏（详见 CHANGELOG v0.13.61）。
+↑ v0.13.60：xterm 5.5.0 → 6.0.0 整组升级（core + 6 addon），
+canvas addon 随 6.0 移除（peerDeps 仍锁 ^5.0.0，取证见
+static/vendor/README.md），回落链收敛为 webgl → dom；
+另补 WebGL 纹理图集定时清理（clearTextureAtlas，显存不再单调涨）。
+↑ v0.13.59：P2-B 跨 Agent 活动指示 + P2-D 文档/密钥纵深批。
+↑ v0.13.58：终端状态跨客户端连续（TTL 判据=无生命迹象）+ P0 止血批
+↑ v0.13.56：尺寸所有权 claim/update + resize 100ms 去抖 —— 后台那一端
+偷不走 PTY 尺寸（桌面开着 vim、手机端在后台唤醒的典型坑）。
+↑ v0.13.55：输出合并 coalescer（5ms 前后沿），WS 帧数 2602→7。
+↑ v0.13.54：xterm addon 补齐（webgl/canvas 渲染器、Unicode11、
+终端内查找、bracketed paste 安全包装）。
+↑ v0.13.51：① drift 体检从「只报」升级为「按持久化值写回」（落笔前
+时间戳备份，HUB_MODEL_DRIFT_REPAIR=0 可退回只报）；因 CCR 与 hub
+开机同秒启动，启动那一次会被 CCR 盖掉 ⇒ 再加 300s 定期巡检。
+② 续聊会话（`claude --resume <id>`）也按白名单追加 --model：不带
+flag 的启动读的是会被 CCR 改写的配置文件。
+↑ v0.13.50：对话/协同子任务/定时任务以前从不读 hub 侧持久化模型
+（adapter.default_model 是启动时常量 ⇒ 实测仍发 qwen3.8-flash），
+现统一走 modelcfg.chat_model()；并加只读 drift 体检（CCR 重启会
+把 ~/.claude/settings.json 的 env 三兄弟改回旧值）。
+↑ v0.13.49：侧栏历史会话：条数 8 / 去标题行 / 时间只留日期 / 左边距对齐状态图标
+三个子项与系统页同口径（data-sys ⇒ 委托 ⇒ go(page) ⇒ 正文出页），
+设置抽屉整体拆除 ⇒ 09-23「手机上被浮层糊住」的形态不再存在。
+↑ v0.13.42：设置→GitHub 子菜单（远程地址/key/归属/克隆落点不再硬编码）
+↑ v0.13.41：设置→模型子菜单（选 agent → 选 CCR 模型 → 预览 → 口令落笔；
+Hub 侧 per-agent 模型用于拉起终端注入 --model + 写该 agent 自己的
+配置文件；CCR Router 五场景只读；写前预览+备份+口令三件套）
+↑ v0.13.40：系统子菜单页：删页顶标题/分割线（renderPageCrumb 只清空）
++ 十页统一骨架重排（标题+分割线来自 #opBar：renderPageCrumb 是全站
+唯一写 #crumb 的地方，它不写字 ⇒ syncOpBar 判 void ⇒ 整条 opBar 收起；
+chat 早退交给 renderModeBar。排版统一到 .sp/.sp-card 骨架）
+↑ v0.13.39：修「选 pi 起会话 ⇒ 终端一屏 JS 堆栈」：终端子进程 PATH 前置 nvm node bin
+（pi 的 shebang 是 #!/usr/bin/env node，服务 PATH 无 nvm ⇒ 内核把系统
+node v20.20.2 交给它，而 pi v0.85.1 的 bundle 用 node:fs 的 globSync
+（Node 22+）⇒ SyntaxError 启动即崩。which() 的 nvm 兜底只管 hub 找
+得到 pi，管不到 pi 自己再找解释器 —— 两层都得补）
+↑ v0.13.38：本机项目/GitHub 项目页 agent 候选框补 pi 与 codebuddy：两张 Web 型卡补终端入口
+（候选框口径=entries 含 term；pi 有 CLI v0.85.1、codebuddy CLI 用 WorkBuddy
+包内绝对路径——裸名 which 落空，必须带目录分隔符；qwenpaw 无 CLI 故不在列）
+↑ v0.13.37：Agents 菜单补 CodeBuddy Code 卡：`codebuddy --serve` 的原生遥控界面 :35431
+（画像唯一改动：src/profiles.py；无 cli/terminal ⇒ vitals 按 web-service
+形态以自有端口应答为存在证据。卡片入口=嵌入会话+新窗口+详情）
+↑ v0.13.36：两项目页收藏/隐藏落服务端：app_prefs KV 表 + GET/PUT /api/prefs/{key}
+（键白名单 projects.lp/gh，写走 write_gate+显式 decide 双保险）；
+前端载入拉后端偏好为准、切换回写，localStorage 降级为离线兜底。
++ GitHub 项目页：GET /api/github/repos（远端清单+strict remote 本地匹配）+ POST /api/github/clone
+（白名单 slug→服务端重构 URL→浅克隆到 GITHUB_CLONE_BASE，审计 action=create）
++ POST /start 铸 JWT 转调创建会话 → 详情抽屉项目列表 + iframe 直达 /session/{id}；
+MCP +hub_cloudcli_projects
+（--embed-line / --embed-bg / --font-display / --on-accent），fr 轨道一律
+minmax(0,…) 防内容顶破容器，数字列 tabular-nums 兜字体回退；DESIGN.md 新增
+「视觉系统」语义索引章（权威源仍是 templates/index.html 的 :root，不复制取值）。
+取值与原字面量逐字相同 ⇒ 渲染零变化；取证见 agent-knowledge/57（真渲染四档 + gate 50）。
+上一版 v0.13.25 后端：终端进程退出时把「为什么没了」说清楚。waitpid 的退出状态原先被
+`_st` 直接丢弃（src/term.py 的 _cleanup / _force_kill）⇒ 崩溃原因永远上不了屏，
+用户只看到一句「[会话结束]」。新增 describe_exit() 把信号/退出码解成人话：
+SIGILL/SIGSEGV/SIGBUS/SIGABRT/SIGKILL 点名「疑似内存不足」；并用 hub_killed
+区分「hub 自己发的 SIGTERM/SIGKILL」（点 × / 空闲 TTL / 服务退出）与内核
+OOM-killer ⇒ 绝不把用户主动关会话报成内存不足。API 侧 to_dict() 透出 exit_reason。
+起因：2026-09-25 排查「菜单点 OpenCode 秒退」，只能靠 dmesg(trap invalid opcode)
++ objdump(ud2) + ulimit -v 三步反推出 bun/JSC 的 MemoryExhaustion 主动 abort。
+真因是整机 swap 耗尽（/vol1/.swap/swap2 那 4G 因开机顺序 + nofail 静默失效），
+hub 代码本身无 bug —— 本次只补「可观测性」。详见 CHANGELOG。
+上一版 v0.13.24 后端+前端：asset_audit 资产变更审计（append-only 表 + log_asset_event 写口径 + /api/audit/list）；
+本地记忆便签 staleness 观测（memstats，**只报告不清理**）挂 /api/kb/status.local_memory；
+chat 会话工具条加导出按钮（blob 下载、token 只走头、四态文案互斥）。
+上一版 v0.13.23 后端：/health 补上游网关(CCR)连通性与模型注册清单 + 画像最近检测时间；
+会话批量导出端点（JSON/CSV，默认脱敏，按写端点同等鉴权）；
+MANAGER_LLM_BASE_URL 默认值由已退役的 FCC :8082 改回 CCR :3456。
+版本号让位：本批原自命名 0.13.22，但 master 上 ff53581（终端页空格接力，纯前端）已占用该标签
+⇒ 本批改 0.13.23，避免两批共用一个版本号（详见 CHANGELOG）。
+v0.13.21/22 均为纯前端批次，按项目口径
+「VERSION 与清 code_stale 随下次后端改动同批」⇒ 本次一并 bump。
+上一版（v0.13.20 FCC 退役收尾 / v0.13.19 P3 工具注册表 + P4 资产面板）明细见 CHANGELOG.md。
+: 常驻后台任务统一登记处。裸 create_task 不持引用 ⇒ 事件循环只持弱引用，
+: GC 可能在任意时刻回收掉这些循环任务（表现为「跑着跑着某功能静默停摆」），
+: 且 shutdown 时无法 cancel，进程退出要等事件循环超时。
 
 ## v0.13.64 — 终端移动端三零件（借鉴 cloudcli 行为规格）+ 惯性尾巴被逐帧取整吞掉的修复
 

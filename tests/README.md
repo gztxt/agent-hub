@@ -4,17 +4,27 @@
 （`Ran 71 tests ... OK`），而其中相当一部分断言的是**这台 NAS 上恰好存在的目录形态**
 —— 换台机器（或干净 CI runner）它们必然红，于是"能不能上 CI"这个问题一直没有答案。
 
-| 层 | 判据 | 换机行为 | 数量（2026-10-02 实测） |
+| 层 | 判据 | 换机行为 | 数量（2026-10-05 实测） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **983** |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **50** |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **42**（文件数，非用例数） |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **1261** |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **55** |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **44**（文件数，非用例数） |
 
-> 计数口径（写下来防后人重蹈“表里数字没来源”）：983/50 来自 `run_tests.sh hermetic` 与
-> `run_tests.sh host` 的 `[tier] ran=` 行；两者相加 1033 = 收集器对账报的
-> `unittest=1033 = pytest=1033`，即**下面那张表与实际收集集一致**，没有“表里有、套件不收”。
-> L2 42 是 `tests/verify_*.py tests/probe_*.py` 的**文件数**，它不被 unittest 收，故与前两行不同量纲。
-> 上一版表里的 265/35/29 是 09-23 的数，**已按实测定稿，不再沿用旧数**。
+> ⚠ **2026-10-05 更新计数时踩过的坑，记下来防重蹈**：
+> ① 三个数字**必须实测**，不能沿用上一版 —— 本表此前记 983/50/42，实际已是 1162/55/44
+>    （CHANGELOG 里的 997 同样漂过）。`tests/test_changelog_drift.py` 现在会拦
+>    「CHANGELOG 顶部版本 ≠ `src/main.py::VERSION`」，但**拦不住本表自身的漂移**
+>    —— 本表的口径仍是「人工更新 + 偶尔对账」。
+> ② `FORCE_COLOR` 会让本仓 22 条用例**假红**（node 把 `console.log(数字)` 染成 ANSI）。
+>    `run_tier.py` 已从源头摘掉该变量，但**直接调 `pytest` 时仍会踩到** ——
+>    此时加 `env -u FORCE_COLOR` 或直接走 `bash scripts/run_tests.sh`。
+
+> 计数口径（写下来防后人重蹈“表里数字没来源”）：1261/55 来自 `run_tests.sh hermetic` 与
+> `run_tests.sh host` 的 `[tier] ran=` 行；两者相加 1316 = 收集器对账报的
+> `unittest=1316 = pytest=1316`，即**下面那张表与实际收集集一致**，没有“表里有、套件不收”。
+> L2 44 是 `tests/verify_*.py tests/probe_*.py` 的**文件数**，它不被 unittest 收，故与前两行不同量纲。
+> 历史：983/50/42（2026-10-02）→ 1162/55/44（2026-10-05 补完 v0.13.66~79 后）→ 1261/55/44（同日再补本轮八批的新闸门）。
+> 每一档都**按实测定稿**，旧数只作留痕、不作依据。
 
 ## 怎么跑
 
