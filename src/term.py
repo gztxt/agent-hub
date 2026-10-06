@@ -60,7 +60,7 @@ _REAP_EOF_CONFIRM = 3
 # 修法：后台任务以短周期（默认 2s）跑 waitpid(-1, WNOHANG) 全量扫描，
 # 任意子进程一退出立刻把对应 Session 标记为死，写入 exit_status，触发清理。
 # 该任务与现有 60s 的 reap_loop 并行，互不干扰、各司其职。
-_REAP_CHILD_POLL_S = float(os.getenv("TERM_REAP_CHILD_POLL", "2.0"))
+_REAP_CHILD_POLL_S = float(os.getenv("TERM_REAP_CHILD_POLL", "0.2"))
 # 允许把子进程轮询完全关掉（设 0），仅依赖 60s reap_loop —— 兼容旧行为
 
 
@@ -934,26 +934,18 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                 except Exception:  # noqa: BLE001
                     break
             # 真正修：send_bytes 必须 try（手机断网/切网络 → WS 已断 → 1006）
-            # 直接尝试发送；WS 已关闭时 send_bytes 抛 WebSocketDisconnect
             try:
                 await ws.send_bytes(data)
+                print(f"[term] pump 发送后 alive={sess.alive} sid={sess.id}", flush=True)
             except Exception:  # noqa: BLE001
-                # WS 已关闭：把数据写入临时文件，供后续回放取用
-                import tempfile, os
-                _tmp = tempfile.mktemp(suffix=".term", dir=os.environ.get("HUB_DATA_DIR", "/tmp"))
-                try:
-                    with open(_tmp, "ab") as f:
-                        f.write(data)
-
-                except Exception:  # noqa: BLE001
-                    pass
+                # WS 已断开：pump 退场
                 break
             if not sess.alive:
                 # 进程已死：发送退出提示并关闭 WS，然后返回（handler 会收到 WebSocketDisconnect）
                 reason = describe_exit(sess.exit_status, sess.hub_killed)
                 tail = f" ({reason})" if reason else ""
                 exit_payload = ("\r\n\x1b[90m[process exited" + tail + "]\x1b[0m").encode()
-
+                print(f"[term] pump 即时发送退出提示 sid={sess.id} payload={exit_payload[:80]}", flush=True)
                 try:
                     await ws.send_bytes(exit_payload)
                     # 给客户端一点时间读取数据帧，再发关闭帧
