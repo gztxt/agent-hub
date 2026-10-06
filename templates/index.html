@@ -703,6 +703,14 @@
         .pane.on { display: flex; }
         .pane .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
         .pane iframe { flex: 1; width: 100%; border: 0; background: var(--surface-2); min-height: 0; }
+        /* v0.13.80 回归修复定案（2026-10-06 终版）：CloudCLI 项目直达面板 #embedBody 按内容
+           自然撑开 256px，把 iframe 从旧版正常 556px 挤到 300px（cloudcli 全屏 100vh 应用被
+           压扁，会话记录被推到页面下方）。限高 30% → 默认折叠，两版均不达用户预期。
+           用户 10-06 拍板：面板功能不需要，「原生页面即可，跟浏览器一样」→ 彻底隐藏。
+           ⚠️ 不删元素！renderCloudcliProjects()（static/hub/02-nav-and-poll.js）依赖
+           #embedBody 存在：元素缺失会降级走旧抽屉路径 loadCloudcliProjects()。
+           仅 display:none，面板渲染逻辑照常（append 到隐藏节点无害），iframe flex:1 恢复 pane 全高。 */
+        #embedPane #embedBody { display: none; }
         /* ── 原生 UI 外框：跟 pi-web 同参（2026-09-20 实测 pi-web :30141 首页 DOM，非估计值）──
            pi-web 行1「菜单」：容器 h=36（窄屏 35）、标题 15px/700、菜单块 11px、border-bottom 1px #e0e0e0
            pi-web 行2「信息」：容器 h=29、bg #eeeeee、11px、border-bottom 1px #e0e0e0（它放工作目录/cwd）
@@ -2324,6 +2332,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=a38870bb"></script>
+    <script src="/static/hub.js?v=357beb2d"></script>
 </body>
 </html>

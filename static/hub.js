@@ -2288,8 +2288,12 @@ function ensureTerm() {
     }
   } catch (e) { console.warn('[term] SearchAddon 挂载失败：' + ((e && e.message) || e)); }
   try {
-    if (window.ClipboardAddon && typeof window.ClipboardAddon.ClipboardAddon === 'function')
-      term.loadAddon(new window.ClipboardAddon.ClipboardAddon());
+    /* P4：传自定义 provider（termCopyProvider：navigator.clipboard → execCommand 双路兜底）。
+       默认 provider 只认 navigator.clipboard，局域网 http（非安全上下文）下远端 TUI 的
+       OSC 52 写剪贴板会静默落空。类型与运行时不一致时 cast，沿用仓内既有的 try 包裹风格。 */
+    const clipCtor = window.ClipboardAddon && window.ClipboardAddon.ClipboardAddon;
+    if (typeof clipCtor === 'function')
+      term.loadAddon(new clipCtor(undefined, termCopyProvider()));
   } catch (e) { console.warn('[term] ClipboardAddon 挂载失败：' + ((e && e.message) || e)); }
   try {
     if (window.WebLinksAddon && typeof window.WebLinksAddon.WebLinksAddon === 'function')
@@ -2312,6 +2316,7 @@ function ensureTerm() {
   setTimeout(() => termRepaint(), 150);
   termFindBind();
   termPasteBind();
+  termCopyBind();   /* P1/P2：复制通道（有选区拦 C/V + 容器 copy 兜底），与粘贴通道对称 */
   /* 触摸层最后挂：它要读 term.options（字号/行高）做手势换算，构造完才有意义。
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
@@ -2348,6 +2353,102 @@ function termPasteBind() {
     e.stopPropagation();   // 别让 xterm 的原生 paste 再处理一遍（那遍不转义内嵌终止序列）
     termPasteText(txt);
   }, true);
+}
+
+/* ── 终端复制（P1–P4，2026-10-05 借鉴 cloudcli 的 useShellTerminal 移植）────────────
+   病灶：agent-hub 只有粘贴通道（termPasteBind），没有复制通道——xterm 选中文本后
+   Ctrl+C 被 term.onData(termSend) 原样灌进 pty（= bash SIGINT），没有任何路径把选区
+   写进系统剪贴板，体感就是"终端里选不中/复制不动"。四处改动（按授权 P1–P4）：
+   P1 attachCustomKeyEventHandler：仅 hasSelection() 时拦 C（复制选区）/V（粘贴），
+      否则一律 return true 放行（无选区 Ctrl+C 照旧进 pty，不误伤 SIGINT 语义）；
+   P2 #termEl 容器 copy 事件兜底：有选区时 clipboardData.setData 覆盖右键/Cmd+Shift+C
+      等原生路径（很多嵌入式/非 HTTPS 环境 navigator.clipboard 不可用）；
+   P3 termCopySelection：navigator.clipboard.writeText → 失败退回隐藏 textarea
+      execCommand（与 L1324 settingsLogsCopyText 同款两级兜底；局域网 http 必需要）；
+   P4 ClipboardAddon 构造传自定义 provider（同款双路兜底），让远端 TUI 的 OSC 52
+      写剪贴板在非 HTTPS 下也能成（默认 provider 只认 navigator.clipboard）。 */
+function termCopyFallback(text) {
+  /* P3 核心：两级兜底写剪贴板（navigator.clipboard → 隐藏 textarea execCommand）。
+     局域网 http（非安全上下文）navigator.clipboard 常缺失/被拒，必须有第二路。 */
+  if (!text) return Promise.resolve(false);
+  let done = false;
+  const p = (navigator.clipboard && navigator.clipboard.writeText)
+    ? navigator.clipboard.writeText(text).then(() => { done = true; }).catch(() => {})
+    : Promise.resolve();
+  return p.then(() => {
+    if (done) return true;
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0;pointer-events:none';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return !!ok;
+    } catch (e) { return false; }
+  });
+}
+function termCopySelection() {
+  if (!term) return Promise.resolve(false);
+  const sel = term.getSelection();
+  if (!sel) return Promise.resolve(false);
+  return termCopyFallback(sel);
+}
+function termCopyProvider() {
+  /* P4：OSC 52 provider。vendor 的 ClipboardAddon 默认 provider 只走
+     navigator.clipboard（非安全上下文 undefined）；换成同一个双路兜底，
+     远端 TUI 发 OSC 52 写剪贴板时非 HTTPS 也能落地。 */
+  return {
+    readText(reg) {
+      if (reg !== 'c') return Promise.resolve('');
+      if (navigator.clipboard && navigator.clipboard.readText)
+        return navigator.clipboard.readText();
+      return Promise.resolve('');
+    },
+    writeText(reg, text) {
+      if (reg !== 'c') return Promise.resolve();
+      return termCopyFallback(text).then(() => {});
+    }
+  };
+}
+function termCopyBind() {
+  /* P1：键位拦截。attachCustomKeyEventHandler 的契约：返回 false = 吞掉该键不让
+     xterm 处理。无选区 Ctrl+C **必须 return true**（照旧进 pty = SIGINT，bash 语义
+     不能被破坏）；有选区时 C 走 JS 复制、V 走安全粘贴链（termPasteText）。 */
+  if (term.attachCustomKeyEventHandler) {
+    term.attachCustomKeyEventHandler(e => {
+      if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = String(e.key || '').toLowerCase();
+        if (k === 'c' && term.hasSelection()) {
+          e.preventDefault(); e.stopPropagation();
+          void termCopySelection();
+          return false;
+        }
+        if (k === 'v' && term.hasSelection()) {
+          e.preventDefault(); e.stopPropagation();
+          if (navigator.clipboard && navigator.clipboard.readText)
+            navigator.clipboard.readText().then(t => { if (t) termPasteText(t); }).catch(() => {});
+          return false;
+        }
+      }
+      return true;
+    });
+    term.dataset_copyBound = 1;
+  }
+  /* P2：容器级 copy 兜底（原生右键复制 / Cmd+Shift+C 路径带上选区内容）。 */
+  const el = $('termEl');
+  if (!el || el.dataset_copyBound) return;
+  el.dataset_copyBound = '1';
+  el.addEventListener('copy', e => {
+    if (!term || !term.hasSelection()) return;
+    const sel = term.getSelection();
+    if (!sel) return;
+    e.preventDefault();
+    if (e.clipboardData) e.clipboardData.setData('text/plain', sel);
+    else void termCopySelection();
+  });
 }
 
 /* ── 终端内查找（Ctrl/Cmd + F）─────────────────────────────────────────────────
