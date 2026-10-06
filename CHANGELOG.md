@@ -1,3 +1,48 @@
+## v0.13.82 — 备用屏（?1049）跨会话污染：终端「不能向上滚动」的根治
+
+> 2026-10-06，PT-20261006-01 续。用户报障：**跑过一次 codex 的嵌入式终端后，
+> 所有 agent 的终端都不能向上滚动查看内容了**（cursor Agent 的窗口也被带坏）；
+> 同一问题「已经修过几次」。对照：cloudcli 的终端一直正常。
+> 详细判例见 agent-knowledge/85。
+
+① **根因（pty 字节级实测，不是推断）**：codex 的 TUI 开机就发 `\x1b[?1049h` 进
+「备用屏」——本机 codex 0.160.0 在 `TERM=xterm-256color`（与 hub 给 pty 的环境一致）下
+用 `script` 捕获，默认命中 1 次；换 `codex --no-alt-screen` 后归零。而 **xterm.js 的
+备用屏按设计没有 scrollback**（vendor 源码里备用屏是 `new Buffer(!1, …)`）⇒ 备用屏里
+根本没有可上翻的历史。**为什么一坏坏一页**：整页只有一个 `#termEl` / 一个 xterm 实例
+（`let term` 单例），切会话走的 `term.clear()` 只清**当前缓冲区的行**、**不退出备用屏**
+——vendor 里只有 `BufferSet.reset()` 会把 `_activeBuffer` 切回 `_normal`。所以一次 codex
+把整页拖进备用屏后，谁来都滚不动，直到整页刷新。cloudcli 正常正是因为它走普通
+shell→TTY，从不发 `?1049h`。
+② **为什么 v0.13.81 没治住**：那一版治的是**鼠标跟踪态**，判据取
+`term.modes.mouseTrackingMode`，**从没量过 `term.buffer.active.type`**。鼠标态每次重连
+都被 `TERM_MOUSE_OFF` 清掉（看着像「会话级」），备用屏从没被复位（其实是**页面级**、
+会跨会话传染）⇒ 两次修的是两条不同的腿。
+③ **修复（三层）**：
+  - **前端跨会话复位**（`static/hub/02-nav-and-poll.js` 新增 `TERM_ALT_OFF`
+    = `?1049l/?47l/?1047l` 与 `TERM_STATE_RESET`；`03-agents-cards.js` 的 `termConnect`
+    在回放帧里按 `keepScreen` 择一写）：换会话写全量复位，同会话重连只清鼠标模式。
+    **刻意不放进看门狗按滚轮触发**——实测 codex 的 `?1049h` **开机只发一次**、不随重画
+    重发（688B 里 1049h 恰好 1 次，而 `?2026h/l` 15 对），TUI 活着时把它踢出备用屏会让
+    画面停在不含 TUI 输出的缓冲区上、看起来像「冻住」且回不去。
+  - **codex 启动带 `--no-alt-screen`**（`src/profiles.py` 新会话 + `src/sessions_store.py`
+    续聊两条路）：官方 `--help` 原文 "Runs the TUI in inline mode, preserving terminal
+    scrollback history."，让 codex 自己的输出落进普通屏 scrollback。
+  - **端侧可观测 + 逃生口**（`templates/index.html` + `03-agents-cards.js`）：终端工具栏
+    加缓冲区状态字（主屏 / 备用屏·不可上翻）与「退出备用屏」按钮，把「滚不动」变成
+    可判据的观察，而不是「我感觉大概是」。
+④ **验收（`tests/verify_term_altscreen.py`，L2 live，影子实例 + 真 chromium，10/10 PASS）**：
+主屏 `baseY=278` 且能上翻 → 写 `?1049h` 后 `alternate`、`baseY=0`、上翻不可能 →
+状态字报「备用屏·不可上翻」→ 点按钮回主屏 → **再造污染后切会话自动回主屏**
+（本次核心）→ scrollback 与上翻能力真恢复。**闸门可重复**（两次连跑均 10/10，自带会话清理，
+不会撞 `MAX_SESSIONS=8` 的 429）。
+⑤ **已知残留（如实登记）**：上游 open（#14277/#10331/#20063/#23651）指出即便关掉备用屏，
+codex 在普通屏做整屏重画（`\x1b[2J` 会把 viewportY 拽回底部）时**仍可能丢 scrollback**
+⇒ 第 ② 层是「改善」不是「根治」，收口靠第 ①③ 层。若端侧仍见 codex 窗口滚不动，
+下一步是在 PTY→terminal 边界过滤 DEC 2026 同步块内的 `2J`（上游 xterm.js#5801 未修）。
+
+---
+
 ## v0.13.81 — 终端鼠标跟踪看门狗（滚轮/拖选/焦点在 TUI 会话下的自愈）
 
 > 2026-10-06，PT-20261006-01。用户报障：agent-hub 嵌入式终端「向上浏览有时不行、

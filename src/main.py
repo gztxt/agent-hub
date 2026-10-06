@@ -79,7 +79,20 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.81"   # 终端鼠标跟踪看门狗（TUI 卡 1003 时滚轮/拖选/点击自愈）
+VERSION = "0.13.82"   # 备用屏（?1049）跨会话污染 —— 终端「不能向上滚动」的根治
+#   根因：codex 的 TUI 开机发 \x1b[?1049h 进备用屏，而 xterm.js 的备用屏**按设计没有
+#   scrollback**；整页共用一个 xterm 实例，切会话的 term.clear() 只清当前缓冲区的行、
+#   **不退出备用屏**（只有 term.reset() 会）⇒ 一次 codex 把整页拖进备用屏，之后所有
+#   agent（含 cursor Agent）的终端都滚不动，直到整页刷新。cloudcli 正常是因为它是
+#   普通 shell→TTY，从不发 ?1049h。
+#   修复：① 前端 TERM_STATE_RESET（鼠标模式 + ?1049l/?47l/?1047l）在**新建连接/切会话**
+#   那一帧写（termClear 后、回放帧里），跨会话污染清零；② codex 启动带 --no-alt-screen
+#   （新会话 + 续聊两条路），让它自己的输出落进普通屏 scrollback；③ 终端工具栏加
+#   「缓冲区状态字 + 退出备用屏」逃生口，把「滚不动」变成可判据的观察。
+#   ⚠️ 已知残留：上游 open（#14277/#10331/#20063/#23651）指出即便关掉备用屏，
+#   codex 在普通屏整屏重画时仍可能丢 scrollback ⇒ 后端 ② 是改善不是根治，①③ 才是收口。
+
+# ── 以下为 v0.13.81 的根因备忘（保留原文，不删；与 v0.13.82 是**两条不同的腿**）──
 #   根因：TUI 程序开启 xterm 鼠标跟踪（1003h）后滚轮/拖选被吞，异常退出不发
 #   ?1003l 时 mouseTrackingMode 卡 any 只有重连才复位 ⇒「时好时坏、无法复制」。
 #   修复：capture 阶段 wheel/mousedown 看门狗，检测到跟踪态同步切

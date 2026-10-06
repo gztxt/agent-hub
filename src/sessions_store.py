@@ -340,7 +340,10 @@ SESSION_STORES: Dict[str, dict] = {
     "qoder":    {"kind": "qoder_dir",      "id_re": UUID_RE,      "resume": ["qodercli", "-w", "{cwd}", "-r", "{id}"], "fn": _t_qoder},
     "jcode":    {"kind": "jcode_json",     "id_re": JCODE_RE,     "resume": ["jcode", "--resume", "{id}"],            "fn": _t_jcode},
     "hermes":   {"kind": "hermes_sqlite",  "id_re": HERMES_RE,    "resume": ["hermes", "--resume", "{id}"],           "fn": _t_hermes},
-    "codex":    {"kind": "codex_sqlite",   "id_re": UUID_RE,      "resume": ["codex", "resume", "{id}"],              "fn": _t_codex},
+    # 同上的理由：续聊进来的 codex TUI 一样会进备用屏、一样滚不动（实测与依据见
+    # profiles.py 的 codex 条目）。--no-alt-screen 是顶层选项（`codex [OPTIONS] <COMMAND>`），
+    # 放子命令之前；实测 `codex --no-alt-screen resume <id>` 与放在后面都被接受。
+    "codex":    {"kind": "codex_sqlite",   "id_re": UUID_RE,      "resume": ["codex", "--no-alt-screen", "resume", "{id}"], "fn": _t_codex},
     "opencode": {"kind": "opencode_sqlite", "id_re": OPENCODE_RE, "resume": ["opencode", "--session", "{id}"],        "fn": _t_opencode},
 }
 

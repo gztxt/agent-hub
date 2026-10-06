@@ -760,6 +760,14 @@
                     background: transparent; color: var(--text-2); font-size: 11px; line-height: 1;
                     cursor: pointer; transition: .12s; }
         .ebar-btn:hover { background: var(--hover); color: var(--text-1); border-color: var(--border); }
+        /* 缓冲区状态字（v0.13.82）：读的是 xterm 内部量 term.buffer.active.type。
+           为什么要显出来：备用屏按设计没有 scrollback（见静态 hub 里 TERM_ALT_OFF 的注释），
+           "滚不动"时它是唯一的可判据 —— 把自检做进页面，端侧一眼能说清是「备用屏」
+           还是别的原因，不用靠"我感觉大概是"。 */
+        .ebar-chip { flex: none; font-size: 11px; line-height: 1; padding: 2px 6px; border-radius: 9px;
+                     color: var(--muted); border: 1px solid var(--border); background: transparent; }
+        .ebar-chip.alt { color: var(--danger); border-color: var(--danger); }
+        .ebar-chip:empty { display: none; }
         .ebar-addr { display: flex; align-items: center; gap: 8px; flex: none; height: 29px; padding: 0 10px;
                      background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); }
         .ebar-k { font-size: 11px; color: var(--muted); letter-spacing: .04em; flex: none; }
@@ -1249,6 +1257,8 @@
                             <span class="sess-row" id="termSessList"></span>
                             <span class="ebar-sp"></span>
                             <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
+                            <span class="ebar-chip" id="termBufChip" title="xterm 当前缓冲区。备用屏按设计没有 scrollback ⇒ 显示「备用屏」时终端无法向上滚动查看历史"></span>
+                            <button class="ebar-btn" id="termAltOut" title="终端滚不动、状态字显示「备用屏」时点此退出备用屏（TUI 正在跑时点它画面可能像冻住，那时请重开该会话）">退出备用屏</button>
                             <button class="ebar-btn" id="termToEmbed" onclick="switchMode('embed')" title="改用内嵌的原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-monitor"/></svg>原生界面</button></div>
                         <div class="term-body"><div id="termEl"></div>
                             <!-- 终端内查找（Ctrl/Cmd+F）。刻意用 absolute 浮层：不给 #termEl 的父层
@@ -2332,6 +2342,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=2f9b8b24"></script>
+    <script src="/static/hub.js?v=2242478c"></script>
 </body>
 </html>

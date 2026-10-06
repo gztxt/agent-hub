@@ -1737,6 +1737,28 @@ const TERM_MOUSE_REPORT_RE = /\x1b\[(?:<[0-9]+;[0-9]+;[0-9]+[Mm]|M[\s\S]{3}|[0-9
 const TERM_MOUSE_OFF = '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l'
                      + '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l';
 
+/* ── 备用屏退出（v0.13.82）────────────────────────────────────────────────
+   症状（2026-10-06 用户报障）：跑过一次 codex 的嵌入式终端后，**所有** agent
+   的终端都不能向上滚动查看内容了（cursor Agent 的窗口也被带坏）；而 cloudcli
+   的终端一直正常。
+   根因（pty 字节级实测，非推断）：codex 的 TUI 开机就发 `\x1b[?1049h` 进「备用屏」
+   —— 本机 codex 0.160.0 在 TERM=xterm-256color 下实测命中 1 次；换成
+   `codex --no-alt-screen` 后归零。而 **xterm.js 的备用屏按设计没有 scrollback**
+   （vendor 源码里备用屏是 `new Buffer(!1, …)`）⇒ 备用屏里根本没有可上翻的历史。
+   为什么一坏坏一页：整页只有一个 `#termEl` / 一个 xterm 实例（`let term` 单例），
+   切会话走的 `term.clear()` 只清**当前缓冲区的行**，**不退出备用屏** —— vendor
+   源码里只有 `BufferSet.reset()` 会把 `_activeBuffer` 切回 `_normal`，`clear()`
+   不做这件事。所以一次 codex 把整页拖进备用屏后，谁来都滚不动，直到整页刷新。
+   对照 cloudcli 正常：它是普通 shell→TTY，从不发 ?1049h。
+   ⚠️ 边界（改这几行前先读）：**只在新建连接/切会话那一帧写**（见 termConnect），
+   **不要**放进看门狗按滚轮触发 —— 实测 codex 的 ?1049h 开机只发一次、不随重画重发，
+   所以在 TUI 活着时把它踢出备用屏，画面会停在不含 TUI 输出的普通缓冲区上，
+   看起来像「终端冻住」且回不去。用户主动兜底请走 #termAltOut 按钮。
+   三个变体（1049 / 47 / 1047）都关：不同 TUI/库用的不是同一个。 */
+const TERM_ALT_OFF = '\x1b[?1049l\x1b[?47l\x1b[?1047l';
+/* 建连/切会话的完整状态复位 = 鼠标模式 + 备用屏。 */
+const TERM_STATE_RESET = TERM_MOUSE_OFF + TERM_ALT_OFF;
+
 /* ── 回放查询闸门（v0.12.4）───────────────────────────────────────────────
    ring 里除了画面字节，还夹着上一个 TUI 开机时发过的终端查询：\x1b[c（设备属性）、
    \x1b[6n / \x1b[5n（光标位置 / 状态）、\x1b]10;? 之类（配色）。xterm 会替终端**自动作答**，
@@ -2321,6 +2343,7 @@ function ensureTerm() {
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
   termMouseResetBind();
+  termAltBind();   /* v0.13.82：备用屏状态字 + 逃生按钮（边界见上方 TERM_ALT_OFF 注释） */
 }
 
 /* ── 鼠标跟踪看门狗（v0.13.81）───────────────────────────────────────────────
@@ -2376,6 +2399,53 @@ function termMouseResetBind() {
      mousedown 走捕获是为了纯点击也能复位（用户诉求「不抢焦点」）。 */
   el.addEventListener('wheel', termMouseResetNow, { capture: true, passive: true });
   el.addEventListener('mousedown', termMouseResetNow, { capture: true });
+}
+
+/* ── 备用屏状态字 + 逃生口（v0.13.82）───────────────────────────────────────
+   自动复位只发生在「换会话」那一帧（见 02-nav-and-poll.js 的 TERM_ALT_OFF 注释）。
+   剩下两种情形必须交给人：
+     ① 老会话的 TUI 崩掉/被杀、没发 ?1049l，本端留在备用屏上，而你还想接着看它；
+     ② 想确认「现在到底是不是备用屏」——端侧不可观测时把自检做进页面，
+        判据写成可读的量，而不是「我滚不动所以大概是」。
+   ⚠️ TUI 活着时点它画面会像冻住：codex 的 ?1049h **开机只发一次**、不随重画重发
+   （实测 688B 里 1049h 恰好 1 次，而 ?2026h/l 15 对），所以踢出来之后它不会自己回去。
+   那种情况下的正确操作是重开该会话，不是按这个按钮。 */
+function termBufType() {
+  try { return (term && term.buffer && term.buffer.active && term.buffer.active.type) || '?'; }
+  catch (e) { return '?'; }
+}
+function termAltChipSync() {
+  const el = $('termBufChip');
+  if (!el) return;
+  const t = termBufType();
+  el.textContent = t === 'alternate' ? '备用屏·不可上翻' : (t === 'normal' ? '主屏' : '');
+  el.classList.toggle('alt', t === 'alternate');
+}
+function termAltOut() {
+  if (!term) return;
+  const wasAlt = termBufType() === 'alternate';
+  try { term.write(TERM_ALT_OFF); } catch (e) {}
+  termAltChipSync();
+  /* term.write 是异步进解析器的：等一帧再回读，否则会把「还没生效」误报成失败 */
+  setTimeout(() => {
+    termAltChipSync();
+    termNotice(termBufType() === 'alternate'
+      ? '[退出备用屏未生效（仍是 alternate）——请重开该会话]'
+      : '[已退出备用屏（' + (wasAlt ? '原为 alternate' : '本来就是主屏') + '）——现在可向上滚动查看历史]');
+  }, 60);
+}
+function termAltBind() {
+  const b = $('termAltOut');
+  if (b && !b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', termAltOut); }
+  /* 状态字低频自刷：只在终端页可见时读；读的是 xterm 内部量，零副作用、零网络。 */
+  if (!termAltBind._t) {
+    termAltBind._t = setInterval(() => {
+      const pg = $('page-chat'), tp = $('termPane');
+      if (!pg || !tp || !pg.classList.contains('on') || !tp.classList.contains('on')) return;
+      termAltChipSync();
+    }, 1500);
+  }
+  termAltChipSync();
 }
 
 /* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
@@ -2666,7 +2736,11 @@ function termConnect(sid, agent, opts) {
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
-      term.write(TERM_MOUSE_OFF);
+      /* 复位本端解析态：鼠标模式**总是**清（回放里那些过期开关不算数）；
+         备用屏只在**换了会话**（!keepScreen）时清 —— 同一会话的重连里 TUI 可能
+         正活在备用屏上，把它踢出来会让画面停在不含 TUI 输出的缓冲区上（见
+         TERM_ALT_OFF 注释里那条实测边界）。 */
+      term.write(keepScreen ? TERM_MOUSE_OFF : TERM_STATE_RESET);
       termHealBlank();   // 回放可能只是 64KB 尾巴里的半屏，见函数注释
       return;
     }

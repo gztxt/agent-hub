@@ -126,8 +126,16 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # 异常退出不发 ?1003l 时 mouseTrackingMode 卡 any，只有重连才复位。
         # 修复：capture 阶段 wheel/mousedown，同步切 activeProtocol=NONE。
         "0.13.81": ("鼠标跟踪", "1003", "看门狗", "activeProtocol", "TERM_MOUSE_OFF"),
+        # 0.13.82：备用屏（?1049）跨会话污染。codex 的 TUI 开机发 ?1049h 进备用屏，
+        # 而 xterm.js 的备用屏按设计没有 scrollback；整页共用一个 xterm 实例、切会话的
+        # term.clear() 又不退出备用屏（只有 term.reset() 会）⇒ 一次 codex 把整页拖进去，
+        # 之后所有 agent（含 cursor Agent）都滚不动。cloudcli 正常因它是普通 shell→TTY。
+        # 修复：前端 TERM_STATE_RESET 在换会话那一帧写 + codex 启动带 --no-alt-screen
+        # + 工具栏「缓冲区状态字 / 退出备用屏」。
+        # ⚠ 与 0.13.81 是**两条不同的腿**：那版治鼠标跟踪态，从没量过 buffer.active.type。
+        "0.13.82": ("备用屏", "?1049h", "TERM_STATE_RESET", "--no-alt-screen", "term.reset()"),
     }
-    CURRENT_VERSION = "0.13.81"
+    CURRENT_VERSION = "0.13.82"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

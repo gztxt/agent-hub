@@ -167,7 +167,16 @@ PROFILES: List[dict] = [
     {"id": "codex", "name": "Codex CLI", "kind": "agent",
      "detect": {"proc": [r"(^|/)codex( |$)"]},
      "cli": "codex", "port": None, "ui": None,
-     "terminal": {"cmd": "codex", "cwd": "/fs/1000/ftp/技术文档"},
+     # v0.13.82：必须带 --no-alt-screen。codex 的 TUI 默认发 \x1b[?1049h 进备用屏，
+     # 而 xterm.js 的备用屏**按设计没有 scrollback** ⇒ 它自己的窗口永远没法向上滚动
+     # 查看历史。pty 字节级实测（TERM=xterm-256color，codex 0.160.0）：
+     # 默认 ?1049h 命中 1 次；加此开关后归零（同时鼠标捕获序列也一并消失）。
+     # 官方 `codex --help` 原文："Disable alternate screen mode. Runs the TUI in
+     # inline mode, preserving terminal scrollback history."
+     # ⚠️ 已知不足（上游仍 open，故不能靠它单独收口）：#14277/#10331/#20063/#23651
+     # 报告即便关掉备用屏，codex 在普通屏做整屏重画时仍可能丢 scrollback。
+     # 本仓另有前端侧的跨会话复位（TERM_STATE_RESET）兜住污染，两条一起才完整。
+     "terminal": {"cmd": "codex --no-alt-screen", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": None,
      "desc": "OpenAI Codex CLI（TUI），经 CCR :3456（~/.codex/config.toml 托管 profile）→ 原生终端会话"},
     {"id": "hermes", "name": "Hermes", "kind": "agent",

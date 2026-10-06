@@ -467,6 +467,7 @@ function ensureTerm() {
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
   termMouseResetBind();
+  termAltBind();   /* v0.13.82：备用屏状态字 + 逃生按钮（边界见上方 TERM_ALT_OFF 注释） */
 }
 
 /* ── 鼠标跟踪看门狗（v0.13.81）───────────────────────────────────────────────
@@ -522,6 +523,53 @@ function termMouseResetBind() {
      mousedown 走捕获是为了纯点击也能复位（用户诉求「不抢焦点」）。 */
   el.addEventListener('wheel', termMouseResetNow, { capture: true, passive: true });
   el.addEventListener('mousedown', termMouseResetNow, { capture: true });
+}
+
+/* ── 备用屏状态字 + 逃生口（v0.13.82）───────────────────────────────────────
+   自动复位只发生在「换会话」那一帧（见 02-nav-and-poll.js 的 TERM_ALT_OFF 注释）。
+   剩下两种情形必须交给人：
+     ① 老会话的 TUI 崩掉/被杀、没发 ?1049l，本端留在备用屏上，而你还想接着看它；
+     ② 想确认「现在到底是不是备用屏」——端侧不可观测时把自检做进页面，
+        判据写成可读的量，而不是「我滚不动所以大概是」。
+   ⚠️ TUI 活着时点它画面会像冻住：codex 的 ?1049h **开机只发一次**、不随重画重发
+   （实测 688B 里 1049h 恰好 1 次，而 ?2026h/l 15 对），所以踢出来之后它不会自己回去。
+   那种情况下的正确操作是重开该会话，不是按这个按钮。 */
+function termBufType() {
+  try { return (term && term.buffer && term.buffer.active && term.buffer.active.type) || '?'; }
+  catch (e) { return '?'; }
+}
+function termAltChipSync() {
+  const el = $('termBufChip');
+  if (!el) return;
+  const t = termBufType();
+  el.textContent = t === 'alternate' ? '备用屏·不可上翻' : (t === 'normal' ? '主屏' : '');
+  el.classList.toggle('alt', t === 'alternate');
+}
+function termAltOut() {
+  if (!term) return;
+  const wasAlt = termBufType() === 'alternate';
+  try { term.write(TERM_ALT_OFF); } catch (e) {}
+  termAltChipSync();
+  /* term.write 是异步进解析器的：等一帧再回读，否则会把「还没生效」误报成失败 */
+  setTimeout(() => {
+    termAltChipSync();
+    termNotice(termBufType() === 'alternate'
+      ? '[退出备用屏未生效（仍是 alternate）——请重开该会话]'
+      : '[已退出备用屏（' + (wasAlt ? '原为 alternate' : '本来就是主屏') + '）——现在可向上滚动查看历史]');
+  }, 60);
+}
+function termAltBind() {
+  const b = $('termAltOut');
+  if (b && !b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', termAltOut); }
+  /* 状态字低频自刷：只在终端页可见时读；读的是 xterm 内部量，零副作用、零网络。 */
+  if (!termAltBind._t) {
+    termAltBind._t = setInterval(() => {
+      const pg = $('page-chat'), tp = $('termPane');
+      if (!pg || !tp || !pg.classList.contains('on') || !tp.classList.contains('on')) return;
+      termAltChipSync();
+    }, 1500);
+  }
+  termAltChipSync();
 }
 
 /* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
@@ -812,7 +860,11 @@ function termConnect(sid, agent, opts) {
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
-      term.write(TERM_MOUSE_OFF);
+      /* 复位本端解析态：鼠标模式**总是**清（回放里那些过期开关不算数）；
+         备用屏只在**换了会话**（!keepScreen）时清 —— 同一会话的重连里 TUI 可能
+         正活在备用屏上，把它踢出来会让画面停在不含 TUI 输出的缓冲区上（见
+         TERM_ALT_OFF 注释里那条实测边界）。 */
+      term.write(keepScreen ? TERM_MOUSE_OFF : TERM_STATE_RESET);
       termHealBlank();   // 回放可能只是 64KB 尾巴里的半屏，见函数注释
       return;
     }
