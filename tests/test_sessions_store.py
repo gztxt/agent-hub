@@ -92,8 +92,11 @@ class TestResumeArgv(unittest.TestCase):
                          ["grok", "--resume", "01a0c91d-eb84-7130-9767-479821ef336c"])
         self.assertEqual(ss.resume_argv("qoder", "7491a32f-ccfb-4602-bd84-22c521fd45ee", QODER_CWD),
                          ["qodercli", "-w", QODER_CWD, "-r", "7491a32f-ccfb-4602-bd84-22c521fd45ee"])
+        # v0.13.82：codex 必须带 --no-alt-screen（否则续聊进来的 TUI 进备用屏，
+        # 而 xterm.js 的备用屏没有 scrollback ⇒ 它的窗口永远没法上翻看历史）。
+        # --no-alt-screen 是顶层选项，放子命令之前；实测两种位置都被 codex 接受。
         self.assertEqual(ss.resume_argv("codex", "01a0bffd-7df4-7692-953d-210230d73610", CWD),
-                         ["codex", "resume", "01a0bffd-7df4-7692-953d-210230d73610"])
+                         ["codex", "--no-alt-screen", "resume", "01a0bffd-7df4-7692-953d-210230d73610"])
 
     def test_injection_rejected(self):
         for bad in ["x; rm -rf /", "--resume=evil", "$(id)", "../etc/passwd", "a" * 300, ""]:
@@ -191,7 +194,10 @@ class TestRealStores(unittest.TestCase):
         for it in d["items"][:5]:
             with self.subTest(sid=it["id"]):
                 argv = ss.resume_argv("codex", it["id"], it["cwd"] or CWD)
-                self.assertEqual(argv, ["codex", "resume", it["id"]])
+                # v0.13.82：期望值跟着 SESSION_STORES 的模板走（现含 --no-alt-screen），
+                # 但**仍是逐字显式断言**——这条闸门护的是「真正会被 exec 的那串 argv」，
+                # 不是「argv 等于模板」（后者是同义反复，等于没闸门）。
+                self.assertEqual(argv, ["codex", "--no-alt-screen", "resume", it["id"]])
 
     def test_codex_noise_source_still_rejected(self):
         """反向闸：排除集不能被顺手放宽成「什么都收」—— exec 探针/子代理仍须 404。"""
