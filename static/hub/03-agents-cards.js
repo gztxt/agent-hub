@@ -461,6 +461,62 @@ function ensureTerm() {
   /* 触摸层最后挂：它要读 term.options（字号/行高）做手势换算，构造完才有意义。
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
+  termMouseResetBind();
+}
+
+/* ── 鼠标跟踪看门狗（v0.13.81）───────────────────────────────────────────────
+   用户报障（2026-10-06）：agent-hub 嵌入式终端「向上浏览有时不行、无法复制、
+   codex 终端会抢鼠标焦点」；cloudcli 终端（普通 shell→TTY 场景）踩中少所以
+   「正常」。实测根因（真 chromium + CDP，探针 /tmp/probe_*）：
+   TUI 程序（claude/codex 的交互界面）开启 xterm 鼠标跟踪（DECSET ?1002h/?1003h）
+   后，滚轮与拖拽选中会被 xterm 原样吞掉转成 SGR 上报发给 pty 程序 —— xterm
+   既把它当「程序内的滚动/点击」重画界面（codex 表现为输入框跟着动、焦点被抢），
+   浏览器侧也不再滚 scrollback。TUI 异常退出时没发关闭序列（?1003l），xterm
+   内部 mouseTrackingMode 就卡死在 any，只能靠重连（termConnect 写 TERM_MOUSE_OFF）
+   复位 —— 这就是「时好时坏」和「打开 cloudcli 后再回来就能滑了」的机制。
+   为什么用 capture 阶段监听 + 同步协议复位（试错试出来的最优解）：
+     ① xterm 6.0 attachCustomWheelEventHandler 返回 false 不够 —— 事件已被
+        preventDefault，浏览器默认滚动被禁，滚轮照样不动（实测 a/b/c）。
+     ② passive wheel 监听里只写 term.write(1003l) 是异步的，首格滚轮被吞
+        （onProtocolChange 要等下一帧才把 handleMouseWheel 翻回来）。
+     ③ 唯一「首事件即恢复」的做法：capture 阶段同步把 coreMouseService
+        .activeProtocol 切回 'NONE' —— setter 同步触发 onProtocolChange，
+        把 _scrollableElement 的 handleMouseWheel 立刻翻回 true，当次 wheel
+        事件就走默认滚动；再异步写 TERM_MOUSE_OFF 到 pty 让对端也退出跟踪态。
+   实测数据（probe_final_watchdog.py，1003 跟踪态下）：
+     首滚一格 viewportY 50→40（恢复滚动）｜首拖选 sel=12 选中文本（恢复复制）
+     纯点击 mode any→none（点击回到浏览器，不再被 TUI 抢焦点）
+   设计约束（改这几行前先读）：
+     - 只在 mouseTrackingMode !== 'none' 时动手：正常态零开销、不碰任何行为。
+     - mousedown 也复位：拖选第一帧（mousedown）就把协议切回 NONE，
+       xterm 自带选择才能在这帧启动（实测只挂 wheel 时 sel 选不中）。
+       代价：跟踪态下的纯点击也会回到浏览器行为 —— 这正是用户要的「点终端
+       不再被 TUI 抢焦点」；TUI 的鼠标交互需要它自己重新发开启序列，它仍在
+       DRAW 循环里时会即刻重新开起来。
+     - termMouseLive 同步置 false：与 hub 的鼠标上报闸门口径一致，
+       否则 termSend 还会把 SGR 上报当有效数据发给 pty。
+     - 只绑一次（dataset 标记），#termEl 是整页生命周期同一个节点。 */
+let termMouseResetBound = false;
+function termMouseResetNow() {
+  /* 同步切协议：让当次 wheel/mousedown 事件立刻回到浏览器默认路径 */
+  try {
+    if (term && term._core && term._core.coreMouseService
+        && term._core.coreMouseService.activeProtocol !== 'NONE')
+      term._core.coreMouseService.activeProtocol = 'NONE';
+  } catch (e) { /* 内部结构升级就退回纯异步复位，不抛 */ }
+  if (term && term.modes.mouseTrackingMode !== 'none') {
+    termMouseLive = false;              // 与上报闸门口径对齐
+    try { term.write(TERM_MOUSE_OFF); } catch (e) {}   // 异步补：让对端也退出
+  }
+}
+function termMouseResetBind() {
+  const el = term && term.element;
+  if (!el || el.dataset.mouseResetBound) return;
+  el.dataset.mouseResetBound = '1';
+  /* capture 阶段 + passive：抢在 xterm 任何内部处理器之前，且不吞事件。
+     mousedown 走捕获是为了纯点击也能复位（用户诉求「不抢焦点」）。 */
+  el.addEventListener('wheel', termMouseResetNow, { capture: true, passive: true });
+  el.addEventListener('mousedown', termMouseResetNow, { capture: true });
 }
 
 /* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
