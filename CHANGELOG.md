@@ -1,3 +1,35 @@
+## v0.13.81 — 终端鼠标跟踪看门狗（滚轮/拖选/焦点在 TUI 会话下的自愈）
+
+> 2026-10-06，PT-20261006-01。用户报障：agent-hub 嵌入式终端「向上浏览有时不行、
+> 无法复制文字」；claude 会话时好时坏、codex 会话会「抢鼠标焦点 / 输入框跟着动」；
+> cloudcli 终端一直正常。实测根因与修复见 agent-knowledge/83（本版不展开）。
+
+① **根因（CDP 真浏览器 + WS 字节流实测）**：TUI 程序（claude/codex 交互界面）开启
+xterm 鼠标跟踪（DECSET ?1002h/?1003h）后，滚轮与拖拽点击会被 xterm 转成 SGR 鼠标
+上报发给 pty 程序 —— xterm 把它当「程序内滚动/点击」重画界面（codex 输入框跟着动、
+焦点被抢），浏览器侧不再滚 scrollback、也无法拖选。TUI 异常退出不发 ?1003l 时
+xterm 内部 mouseTrackingMode 卡在 any，只有重连（termConnect 写 TERM_MOUSE_OFF）
+才复位 —— 这就是「时好时坏」与「打开 cloudcli 后再回来就好了」的机制
+（cloudcli 是普通 shell→TTY 场景，TUI 少，踩中概率低）。
+② **修复（static/hub/03-agents-cards.js）**：ensureTerm 末尾挂看门狗，capture 阶段
+监听 wheel + mousedown；当 mouseTrackingMode !== 'none' 时**同步**把
+coreMouseService.activeProtocol 切回 'NONE'（setter 同步触发 onProtocolChange，
+当次事件即回浏览器默认路径），再异步写 TERM_MOUSE_OFF 到 pty 让对端也退出。
+实测（probe_verify_watchdog.py，真实代码路径）：首滚一格恢复滚动（viewportY 25→14）、
+首拖选即选中文本（sel=12）、纯点击 mode any→none（点击不再被 TUI 抢焦点）；
+常规态零开销、不碰任何行为。TUI 的鼠标交互（选择器/对话框）仍在 DRAW 循环时会
+自己重新发开启序列。
+③ **为什么是同步协议复位而不是 attachCustomWheelEventHandler**：xterm 6.0 的
+wheel handler 返回 false 不够（事件已被 preventDefault，浏览器默认滚动被禁）；
+passive wheel 里只写 term.write(1003l) 是异步的，首格滚轮被吞。唯一「首事件即恢复」
+的做法是 capture 阶段同步切 activeProtocol（见 03-agents-cards.js 注释）——
+这一条是试错试出来的，改前必读。
+④ 配套：tests/test_hubjs_split、test_term_scroll_sensitivity、test_term_xterm6 等
+终端相关闸门全绿；L0 全量 1327 例仅 2 例预存失败（test_kb_federation/test_memfed，
+主仓 HEAD 同失败，与本次无关）。
+
+---
+
 ## v0.13.80 — CloudCLI 独立子菜单（Agents 菜单拆出原生界面+项目直达面板）
 
 > 2026-10-05：cloudcli 从 claude 卡拆出为独立画像卡（kind=agent，systemd 检测 :3010）。

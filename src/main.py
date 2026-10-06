@@ -79,10 +79,11 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.80"   # 本轮：Agents 菜单 CloudCLI 独立子菜单（cloudcli 从 claude 卡拆出为独立画像卡，embedBody 槽位+renderCloudcliProjects 项目直达面板）
-#   根因：cloudcli 宿主嵌在 claude 卡里时，点 Claude Code 菜单行进 embed（cloudcli 原生界面），
-#   终端页对 cloudcli 用户不可达；cloudcli 原生界面也没有独立子菜单入口。
-#   拆开后：claude=纯终端+对话（ui=None），cloudcli=独立卡（kind=agent, :3010）+embed+项目直达。
+VERSION = "0.13.81"   # 终端鼠标跟踪看门狗（TUI 卡 1003 时滚轮/拖选/点击自愈）
+#   根因：TUI 程序开启 xterm 鼠标跟踪（1003h）后滚轮/拖选被吞，异常退出不发
+#   ?1003l 时 mouseTrackingMode 卡 any 只有重连才复位 ⇒「时好时坏、无法复制」。
+#   修复：capture 阶段 wheel/mousedown 看门狗，检测到跟踪态同步切
+#   coreMouseService.activeProtocol='NONE' 并异步写 TERM_MOUSE_OFF 到 pty。
 #   ① **闸门自己会说谎，所以先修它**：`FORCE_COLOR=3` 让 node 把 `console.log(数字)`
 #     染成 ANSI ⇒ `int('\x1b[33m60\x1b[39m')` 直接 ValueError ⇒ 22 条用例**假红**。
 #     而「全绿/全红」是本轮一切判据的前提 —— 判据本身不可信时，后面八批的

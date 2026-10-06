@@ -122,8 +122,12 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # cloudcli 原生界面没有独立子菜单入口，项目直达只能走 claude 详情抽屉。
         # 拆开后：claude=纯终端+对话，cloudcli=独立卡+embed原生界面+项目直达面板。
         "0.13.80": ("cloudcli", "独立子菜单", "embedBody", "renderCloudcliProjects"),
+        # 0.13.81：终端鼠标跟踪看门狗。TUI 开 1002/1003 后滚轮/拖选被吞，
+        # 异常退出不发 ?1003l 时 mouseTrackingMode 卡 any，只有重连才复位。
+        # 修复：capture 阶段 wheel/mousedown，同步切 activeProtocol=NONE。
+        "0.13.81": ("鼠标跟踪", "1003", "看门狗", "activeProtocol", "TERM_MOUSE_OFF"),
     }
-    CURRENT_VERSION = "0.13.80"
+    CURRENT_VERSION = "0.13.81"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
