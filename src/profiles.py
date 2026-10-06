@@ -285,6 +285,10 @@ CLI_ALIASES: Dict[str, dict] = {
     "dsh":      {"display": "DSH",         "names": ["dsh", "fcc-dsh"]},
     "gemini":   {"display": "Gemini CLI",  "names": ["gemini"]},
     "kimi":     {"display": "Kimi CLI",    "names": ["kimi"]},
+    # 实装于 ~/.local/bin/cursor-agent（软链到 ~/.local/share/cursor-agent/versions/<ver>），
+    # 不在服务进程 PATH 里 —— 靠 profiles.which() 的 ~/.local/bin 兜底才命中（实测）。
+    # 用 cid "cursor" + names 以实装名 cursor-agent 打头（cwd 走动态候选默认，未单独写终端的会自动取项目目录）。
+    "cursor":   {"display": "Cursor Agent", "names": ["cursor-agent", "cursor"]},
 }
 
 # 扁平候选名（scanner.py 的 cli_installed 报告用，保持同名兼容）
