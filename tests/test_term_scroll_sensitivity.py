@@ -158,8 +158,12 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # v0.13.86 同属模型设置批次：把 v0.13.85 遗留的"能选但写不进"补掉
         # （用户准则「插入要精确」落在选项值这一层）。
         "0.13.86": ("VALUE_PREFIX", "NATIVE_MODELS", "值前缀", "原生清单"),
+        # v0.13.87 回到终端批次：用户报「嵌入式终端总是提示登录链接」。
+        # 关键词取「两路判据 + 线索词方向」—— 这正是本版最容易在半年后被改坏的两点
+        # （把判据合回一条、或把方向表当多余）。取自 main.py 的 VERSION 注释块。
+        "0.13.87": ("auth_url", "page_url", "线索词", "方向正确"),
     }
-    CURRENT_VERSION = "0.13.86"
+    CURRENT_VERSION = "0.13.87"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
