@@ -667,6 +667,15 @@ function termCopyFallback(text) {
     : Promise.resolve();
   return p.then(() => {
     if (done) return true;
+    /* ★ 焦点归还（2026-10-07 用户报障「复制粘贴/键盘快捷键全都用不了」的根因）。
+       execCommand('copy') 这条路**必须**先把临时 textarea 选中 ⇒ 它会把焦点从
+       xterm 的 helper textarea 抢到 body。改前复制完就不还了，而 xterm 的
+       键盘通路完全依赖那个 textarea 持有焦点 ⇒ 用户复制一次之后**所有**按键
+       都不再进终端（看起来就是"快捷键全哑、连打字都没反应"）。
+       实测（真 chromium + CDP，局域网 http）：复制前 focus=termTA，
+       复制后 focus=BODY，且此后 Ctrl+V 的 paste 事件计数恒为 0。
+       所以这里记下复制前的焦点宿主，复制完原样还回去。 */
+    const prev = document.activeElement;
     try {
       const ta = document.createElement('textarea');
       ta.value = text;
@@ -678,6 +687,15 @@ function termCopyFallback(text) {
       ta.remove();
       return !!ok;
     } catch (e) { return false; }
+    finally {
+      /* finally 保证「复制成功/失败/抛异常」三条路都把焦点还回去；
+         宿主已从 DOM 摘掉（或本来就不可聚焦）时退回终端，
+         终端不在时保持浏览器默认行为，不硬抢。 */
+      try {
+        if (prev && prev.isConnected && typeof prev.focus === 'function') prev.focus();
+        else if (term && term.textarea) term.textarea.focus();
+      } catch (e) {}
+    }
   });
 }
 function termCopySelection() {
@@ -705,8 +723,14 @@ function termCopyProvider() {
 }
 function termCopyBind() {
   /* P1：键位拦截。attachCustomKeyEventHandler 的契约：返回 false = 吞掉该键不让
-     xterm 处理。无选区 Ctrl+C **必须 return true**（照旧进 pty = SIGINT，bash 语义
-     不能被破坏）；有选区时 C 走 JS 复制、V 走安全粘贴链（termPasteText）。 */
+     xterm 处理（但**不**等于阻止浏览器默认行为 —— 那要靠 preventDefault）。
+     三档口径（v0.13.90 订正，改前写的是「V 走安全粘贴链」）：
+       · 无选区 Ctrl+C → return true：照旧进 pty = SIGINT，bash 语义不能破坏；
+       · 有选区 Ctrl+C → preventDefault + JS 复制 + return false；
+       · Ctrl/Cmd+V → **一律 return false 且不 preventDefault**：
+         让浏览器的原生粘贴落到 xterm 的 helper textarea，由 termPasteBind 接住。
+         （改前是「有选区才拦、且 preventDefault + readText」—— 非安全上下文
+           没有 navigator.clipboard，那条路把粘贴整个废掉了，见函数内注释。） */
   if (term.attachCustomKeyEventHandler) {
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && !e.altKey) {
@@ -716,10 +740,30 @@ function termCopyBind() {
           void termCopySelection();
           return false;
         }
-        if (k === 'v' && term.hasSelection()) {
-          e.preventDefault(); e.stopPropagation();
-          if (navigator.clipboard && navigator.clipboard.readText)
-            navigator.clipboard.readText().then(t => { if (t) termPasteText(t); }).catch(() => {});
+        /* ★ 粘贴：**不拦**，交给浏览器原生路径（2026-10-07 根治）。
+           改前的两个错，实测（真 chromium + CDP，局域网 http）逐条钉过：
+             ① 只在 `term.hasSelection()` 时才接管 ⇒ 用户最常用的
+                「无选区直接 Ctrl+V」根本没进这条分支；
+             ② 就算进了，`preventDefault()` 会**掐断浏览器自己的粘贴**，
+                而这条路上我们唯一能拿剪贴板的办法是 navigator.clipboard.readText
+                —— 它还只在**安全上下文**存在。局域网 http（用户实际访问方式）
+                实测 navigator.clipboard === undefined ⇒ 拦住之后既没读到、
+                也没让浏览器粘，等于把粘贴功能整个删掉。
+           正确做法：返回 false 只是让 xterm **不要**把 ^V 当输入字节送进 pty；
+           不 preventDefault ⇒ 浏览器照常把剪贴板内容粘进 xterm 的 helper
+            textarea ⇒ 触发 paste 事件 ⇒ 被 termPasteBind（上方）接住并做
+            bracketed-paste 安全包装。这条路**不需要** navigator.clipboard，
+           非安全上下文照样通。实测：返回 false 且不 preventDefault ⇒
+            pasteEvt 计数 1→2，termPasteText 被调用，pty 收到 ESC[200~…ESC[201~。
+           焦点兜底：若此刻焦点已经不在终端上（例如别的代码抢过焦点），
+           原生粘贴没有宿主，先补一个 focus 再放行。 */
+        if (k === 'v') {
+          /* 焦点兜底也走**同一个**谓词（tests/test_term_focus_policy.py 的结构护栏）：
+             按 Ctrl+V 是用户主动动作 ⇒ 用 termFocusWanted({ user: true }) 如实表达，
+             而不是绕过策略直接抢焦点。只在焦点确实不在终端时才补。 */
+          if (term.textarea && document.activeElement !== term.textarea) {
+            try { if (termFocusWanted({ user: true })) term.focus(); } catch (err) {}
+          }
           return false;
         }
       }

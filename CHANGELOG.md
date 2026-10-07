@@ -1,3 +1,80 @@
+## v0.13.90 — 会话计数不再依赖终端口令 + 终端复制粘贴（焦点归还 / 原生粘贴通道）
+
+> 2026-10-07 用户同日两项报障：
+> ① 「右上角会话数**一时显示一时不显示**，应该有会话就要即时显示」；
+> ② 「嵌入式终端输入栏**无法使用复制粘贴，连键盘快捷键都使用不了**」。
+
+### 一、会话数「一时显示一时不显示」
+
+**根因**：顶栏那块指示读的是 `localStorage['hub.term.token']`，**没口令就直接不渲染**。
+而 `localStorage` 按 **origin** 隔离 —— 同一个页面从局域网 IP / Tailscale 名 / loopback
+三个来源进来各有一份存储，只在其中一个源配过口令时，另外两个源的顶栏整块空白；
+口令过期被清（`04-terminal-ws.js` 那条 `lsRemove`）、用户换了访问方式，同样静默消失。
+
+真正要命的是**「读不到」与「真的零会话」在屏幕上长得一模一样** —— 用户无法区分，
+只能看到数目"一会儿有一会儿没有"。
+
+**修法**：
+- 新增**免 token** 的只读聚合端点 `GET /api/term/activity`：只回 `alive` 总数与每 agent
+  条数（`per_agent: [{agent_id, n, activity_s}]`），**不含 sid / cmd / cwd** ——
+  故不绕开 P1-7 给 `/api/term/sessions` 加的口令闸门（那个端点是**控制平面入口**，
+  能"列 → 拿 sid → 杀"，必须继续要口令）。
+- 前端 `12-activity.js` 改读它，彻底不再碰口令（连 `lsGet` 都不读，那条
+  「被动展示绝不逼人交密码」的铁律只强不弱）。
+- 文案按用户口径补齐为 **「在跑 N · 会话 M」**：N = 有活会话的 **Agent 数**，
+  M = 活会话 **总条数**。改前只在 M > N 时才附「（M 会话）」，单会话的 agent 看不出条数。
+
+**取证**（真 chromium + CDP，同 profile、同刻、都无 token，局域网源）：
+| | 顶栏 |
+|---|---|
+| 生产 `:3102`（旧 v0.13.89） | `""`（整块空白） |
+| 影子 `:3201`（新 v0.13.90） | `在跑 1 · 会话 3` |
+
+窄屏 320 / 390 同样正常显示（`work/probe_activity_live.py`）。
+
+### 二、终端无法复制粘贴、连快捷键都用不了
+
+**两条独立的腿**，都会被误报成"整块功能坏了"：
+
+**(a) 复制一次之后所有按键都不进终端** —— 复制兜底 `termCopyFallback` 走
+`execCommand('copy')` 时要把临时 textarea `select()`，焦点因此被抢到 `body`；
+而 xterm 的键盘通路**完全依赖**它的 helper textarea 持焦 ⇒ 复制一次之后
+打字/快捷键全部失效。
+
+> 实测：复制前 `focus=termTA` → 复制后 `focus=BODY`，此后 `pasteEvt` 恒 0。
+> 修法＝记下复制前的焦点宿主，在 `finally` 里原样归还（成功/失败/抛异常三条路都还）。
+
+**(b) Ctrl+V 在局域网 http 下整个不可用** —— 两处叠加：
+1. 改前只在 `term.hasSelection()` 时才接管粘贴 ⇒ 用户最常用的「无选区直接 Ctrl+V」
+   根本没进那段代码；
+2. 就算进了，`preventDefault()` 会**掐断浏览器自己的粘贴**，而唯一的替代路径
+   `navigator.clipboard.readText` 在**非安全上下文**不存在 ——
+   本机局域网 http 实测 `isSecureContext=false`、`navigator.clipboard === undefined`。
+
+> 修法＝Ctrl/Cmd+V 一律 `return false` 但**不** `preventDefault`：
+> 只让 xterm 别把 `^V` 当字节送进 pty，浏览器照常把剪贴板粘进 helper textarea
+> ⇒ 触发 `paste` 事件 ⇒ 由既有的 `termPasteBind` 接住做 bracketed-paste 安全包装。
+> 这条路**不需要** `navigator.clipboard`，非安全上下文照样通。
+
+**红向自证**（撤掉修复看闸门是否变红）：
+- 只撤 (a) 的焦点归还 ⇒ **A/C/C2/D/E 五条同时红**，正是用户描述的完整症状；
+- 只撤 (b) ⇒ C/C2/D 红而 A 仍绿 ⇒ 两条腿互相独立，不是同一条被数了两遍。
+
+**保留的语义**（不能为了修而修坏）：无选区 Ctrl+C 仍 `return true` 进 pty（SIGINT
+的 bash 语义）；有选区 Ctrl+C 仍走 JS 复制且 `preventDefault`；粘贴仍走
+bracketed-paste 安全包装（内嵌终止序列注入面照旧堵着）。
+
+### 三、闸门与验证
+
+- L0 hermetic **1332 例 0 跳过 0 失败**；hermetic-clean 同数字全绿；
+  收集器对账 unittest=1390 = pytest=1390。
+- L1 host **57/58** —— 唯一红是 `test_sessions_store` 的 grok 会话标题解析，
+  **主树 HEAD 上本来就红**（已复现），与本批无关，按军规不顺手修。
+- 新增 `tests/test_term_clipboard_handoff.py`（6 例静态契约）、
+  `tests/verify_term_clipboard.py`（13 项真渲染，**局域网非安全上下文**全绿）；
+  `tests/test_activity_indicator.py` 补 4 例（免 token / 不漏句柄 / 两个数都给 / 零值拒绝）。
+- 不动 pty 输出、不动 xterm 版本、不改任何凭据；只动一个只读端点 + 前端三处行为。
+
 ## v0.13.89 — 带外链接提示默认全关（用户裁定：全部静默，连登录提示也不要）
 
 > 2026-10-07 用户**第三次**报障（同一天）：「**总是出现 检测到链接 这样的提示**」。
@@ -2771,3 +2848,103 @@ swap 3G→7G）。详见 `wiki/entities/swap2-四G从未激活致bun程序自杀
 ## v0.8.0 — UI 设计令牌化：字号音阶 + 中文优先字体栈 + SVG 图标 sprite；补语义色层；嵌入式终端接入 token 并修复底部被裁  (2026-09-18)
 
 ## v0.7.2 — 移除排序按钮；终端会话仅显示当前选中agent；优化中文字体栈  (2026-09-18)
+
+---
+
+# 归档
+
+### v0.13.89 根因（逐字保留，自 src/main.py 抽出）
+
+   根因（2026-10-07 用户三次报障，本次为第三次）：「总是出现 检测到链接 这样的提示」，
+   处理口径「**全部静默，连登录提示也不要**」。
+   ① 前两次（v0.13.87 分两路 + 纠标签、v0.13.88 判定范围换轴到当前块）都在修"哪条通道
+      该说什么"，但用户真正的诉求是**不要在终端里弹这类提示** —— 页面通道的触发面
+      （"一行里有 URL + 三个以上字母"）在真终端里等于"每打出一条带链接的日志就弹一次"。
+      页面通道本身是本仓自己加的便利（agent 贴了链接好点开），用户从未要求过它。
+   ② 修法：`src/term.py` 新增总开关 `LINK_BYPASS_ENABLED = False`，闸在扫描最前面 ——
+      一个帧都不发（浮层与图注都不出现）；连 url_buf/last_chunk 都不再维护，关掉时
+      每块输出只多一次函数调用。pty 输出不受影响：URL 照旧画在画面上、可复制、可点
+      （xterm WebLinksAddon）。
+   ③ 留开关而不是删代码：整条通道有 E/F/D 组十几条回归闸门护着（判例 87），删掉要连带
+      撤掉判据、日后想用还得重写。重开＝把常量改成 True 并重启，行为即 v0.13.88 语义。
+   （v0.13.88 的那层修法仍然有效且已被 F 组闸门钉住 —— 它决定"重开之后对不对"。）
+   根因（2026-10-07 用户**二次**报「嵌入式终端一出现网址/链接就弹登录远程链接」）：
+   v0.13.87 只把线索词分了方向，**判定范围仍是整段 16KB scrollback** ⇒
+   ① 一次真登录提示播过，`AUTH_CUE_BACK_LINES = 10` 就把它撑成一条跟着输出走的
+      **中毒带**：其后任意普通链接只要落进那 10 行内，就被追认成登录。影子实例
+      （:3199 + CDP 真跑）复现 4 例 —— 提示后 1.6 秒的裸文档 URL、提示符后 8 行的
+      两条链接、人话行上方的链接，画面注记统统是 `[登录链接]`。
+   ② 根因在**位置轴**而非线索词：线索与 URL 必须同属**当前这一块** PTY 输出，
+      换一块即清零。修法＝新增 `sess.last_chunk`（本轮这块，AUTH_CHUNK_MAX 封顶），
+      登录通道只扫它；AUTH_CUE_BACK_LINES 10 → 3；页面通道仍扫 scrollback（链接
+      发现要跨块），并显式排除已播过的登录 URL（判 `auth|<url>` 键），否则真登录
+      链接会在稍后被页面路重播一遍。
+   ③ 取舍：登录话术与链接被流式拆成多块时会漏播（画面里 URL 仍可复制、可手点）。
+   ⚠ 只把行窗从 10 收到 3 **不够**：误报里紧贴线索的那条文档链接仍在 3 行内 ——
+   必须换轴到"哪一块输出"，这也是本批与 v0.13.87 的区别所在。
+   根因（2026-10-07 用户报「嵌入式终端总是提示登录链接，实际所有终端都不需要登录」）：
+   v0.13.64 的带外链接旁路只有**一条**通道，准入判据是「pty 输出里出现 http(s) URL」，
+   前端文案写死「检测到登录链接」⇒ agent 印一条文档/仓库地址（`See https://github.com/
+   openai/codex`）就弹登录提示。两处叠加才成"总是"：**判据太宽 + 文案一律叫登录**。
+   修法＝判据与文案都按语义分两路：
+     · 登录路 `auth_url` —— URL 邻近**方向正确**的窗口内必须命中登录**线索词**；
+     · 页面路 `page_url` —— 同行有正文词即可，auto 恒 False（普通链接不许自动弹浏览器）。
+   方向表 AUTH_CUES_PRE/POST 是实测逼出来的：线索词自己说明 URL 在哪一侧
+   （"use the url **below**"），不分方向时**上一行**的本机地址会被下一行的登录话术追认。
+   ⚠ 同类两条缺陷（线索窗口过宽 / 不分方向）**在单测全绿时都还在**，是影子实例真跑 +
+   断言具体帧抓出来的 ⇒ 上下文/时序判据必须在真链路断言（判例 agent-knowledge/87）。
+   根因（2026-10-07 续报；用户准则「模型选择按原生+插入，不破坏原生模型，插入要精确」）：
+   ① v0.13.85 的写手对 opencode 要求 `ccr/` 前缀（官方 Models 页：格式即 provider/model；
+      本机 `opencode models ccr` 逐行 `ccr/…`），但前端下拉把 /api/models 的**裸 ID**
+      当选项值 ⇒ 用户在设置页点任何一个 CCR 模型都必然 409，且报错指向还错
+      （说「没有 provider alibaba」，实际缺的是前缀）。⇒ 不是"没做校验"，
+      而是**下拉把不可写的值摆成了可选项**。新增 VALUE_PREFIX，由后端随接口透出，
+      前端用 `<前缀><CCR ID>` 拼选项值 ⇒ "能点到的"与"能写进的"是同一个东西。
+      同一个前缀也决定终端注入值（opencode --model 同样要 provider/model 形状）。
+   ② qoder 那一栏更狠：write_mode=native（只认 Qwen3.8-Max 这类原生名），却摆着 13 个
+      必然被 400 拒的 CCR ID。⇒ 新增 NATIVE_MODELS（取证 `qodercli --list-models`），
+      native 型 agent 改摆本家清单，且不再渲染 CCR 分组。
+   ③ 顺带把 opencode read 写死的 provider:"ccr" 改成读现值自己的前缀（假信息源）。
+   ④ 页面补 #setModelHint 一行口径说明（argv 只影响 hub 拉起的会话 / native 的 CCR 只经注入）。
+   根因（2026-10-07 用户报障「模型设置里没有 agents 的所有模型」+「优化操作逻辑与准确性」）：
+   ① SPECS 只列 6 家、本机实有 10 家 ⇒ opencode/qoder/cursor 在设置页压根不出现。
+      三家落点形状各异，逐家实测后落笔：opencode 要 provider 前缀且在 provider.models
+      里补登记（缺则 UnknownError）；qoder 只吃原生名、官方明令禁止手写 settings.json；
+      cursor 三键同源 + 参数表索引。用户口径「原生 + 插入」＝只落该 agent 本就要读的
+      字段、只动目标键，不碰安装目录与无关配置面 ⇒ 新增 write_mode（ccr/native/argv）。
+   ② grok 的「当前」恒"（未读到）"：_toml_get 把 section 按 "." 切，而表头
+      [model.ccr-hub] 在 tomllib 里是一个含点号的键 ⇒ 整键优先、查不到再逐级下钻。
+   ③ grok 的 --model 注入值错：实弹 `-m alibaba/qwen3.8-max` ⇒ 硬报 unknown model id，
+      `-m ccr-hub` ⇒ 正常；README 言「header 名即选择器里的名字」⇒ 改注入 profile 表头键。
+   ④ 「默认（网关路由）」永远存不了（前端 early-return + 后端 validate_model("") 400）
+      ⇒ 改为**撤销**语义：只删 hub 侧持久化行，不写配置文件（不猜"原本是什么"）。
+   ⑤ drift_report 后端一直在算、前端零引用 ⇒ 漂移在界面上完全不可见，已补常驻展示。
+   根因（2026-10-07 续报；取证：真 PTY 流分析 /tmp/mouse_probe3~7 + CDP 红基线
+   tests/verify_term_mouse_apps.py 实测 A1 rep=0/A2 翻不到头）：
+   v0.13.81/82/83 的「看门狗复位 + 吞 1049」对**主屏线性输出、不开鼠标**的 agent
+   （codex/cursor/shell）成立 —— 历史在 scrollback 里，把 wheel 还给原生滚动就是正解。
+   但 claude/opencode 的终端契约是「备用屏 + 全屏绝对定位重画 + 鼠标归我管」：
+   ① 开机即 DECSET ?1000;1002;1003;1006h；实测 claude 重画时重新断言、opencode
+      只断言一次（resize/打字都不重发）；
+   ② ?1049h 被吞后它们被钉在主屏，主屏 buffer 只有一屏高（viewportY 恒 0）——
+      scrollback 里**没有**可读历史；「向上翻看」只剩一条路：滚轮 SGR 上报喂回
+      pty 由 app 自滚（实测 wheel-up×12 claude 翻回问句、opencode 钳在顶）；
+   ③ 看门狗把每次 wheel 当复位事件：activeProtocol 切 NONE（上报压根不生成）+
+      termMouseLive=false（闸门停转发）⇒ 两条滚动路径同时掐死。
+   这就是「同一套嵌入式终端，别的都好了、就这俩还不行」的全部机制。
+   修复（分层；实现与现场注释见 02-nav-and-poll.js/03-agents-cards.js 的 v0.13.84 段）：
+   ① 意图与临时态分家：termMouseWant 按实时帧 DECSET 逐模式记账（h 加 l 删），
+      termMouseLive 由 want 派生；看门狗复位**不再改 live**，只动 xterm 解析态。
+   ② wheel 分层：live ⇒ 不复位，当格上报进 pty（应用内翻历史）；!live ⇒ 维持
+      v0.13.81 自愈 + 原生 scrollback。
+   ③ mousedown 复位保留（拖选复制、点击不被 TUI 抢焦点 = 用户裁定原样），
+      mouseup 绑在 window 上立即 termMouseArm() 回装（选区常越出终端盒，
+      element 级 mouseup 会漏装；opencode 不重发，漏装=滚轮永久回不来）。
+   ④ 重连信任：非 shell 画像里 TUI 就是 pty 本体（pty 死⇒会话死⇒4410），
+      回放尾巴/首帧的鼠标声明即现势 ⇒ 扫 want 并回装；ring 被增量帧挤掉时
+      从 per-sid 的 localStorage 缓存接住。shell 画像维持 v0.8.1 口径：
+      回放不算数（挡住「bash 里 vim 被 SIGKILL 后跟踪态焊死」的乱码面）。
+   ⑤ 会话结束（4404/4410）：want 与缓存同步清零 ⇒ wheel 立刻回原生 scrollback，
+      防「死轮」。
+ ⚠️ 已知边界：TUI 用键位自行关鼠标但不发 DECRST 的 app —— want 会滞留，
+   回装的多余上报只会被 app 忽略（pty 本体判据挡着），无乱码面，接受。

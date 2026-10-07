@@ -787,6 +787,43 @@ async def create_session(body: CreateIn, request: Request):
     return {"session": dict(sess.to_dict(), title=title)}
 
 
+@router.get("/api/term/activity")
+async def term_activity(request: Request):
+    """**免 token** 的只读活动摘要（2026-10-07）。
+
+    为什么需要独立端点（不是「顺手把 token 放开」）：
+    顶栏「在跑 N / 会话 N」是**被动展示**，用户从未为看它提供任何凭据；而
+    /api/term/sessions 是**控制平面入口**（带 sid + agent_id + cmd + cwd），
+    P1-7 堵它的理由——「列 → 拿 sid → 杀」接力——今天依然成立。两者诉求相反：
+    计数要人人可见，清单必须有凭据。
+
+    所以这里给的是**聚合计数**，不含任何 sid / agent_id / cmd / cwd：
+    泄出去也只是「此刻有几条会话」，拿不到任何可操作句柄。
+
+    判据与 /api/term/sessions 严格同源（同一个 _reap() + alive），
+    不另算一套：两处口径分叉会让顶栏和终端栏互相打脸（P1-20 的老教训）。
+    """
+    _reap()   # 读路径顺手回收：与 list_sessions 同款（顶栏 8s 轮询就是最稳的回收心跳）
+    live = [s for s in _sessions.values() if s.alive]
+    # 按 agent 聚合（侧栏忙碌点要用到），但**只给 id 与条数** ——
+    # agent_id 本来就是导航里公开可见的标识，不是凭据；sid 才是可操作句柄，一律不给。
+    per: Dict[str, Dict[str, float]] = {}
+    now = time.time()
+    for s in live:
+        if not s.agent_id:
+            continue
+        cur = per.setdefault(s.agent_id, {"n": 0, "activity_s": 0.0})
+        cur["n"] += 1
+        # activity_s 取该 agent 名下**最活跃**那条（与 /api/term/sessions 的字段同名同义）。
+        # 侧栏忙碌点的「亮/闪」分档靠它 —— 不给就要么全体常闪、要么删掉这个分档，
+        # 那属于静默改行为。标量秒数不含任何句柄，粒度与计数同级。
+        act = round(now - getattr(s, "last_activity", s.last_io))
+        cur["activity_s"] = min(cur["activity_s"], act) if cur["n"] > 1 else act
+    return {"alive": len(live), "agents": len(per),
+            "per_agent": [{"agent_id": k, "n": int(v["n"]), "activity_s": int(v["activity_s"])}
+                          for k, v in sorted(per.items())]}
+
+
 @router.get("/api/term/sessions")
 async def list_sessions(request: Request):
     # P1-7：列表本身是**控制平面入口** —— 它漏 sid + agent_id + cmd + cwd + alive，

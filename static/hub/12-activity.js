@@ -20,17 +20,17 @@ var activityFailed = false;
    取 2 分钟是照终端心跳（TERM_HB）量级定的：人 thinking 一轮通常 <2min。 */
 const ACTIVITY_BUSY_S = 120;
 
-function activityMap(sessions) {
+function activityMap(perAgent) {
+  /* 输入是 /api/term/activity 的 per_agent（[{agent_id, n}]）。
+     口径不变：只认**活着的**会话数，一个 Agent 多条就累加。
+     改前吃的是 /api/term/sessions 的整份清单（含 sid/activity_s），
+     那样必须带口令；现在服务端已经在服务端把 alive 过滤掉了，
+     所以这里不再重复 alive 判断 —— 但要**显式拒绝零值**，
+     免得服务端将来多回一条 n=0 的占位就在这里亮出一个假忙碌点。 */
   const m = {};
-  (sessions || []).forEach(s => {
-    if (!s || !s.alive || !s.agent_id) return;   // 已退出的会话不算「有人在用」
-    const cur = m[s.agent_id];
-    /* 一个 Agent 可能开着多个会话，取最近活跃的那个做代表 */
-    if (!cur || (s.activity_s || 0) > (cur.active_s || 0)) {
-      m[s.agent_id] = { n: (cur ? cur.n : 0) + 1, active_s: s.activity_s || 0, sid: s.id };
-    } else {
-      cur.n += 1;
-    }
+  (perAgent || []).forEach(x => {
+    if (!x || !x.agent_id || !(x.n > 0)) return;
+    m[x.agent_id] = { n: x.n, active_s: x.activity_s || 0 };
   });
   return m;
 }
@@ -44,18 +44,15 @@ async function loadActivity() {
    * 本函数的既定失败语义（见下面 catch），所以早退不改变可见行为。 */
   if (document.hidden) return;
   try {
-    /* 只读**已存档**的 token，绝不走 termHeaders()。
-       改前踩的坑（真渲染探针抓的，renderer 直接挂死）：
-       termHeaders() → termToken() 在没有存档 token 时会 prompt() 弹原生口令框，
-       而原生弹窗会挂住 renderer ⇒ 任何 CDP 请求都超时、页面看着"卡死"。
-       产品侧更严重：活动指示是**被动展示**，若在加载时调 termHeaders()，
-       每个没配过终端口令的访问者一进页面就被弹一次口令框 —— 为了看一个
-       忙碌点逼人交密码。口令缺失时安静跳过（activityFailed），用户点进终端
-       自己会走既有那条 prompt 流程。 */
-    const t = lsGet('hub.term.token');
-    if (!t) { activityFailed = true; renderActivity(); return; }
-    const d = await api('/api/term/sessions', { headers: { 'X-TERM-TOKEN': t } });
-    ACTIVITY = activityMap(d && d.sessions);
+    /* 走**免 token** 的只读聚合端点 /api/term/activity（v0.13.90）。
+       改前这里读 lsGet('hub.term.token')，没 token 就直接放弃 ——
+       用户报的「会话数一时显示一时不显示」就是它：localStorage 按 origin 隔离，
+       局域网那个源没存过口令（或口令过期被清）时整块指示直接消失，
+       而屏幕上「读不到」与「真的零会话」长得一模一样。
+       现在既不读口令也不弹口令框（那条铁律原样保留：被动展示绝不逼人交密码），
+       端点本身也不需要凭据 —— 它只回聚合计数，不含任何 sid/cmd/cwd。 */
+    const d = await api('/api/term/activity');
+    ACTIVITY = activityMap(d && d.per_agent, d && d.alive);
     activityLoaded = true;
     activityFailed = false;
     renderActivity();
@@ -88,9 +85,13 @@ function renderActivity() {
     if (activityFailed && !activityLoaded) {
       el.innerHTML = '';
     } else if (n) {
+      /* 口径（用户 2026-10-07 追认）：在跑 = 有活会话的 **Agent 数**；
+         会话 N = 活会话 **总条数**（每行一个条数，不是每行一条）。
+         两者永远是 会话数 ≥ Agent 数，且**同时**给出来 —— 改前只在
+         sess > n 时才附「（N 会话）」，单会话的 agent 看不出总条数。 */
       const sess = ids.reduce((s, id) => s + (ACTIVITY[id].n || 0), 0);
       el.innerHTML = '<span class="hdot b" title="有活着的终端会话的 Agent"></span>在跑 ' + n +
-        (sess > n ? '（' + sess + ' 会话）' : '');
+        '<span class="hbusy-sep">·</span>会话 ' + sess;
     } else {
       el.innerHTML = '';
     }

@@ -172,8 +172,17 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # 关键词取「开关名 + 静默 + 用户真实诉求」——这正是最容易在半年后被"顺手打开"
         # 或误判成"功能坏了"的一点。
         "0.13.89": ("LINK_BYPASS_ENABLED", "全部静默", "总开关", "不要在终端里弹"),
+        # v0.13.90 是**同日两项独立报障**：① 顶栏会话数一时显示一时不显示；
+        # ② 终端复制粘贴与快捷键全废。关键词各取两条最容易在半年后被改坏的点：
+        #   · 会话数侧：数据源必须**免 token**（`/api/term/activity`），口径是
+        #     「在跑 N · 会话 M」两个数都给 —— 容易被人"顺手"合回要口令的清单端点；
+        #   · 剪贴板侧：`termCopyFallback` **焦点归还** 与 `preventDefault` 的**删掉**
+        #     （粘贴放给浏览器原生路径）—— 这两处都极易被后人"补回 preventDefault"
+        #     或"省掉那次 focus()"，而失效方式完全安静（探针会红，肉眼看不出来）。
+        "0.13.90": ("api/term/activity", "在跑 N · 会话 M", "焦点归还",
+                    "preventDefault", "原生粘贴"),
     }
-    CURRENT_VERSION = "0.13.89"
+    CURRENT_VERSION = "0.13.90"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
