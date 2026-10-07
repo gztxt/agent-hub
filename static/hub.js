@@ -933,40 +933,83 @@ async function settingsModelOptions(a) {
   }
   // 未设 hub 侧时以 agent 现值预选；两项都没有则「默认（网关路由）」= 空值
   const cur = a.hub_model || a.current || '';
-  const g = SET_MODELS.groups || {};
+  /* v0.13.86：**选项值必须是该 agent 字段真正要的形状**。
+     用户的准则是「原生 + 插入，插入要精确」—— 而"精确"从下拉这一层就要成立：
+     后端 CCR 清单给的是裸 ID（alibaba/qwen3.8-max），opencode 的字段收的却是
+     `ccr/<裸 ID>`（官方 Models 页：格式即 provider/model；本机 `opencode models ccr`
+     逐行皆 `ccr/…`）。改前这里直接拿裸 ID 当 value ⇒ 用户点任何一个都必然被 409 拒
+     （报「没有 provider alibaba」，指向也错），而 qoder 那一栏更狠：13 个 CCR ID 全部
+     必然 400。根因不是"没做校验"，是**下拉把不可写的值摆成了可选项**。
+     现在：value_prefix 由后端随接口透出（单一真相源，前端不自己拼前缀）；
+     models 非空的 agent（native 型）改成摆它自己的原生清单，且不再摆 CCR 分组。 */
+  const prefix = a.value_prefix || '';
+  const native = a.models || [];
+  const wm = SET_WRITE_MODE[a.write_mode || 'argv'] || SET_WRITE_MODE.argv;
   /* v0.13.85：空值这一项改名为「撤销 hub 侧默认（不注入 --model）」。
      原名「默认（网关路由）」容易被读成"把该 agent 的配置也改成网关路由"，
      而清空**只**撤销 hub 注入、不动任何配置文件（见后端 preview_clear 的说明）。
      这个语义差别必须写在选项里，否则用户会以为配置被还原了。 */
   let html = '<option value="">撤销 hub 侧默认（不再注入 --model）</option>';
-  const allIds = (SET_MODELS.models || []).map(m => m.id);
   /* 现值不在清单里（清单外模型 / qoder 那种原生名）时**补一项**：不补的话
      select 会落回第一项"撤销"，于是"当前值"在界面上被抹掉 —— 用户会以为已经清空了。
      补进来只是**显示**，不代表该值可写（写入校验仍在后端）。 */
   let extra = '';
-  if (cur && allIds.indexOf(cur) < 0) {
-    extra = '<optgroup label="当前值（不在 CCR 清单内）">' +
+  const known = new Set(native.concat((SET_MODELS.models || []).map(m => prefix + m.id)));
+  if (cur && !known.has(cur)) {
+    extra = '<optgroup label="当前值（不在可写清单内）">' +
       '<option value="' + escapeHtml(cur) + '" selected>' + escapeHtml(cur) + '</option></optgroup>';
   }
-  Object.keys(g).forEach(gk => {
-    html += '<optgroup label="' + escapeHtml(gk) + '">' + g[gk].map(mid => {
-      const m = (SET_MODELS.models || []).find(x => x.id === mid);
-      const label = (m && m.name && m.name !== mid) ? (mid + ' — ' + m.name) : mid;
-      return '<option value="' + escapeHtml(mid) + '"' + (mid === cur ? ' selected' : '') + '>' +
-        escapeHtml(label) + '</option>';
-    }).join('') + '</optgroup>';
-  });
-  const grouped = new Set(Object.keys(g).flatMap(k => g[k]));
-  const rest = (SET_MODELS.models || []).filter(m => !grouped.has(m.id));
-  if (rest.length) {
-    html += '<optgroup label="其他">' + rest.map(m =>
-      '<option value="' + escapeHtml(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' +
-      escapeHtml(m.name || m.id) + '</option>').join('') + '</optgroup>';
+  if (native.length) {
+    /* native 型（qoder）：只摆它认的原生名。摆 CCR 清单等于摆一排必然被拒的选项。 */
+    html += '<optgroup label="' + escapeHtml(wm.label) + '（本家清单）">' +
+      native.map(nm => '<option value="' + escapeHtml(nm) + '"' +
+        (nm === cur ? ' selected' : '') + '>' + escapeHtml(nm) + '</option>').join('') +
+      '</optgroup>';
+  } else {
+    const g = SET_MODELS.groups || {};
+    Object.keys(g).forEach(gk => {
+      html += '<optgroup label="' + escapeHtml(gk) + '">' + g[gk].map(mid => {
+        const m = (SET_MODELS.models || []).find(x => x.id === mid);
+        const val = prefix + mid;                 // ← 精确：值等于该字段要的形状
+        const label = (m && m.name && m.name !== mid) ? (mid + ' — ' + m.name) : mid;
+        return '<option value="' + escapeHtml(val) + '"' + (val === cur ? ' selected' : '') + '>' +
+          escapeHtml(label) + '</option>';
+      }).join('') + '</optgroup>';
+    });
+    const grouped = new Set(Object.keys(g).flatMap(k => g[k]));
+    const rest = (SET_MODELS.models || []).filter(m => !grouped.has(m.id));
+    if (rest.length) {
+      html += '<optgroup label="其他">' + rest.map(m => {
+        const val = prefix + m.id;
+        return '<option value="' + escapeHtml(val) + '"' + (val === cur ? ' selected' : '') + '>' +
+          escapeHtml(m.name || m.id) + '</option>';
+      }).join('') + '</optgroup>';
+    }
   }
   /* 顺序：撤销项固定第一（与改前「默认（网关路由）」同位，位置不飘），
      其后才是「当前值不在清单内」的补项，再是各 provider 分组。
      ⚠ 补项必须带 selected 才能被选中 —— 位置不决定选中态，属性才决定。 */
   sel.innerHTML = html + extra;
+  settingsModelHint(a);
+}
+
+/* v0.13.86：下拉下方的一行口径说明。存在的理由：write_mode 的三类语义里，
+   只有 argv 型（claude 之外那些「无配置文件可落」的）需要提醒"只影响 hub 拉起的会话"；
+   native 型（qoder）必须说清"CCR 模型不写进该字段、只经 --model 注入"，
+   否则用户会以为选了原生名就等于把 qoder 接到了 CCR 上。 */
+function settingsModelHint(a) {
+  const el = $('setModelHint');
+  if (!el) return;
+  if (!a) { el.textContent = ''; return; }
+  const wm = SET_WRITE_MODE[a.write_mode || 'argv'] || SET_WRITE_MODE.argv;
+  const bits = [wm.hint];
+  if (a.value_prefix) {
+    bits.push('选项值按该 agent 要求的形状拼成 ' + a.value_prefix + '<CCR 模型 ID>（官方格式 provider/model）。');
+  }
+  if ((a.models || []).length) {
+    bits.push('原生清单由 hub 内置（以 `qodercli --list-models` 为准），会随版本变化。');
+  }
+  el.innerHTML = escapeHtml(bits.join(''));
 }
 
 function setSelectedModel() { return $('setModelSel') ? $('setModelSel').value : ''; }

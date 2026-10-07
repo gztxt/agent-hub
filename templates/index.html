@@ -2021,6 +2021,10 @@
                             <div class="set-sub">2 · 选择模型（CCR :3456 清单）</div>
                             <div id="setAgentMeta" class="hint" style="margin-bottom:6px"></div>
                             <select id="setModelSel" aria-label="CCR 模型" style="width:100%"></select>
+                            <!-- v0.13.86：下拉口径说明。选项值已按该 agent 要求的形状拼好
+                                 （opencode 的 ccr/<ID>），且 native 型 agent 摆的是本家清单
+                                 而不是必然被拒的 CCR 清单 —— 这行把"为什么长这样"说出来。 -->
+                            <div id="setModelHint" class="hint" style="margin-top:4px"></div>
                             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
                                 <button class="btn sm" type="button" data-settings-act="preview">预览变更</button>
                                 <!-- v0.13.44：页内口令框。APP 内嵌 WebView 会吞掉 prompt()，
@@ -2358,6 +2362,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=01bd76c9"></script>
+    <script src="/static/hub.js?v=8a4a6be4"></script>
 </body>
 </html>

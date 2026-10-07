@@ -71,6 +71,26 @@ WRITE_MODE: Dict[str, str] = {
     "qoder": "native",
 }
 
+#: 该 agent 的模型字段要求的**值前缀**（v0.13.86，2026-10-07）。
+#: 为什么需要：CCR 清单（/api/models）给的是裸 ID（`alibaba/qwen3.8-max`），而
+#: opencode 的 `model` / `--model` 收的是 `provider/model_id` 形状 —— 官方文档 Models 页
+#: 原话「The format is `provider/model`」，本机同名 CLI 亦实测回 `ccr/<id>`（`opencode
+#: models ccr` 逐行都是 `ccr/…`）。用户若照着清单点裸 ID，`_opencode_write` 会 409
+#: 且指错方向（它说「没有 provider alibaba」，实际缺的是 `ccr/` 前缀）。
+#: ⇒ 设置页据此把选项值拼成 `<前缀><CCR ID>`，让"能点到的"与"能写进的"是同一个东西。
+VALUE_PREFIX: Dict[str, str] = {"opencode": "ccr/"}
+
+#: 该 agent 的**原生模型清单**（v0.13.86）。取证：`qodercli --list-models` 实测输出
+#: （2026-10-07）= Qwen3.8-Max / Qwen3.8-Flash；`~/.qoder/.models/default` 的 key
+#: 亦为 `qmodel_38max`，与该清单同族。qoder 的 `model.name` **只认原生名**（塞 CCR ID
+#: 会被 `_qoder_write` 硬拒）⇒ 设置页若只摆 CCR 清单，用户点任一 ID 都必然 400，
+#: 属"看起来能选、实际必被拒"。故把原生清单透出来，且对 native 型 agent 不再摆 CCR 清单。
+#: ⚠ 清单会随 qoder 发版变化：这里的提示语写明「以 qodercli --list-models 为准」，
+#: 写入侧仍由 `_qoder_write` 复核形状（真源不在这张表）。
+NATIVE_MODELS: Dict[str, List[str]] = {
+    "qoder": ["Qwen3.8-Max", "Qwen3.8-Flash"],
+}
+
 #: pi 走 CCR 时用的 provider（~/.pi/agent/models.json 里 baseUrl = CCR 的那个）
 PI_CCR_PROVIDER = "ccr-free"
 #: grok 的命名 profile 键（[model.<key>] + [models].default 指向它）
@@ -538,8 +558,11 @@ def _opencode_read() -> dict:
         d = json.loads(_read_text(p))
     except json.JSONDecodeError as e:
         return {"current": "", "files": [str(p)], "note": f"opencode.json 解析失败：{e}"}
-    return {"current": str(d.get("model") or ""),
-            "provider": "ccr",
+    cur = str(d.get("model") or "")
+    # provider 取**现值自己的**前缀，不是写死 "ccr"：现值恒为 `provider/model_id`
+    # 形状，写死 ccr 会在用户把 provider 换成别家时给出假信息（v0.13.86 前即如此）。
+    return {"current": cur,
+            "provider": cur.partition("/")[0] if "/" in cur else "",
             "extra": {"small_model": str(d.get("small_model") or "")},
             "files": [str(p)]}
 
@@ -919,6 +942,7 @@ def agent_state(agent_id: str) -> dict:
                 # write_mode 统一给 "argv" 之外的语义：这两个 agent 连注入都不做，
                 # 故用 "none"，前端据此不显示"字段认什么"那行（没有字段可认）。
                 "write_mode": "none",
+                "value_prefix": "", "models": [],
                 "current": "", "hub_model": hub_model(agent_id)}
     try:
         st = spec["read"]()
@@ -930,6 +954,11 @@ def agent_state(agent_id: str) -> dict:
             "current": st.get("current", ""), "provider": st.get("provider", ""),
             "extra": st.get("extra", {}), "note": st.get("note", ""),
             "files": files, "argv": MODEL_ARGV.get(agent_id, ""),
+            # v0.13.86：设置页拿这两列才能摆出"点了真能写进去"的选项 ——
+            # value_prefix 让选项值等于该 agent 字段真正要的形状（opencode 的 ccr/），
+            # models 让只认原生名的 agent（qoder）摆原生清单而不是必然被拒的 CCR 清单。
+            "value_prefix": VALUE_PREFIX.get(agent_id, ""),
+            "models": NATIVE_MODELS.get(agent_id, []),
             # v0.13.85：把「这个 agent 的模型字段认什么」摆到设置页，否则用户会把
             # 原生名/CCR ID/只有注入三条路混着用，改了不生效却看上去"保存成功"。
             "write_mode": WRITE_MODE.get(agent_id, "argv"),
@@ -976,6 +1005,8 @@ def preview_clear(agent_id: str) -> dict:
     spec = _spec_or_raise(agent_id)
     return {"agent_id": agent_id, "model": "", "mode": "clear",
             "write_mode": WRITE_MODE.get(agent_id, "argv"),
+            "value_prefix": VALUE_PREFIX.get(agent_id, ""),
+            "models": NATIVE_MODELS.get(agent_id, []),
             "hub_model_from": hub_model(agent_id), "hub_model_to": "",
             "argv": [], "files": [],
             "note": f"只撤销 hub 侧默认模型，不再向 {spec['name']} 注入 --model；"
@@ -1022,6 +1053,8 @@ def preview(agent_id: str, model: str) -> dict:
     return {"agent_id": agent_id, "model": model, "mode": "set",
             "hub_model_from": hub_model(agent_id), "hub_model_to": model,
             "write_mode": WRITE_MODE.get(agent_id, "argv"),
+            "value_prefix": VALUE_PREFIX.get(agent_id, ""),
+            "models": NATIVE_MODELS.get(agent_id, []),
             "argv": terminal_argv(agent_id, model), "files": files}
 
 

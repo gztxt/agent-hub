@@ -611,6 +611,78 @@ class IThreeNewAgents(_HomeFixture):
             self.assertEqual(modes[aid], "ccr", aid)
 
 
+class MValuePrefix(_HomeFixture):
+    """v0.13.86（2026-10-07 续报）：**下拉能点到的值必须就是能写进去的值**。
+
+    根因不是"没校验"，而是设置页把不可写的值摆成了可选项 —— CCR 清单给裸 ID
+    （`alibaba/qwen3.8-max`），opencode 的字段要 `ccr/<裸 ID>`
+    （官方 Models 页：格式即 provider/model；本机 `opencode models ccr` 逐行皆 `ccr/…`）
+    ⇒ 用户在设置页点任何一个都必然 409。所以前缀必须由**后端**作为单一真相源透出，
+    前端只做拼接，不许自己猜。
+    """
+
+    def test_value_prefix_exposed_for_opencode_only(self):
+        st = {a["id"]: a for a in modelcfg.list_agents()}
+        self.assertEqual(st["opencode"]["value_prefix"], "ccr/")
+        for aid in ("claude", "qoder", "cursor", "codex"):
+            self.assertEqual(st[aid]["value_prefix"], "", aid)
+
+    def test_prefix_is_what_the_writer_actually_needs(self):
+        """判据：后端透出的前缀 + 裸 CCR ID == 写手接受的完整值（两端同源，不靠约定）。"""
+        st = {a["id"]: a for a in modelcfg.list_agents()}
+        bare = "alibaba/qwen3.8-max"
+        prefixed = st["opencode"]["value_prefix"] + bare
+        self.assertEqual(prefixed, "ccr/alibaba/qwen3.8-max")
+        modelcfg.apply_model("opencode", prefixed)          # 拼出来的值必须真能落笔
+        d = json.loads(self._read(".config/opencode/opencode.json"))
+        self.assertEqual(d["model"], prefixed)
+        self.assertIn(bare, d["provider"]["ccr"]["models"],
+                      "provider.models 的键是无前缀裸 ID（本机实测形状）")
+        with self.assertRaises(modelcfg.ModelCfgError) as cm:
+            modelcfg.apply_model("opencode", bare)          # 裸 ID 仍必须被拒（不许悄悄放行）
+        self.assertEqual(cm.exception.status, 409)
+
+    def test_preview_carries_prefix_and_native_models(self):
+        """预览与状态必须带同样的两列：前端选 agent 时与保存后刷新时走的是同一份形状。"""
+        pv = modelcfg.preview("opencode", "ccr/a/b")
+        self.assertEqual(pv["value_prefix"], "ccr/")
+        pv2 = modelcfg.preview("qoder", "Qwen3.8-Max")
+        self.assertEqual(pv2["models"], ["Qwen3.8-Max", "Qwen3.8-Flash"])
+        self.assertEqual(pv2["value_prefix"], "")
+
+
+class MNativeInventory(_HomeFixture):
+    """v0.13.86：native 型 agent（qoder）的字段只认本家名 ⇒ 界面不许摆 CCR 清单。
+
+    改前 qoder 那一栏摆着 13 个 CCR ID，点任何一个都必然 400 —— "看起来能选、
+    实际必被拒"是操作逻辑缺陷，不是缺校验。清单取证：`qodercli --list-models`
+    实测输出（2026-10-07）= Qwen3.8-Max / Qwen3.8-Flash。
+    """
+
+    def test_native_models_exposed_for_qoder_only(self):
+        st = {a["id"]: a for a in modelcfg.list_agents()}
+        self.assertEqual(st["qoder"]["models"], ["Qwen3.8-Max", "Qwen3.8-Flash"])
+        for aid in ("opencode", "cursor", "claude"):
+            self.assertEqual(st[aid]["models"], [], aid)
+
+    def test_every_exposed_native_name_is_actually_writable(self):
+        """清单里每一个名字都必须真能落笔 —— 否则界面又摆了一排"看着能点"的假选项。"""
+        for aid, names in modelcfg.NATIVE_MODELS.items():
+            for nm in names:
+                modelcfg.apply_model(aid, nm)
+                d = json.loads(self._read(".qoder/settings.json"))
+                self.assertEqual(d["model"]["name"], nm, aid)
+
+    def test_opencode_read_reports_real_provider_not_hardcoded(self):
+        """`provider` 是给用户看的参考信息，写死 "ccr" 会把别家 provider 说成 ccr。"""
+        path = self.home / ".config/opencode/opencode.json"
+        d = json.loads(path.read_text(encoding="utf-8"))
+        d["provider"]["other"] = {"options": {"baseURL": "http://x/v1"}, "models": {}}
+        d["model"] = "other/some-model"
+        path.write_text(json.dumps(d), encoding="utf-8")
+        self.assertEqual(modelcfg.agent_state("opencode")["provider"], "other")
+
+
 class JGrokReadFix(_HomeFixture):
     """2026-10-07 修的真缺陷：grok 的「当前」在设置页恒显示"（未读到）"。
 

@@ -79,7 +79,20 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.85"   # 模型设置补齐 10 家 agent + 「原生+插入」写入 + 漂移可见
+VERSION = "0.13.86"   # 模型设置选项值精确化：值前缀 + 原生清单（用户准则「插入要精确」）
+#   根因（2026-10-07 续报；用户准则「模型选择按原生+插入，不破坏原生模型，插入要精确」）：
+#   ① v0.13.85 的写手对 opencode 要求 `ccr/` 前缀（官方 Models 页：格式即 provider/model；
+#      本机 `opencode models ccr` 逐行 `ccr/…`），但前端下拉把 /api/models 的**裸 ID**
+#      当选项值 ⇒ 用户在设置页点任何一个 CCR 模型都必然 409，且报错指向还错
+#      （说「没有 provider alibaba」，实际缺的是前缀）。⇒ 不是"没做校验"，
+#      而是**下拉把不可写的值摆成了可选项**。新增 VALUE_PREFIX，由后端随接口透出，
+#      前端用 `<前缀><CCR ID>` 拼选项值 ⇒ "能点到的"与"能写进的"是同一个东西。
+#      同一个前缀也决定终端注入值（opencode --model 同样要 provider/model 形状）。
+#   ② qoder 那一栏更狠：write_mode=native（只认 Qwen3.8-Max 这类原生名），却摆着 13 个
+#      必然被 400 拒的 CCR ID。⇒ 新增 NATIVE_MODELS（取证 `qodercli --list-models`），
+#      native 型 agent 改摆本家清单，且不再渲染 CCR 分组。
+#   ③ 顺带把 opencode read 写死的 provider:"ccr" 改成读现值自己的前缀（假信息源）。
+#   ④ 页面补 #setModelHint 一行口径说明（argv 只影响 hub 拉起的会话 / native 的 CCR 只经注入）。
 #   根因（2026-10-07 用户报障「模型设置里没有 agents 的所有模型」+「优化操作逻辑与准确性」）：
 #   ① SPECS 只列 6 家、本机实有 10 家 ⇒ opencode/qoder/cursor 在设置页压根不出现。
 #      三家落点形状各异，逐家实测后落笔：opencode 要 provider 前缀且在 provider.models

@@ -6,9 +6,9 @@
 
 | 层 | 判据 | 换机行为 | 数量（2026-10-07 实测） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **1277** |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **1305** |
 | **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **58** |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **46**（文件数，非用例数） |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **47**（文件数，非用例数） |
 
 > ⚠ **2026-10-05 更新计数时踩过的坑，记下来防重蹈**：
 > ① 三个数字**必须实测**，不能沿用上一版 —— 本表此前记 983/50/42，实际已是 1162/55/44

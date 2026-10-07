@@ -1,3 +1,32 @@
+## v0.13.86 — 模型设置：选项值精确化（值前缀 + 原生清单）
+
+> 2026-10-07 续报，用户准则「模型选择按原生 + 插入，不要破坏原生模型，插入要精确」。
+> v0.13.85 把**写手**做精确了，但**下拉这一层**没跟上 —— 本批修「能点到的值」与
+> 「能写进去的值」不一致。
+
+### 根因：不是没校验，是下拉把不可写的值摆成了可选项
+
+| agent | 改前 | 后果 | 改后 |
+|---|---|---|---|
+| opencode | 选项值是 CCR 裸 ID（`alibaba/qwen3.8-max`） | 每次保存必然 409，且报错指错方向（说「没有 provider alibaba」，实际缺前缀） | 新增 `VALUE_PREFIX`（`ccr/`）随接口透出，前端拼 `<前缀><裸 ID>` ⇒ 与写手接受的形状逐字相同 |
+| qoder | 摆着 13 个必然被 400 拒的 CCR ID | 「看起来能选、实际必被拒」 | 新增 `NATIVE_MODELS`（取证 `qodercli --list-models`），native 型改摆本家清单，不再渲染 CCR 分组 |
+| opencode `provider` | 写死 `"ccr"` | 换成别家 provider 时给出假信息 | 读**现值自己的**前缀 |
+
+取证：opencode 官方 Models 页「The format is `provider/model`」+ 本机 `opencode models ccr`
+逐行 `ccr/…` + `run --help` 的「model to use in the format of provider/model」；
+`qodercli --list-models` 实测两行；`~/.qoder/.models/default` 的 key 同族。
+
+### 为什么前缀由后端给、前端不许自己拼
+
+前端自己拼 `'ccr/' + id` 就是**第二份会漂的真相**。故 `VALUE_PREFIX`/`NATIVE_MODELS`
+与 `WRITE_MODE` 同源，一律由 `/api/settings/models`、`preview` 透出；
+`MValuePrefix` 直接断言「透出的前缀 + 裸 ID == 写手接受的值」并**真落一次笔**。
+
+### 同批
+
+- 页面补 `#setModelHint` 一行口径说明（argv 型只影响 hub 拉起的会话 / native 型的 CCR 只经注入）。
+- 新增 6 例（`MValuePrefix` 3 / `MNativeInventory` 3）。
+
 ## v0.13.85 — 模型设置：补齐全部 agent + 「原生 + 插入」写入 + 漂移可见
 
 > 2026-10-07，用户报障两件：「agent-hub 模型设置里面没有 agents 的所有模型」
