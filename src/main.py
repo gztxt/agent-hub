@@ -79,7 +79,10 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.91"   # 吞备用屏时同步清屏（jcode 启动嵌入式终端带入乱码根治）
+VERSION = "0.13.91"   # 吞备用屏时同步清屏（jcode 启动期残影已修；症状身份待端侧确认）
+#   ⚠️ **范围更正（2026-10-08 自审）**：不得写成「根治」。已证并已修的是「客户端 resize
+#   之前那段 245B 真实回放里的残影」；用户报的「乱码」是否就是它，**无端侧证据**
+#   （稳态跑起来改前改后都干净，jcode 自己的 2J 会自愈）。详见 CHANGELOG v0.13.91 顶部横幅。
 #   根因（2026-10-08 用户报障：「agent-hub 的 jcode 启动嵌入式终端时会带入乱码」）：
 #   ① **报障形态与病灶**：v0.13.83 为治 codex「终端滚不动」，把 DECSET 的 1049/1047/47
 #   注册成**吞掉**（termAltScreenBlock，内建 activateAltBuffer 不执行），终端恒在主屏。
