@@ -270,6 +270,59 @@ class TestTermTouchAuthUrlGates(unittest.TestCase):
         assert "send_text" in seg and "put_nowait" not in seg, "带外通道纪律被破坏"
 
 
+    # ── ──── F 组：v0.13.88 位置轴（用户 2026-10-07 二次报障的回归闸门）
+
+    def test_f1_cue_window_is_tight_enough(self):
+        """★ 线索只认**邻近 3 行**：同块输出里 4 行开外的文档链接不许被追认。
+
+        v0.13.87 的行窗是 10 行，用户二次报障后收到 3。行数被加宽一次，误报就整批回来
+        （影子实例实测：提示符后 8 行的两条文档链接全被叫成「登录」），故把上界钉住。
+        """
+        buf = ("Use the url below to sign in\n"
+               "https://claude.com/cai/oauth/authorize?code=true&client_id=abc123\n"
+               + "one more plain line\n" * 4
+               + "See https://github.com/openai/codex for details\n")
+        got = term._scan_login_urls(buf)
+        assert any("oauth/authorize" in u for u in got), f"真登录没播：{got}"
+        assert not any("github.com/openai/codex" in u for u in got), \
+            f"4 行开外的文档链接被追认成登录（行窗太宽）：{got}"
+        assert term.AUTH_CUE_BACK_LINES <= 3, \
+            f"行窗又被加宽到 {term.AUTH_CUE_BACK_LINES} 行 ⇒ 中毒带会跟着变长"
+
+    def test_f2_login_channel_scans_current_chunk_only(self):
+        """★★ 本批主判据（结构钉）：登录路必须只吃**本轮那块**输出，不许吃 scrollback。
+
+        为什么这条不能只写成语义用例：位置轴是**调用点**的属性（传给纯函数的是哪段
+        文本），纯函数自己看不见"块"。所以判据读泵里的代码结构，与 e11 同一手法。
+        实测形态（v0.13.87 影子实例 :3199）：真登录提示播过 1.6 秒后出现一条普通文档
+        链接，仍被判成登录 —— 因为判定范围是整段 16KB scrollback。
+        """
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        seg = src[src.index("async def _scan_auth_urls"):src.index("# 回放最近输出")]
+        assert "sess.last_chunk = chunk" in seg, "没有把本轮这块单独留下来 ⇒ 判据无处可依"
+        assert "AUTH_CHUNK_MAX" in seg, "当前块没封顶（单次 PTY 读可能有几十 KB）"
+        assert "auth_urls = _scan_login_urls(sess.last_chunk" in seg, \
+            "登录路没只看当前块 ⇒ 一次真提示会毒化其后多行输出"
+        assert "_scan_login_urls(sess.url_buf" not in seg, \
+            "登录路又拿整段 scrollback 判了（误报的根本成因）"
+
+    def test_f3_page_channel_does_not_reannounce_auth_url(self):
+        """登录路只看当前块后，一条**已判过登录**的 URL 不许被页面路再播一遍。
+
+        不修这条就会出现新形态的重复：真登录提示先播 `[登录链接]`，等它落进
+        scrollback 后，页面路（仍看整段窗口）又把它当普通链接播一次 —— 同一条 URL
+        两行注记、两次 toast。判据读代码结构：页面路必须查 `auth|<url>` 这个会话级键。
+        """
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        seg = src[src.index("async def _scan_auth_urls"):src.index("# 回放最近输出")]
+        assert '("auth|" + u) not in sess.announced_urls' in seg, \
+            "页面路没排除已播过的登录 URL ⇒ 同一条真登录链接会再播一次"
+
+    def test_f4_last_chunk_is_bounded(self):
+        """当前块要有字节上限：它每轮都被整块替换，不许把整段输出留在判据里。"""
+        assert 1024 <= term.AUTH_CHUNK_MAX <= term.URL_SCAN_MAX, \
+            f"AUTH_CHUNK_MAX={term.AUTH_CHUNK_MAX} 与 URL_SCAN_MAX 口径不搭"
+
     def test_d3_authurl_sent_per_viewer(self):
         """本机是多观看者架构：旁路帧必须逐观看者发。照抄上游单 session.ws 会退化。
 

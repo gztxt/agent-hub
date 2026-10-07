@@ -68,6 +68,19 @@ _REAP_EOF_CONFIRM = 3
 #   ② 页面通道 `_scan_page_urls` —— 无线索词，但 URL 与一句人话同处一行时播
 #      `page_url`（文案必须走正文归一化，**不许**再叫「登录」）。这不丢用户真正要的
 #      「agent 贴了链接让我打开」。
+# v0.13.88（用户 2026-10-07 **二次**报障「页面一出现链接就弹登录远程链接」）：
+# v0.13.87 只做了"线索词 + 方向"，**判定范围仍是整段 16KB scrollback** ⇒ 一次真
+# 登录提示播过之后，`AUTH_CUE_BACK_LINES = 10` 把它撑成一条**会跟着输出走的中毒带**：
+# 其后任意普通链接只要落进那 10 行内就被追认成登录（影子实例实测复现 4 例：裸文档
+# URL、提示符后 8 行的两条链接、人话行上方的链接）。根因在**位置轴**，不在线索词：
+# 线索与 URL 必须同属**当前这一扇输出**。故登录通道只在 `sess.last_chunk`（本轮
+# PTY 读到的这块）里判，`AUTH_CUE_BACK_LINES` 同步收到 3 行；页面通道继续用
+# scrollback（链接发现需要跨块）。这一轴正是实测能证伪的那一条：只把窗口从 10 行收到
+# 3 行**不够** —— 误报里紧挨线索的那条文档链接仍在 3 行内，只有"换一块输出就清零"
+# 才能把它们分到两侧。
+# 取舍：流式 agent 把登录话术与链接隔了多行/多块时会漏播登录提示 —— 画面里 URL 仍
+# 可复制，只少了可点按钮，而误报「登录」是天天可见的噪声（用户口径：本机终端都不需要
+# 登录，误报远比漏报烦人）。
 # 线索表留运维口子（DB `auth_url_cues` / 环境变量，逗号分隔）。
 # 为什么要在**服务端**做：URL 出现在 pty 输出字节流里，而前端拿到的是「已经过
 # 一轮 JSON/WS 封装」的数据；更关键的是要看到未渲染的原始行，才能把被终端宽度
@@ -152,15 +165,21 @@ def _normalize_url(raw: str) -> Optional[str]:
 
 
 #: 登录线索的判定窗口（URL 所在行**之前/之后**各看几行）。
-#: ★ 两层收紧都是 v0.13.87 实测逼出来的：
-#:   ① 第一版把线索词与**整个 16KB 滚动窗口**比 ⇒ 真登录提示出现后，屏上**先前的**
-#:      文档链接被追认为"登录"（影子实例实测连播 3 条误报）。真提示的线索就在 URL
-#:      邻近几行（claude setup-token 实测：上一段 2 行内），故窗口收到 ±10/3 行。
-#:   ② 只收窗口还不够 —— 线索词自带方向（"use the url below" = URL 在下面），
-#:      不分方向时"上一行的普通地址 + 下一行的登录话术"这个形状照样误报。
+#: ★ 三层收紧都是实测逼出来的：
+#:   ① v0.13.87 第一版把线索词与**整个 16KB 滚动窗口**比 ⇒ 真登录提示出现后，屏上
+#:      **先前的**文档链接被追认为"登录"（影子实例实测连播 3 条误报）。真提示的线索
+#:      就在 URL 邻近几行（claude setup-token 实测：上一段 2 行内），故窗口收到 ±10/3 行。
+#:   ② v0.13.87 第二轮：只收窗口还不够 —— 线索词自带方向（"use the url below" =
+#:      URL 在下面），不分方向时"上一行的普通地址 + 下一行的登录话术"这个形状照样误报。
 #:      故最终判据是 `auth_cue_for()` 的方向表（见 AUTH_CUES_PRE/POST）。
-AUTH_CUE_BACK_LINES = 10
+#:   ③ v0.13.88：±10 行本身仍是**滚动窗口**的行数，一次线索播出即等于给其后 10 行
+#:      上了毒（用户二次报障的实证）。收到 3，且窗口只取**本轮 PTY 读到的那一块**
+#:      （`sess.last_chunk`），不再看整段 scrollback —— 换一块输出就清零。
+AUTH_CUE_BACK_LINES = 3
 AUTH_CUE_FWD_LINES = 3
+#: 登录通道参与判定的**当前块**字节上限：单次 PTY 读可能有几十 KB，全喂给正则
+#: 既废算力也没意义（线索必须紧邻 URL，取尾部即含最新输出）。
+AUTH_CHUNK_MAX = 8192
 
 #: 折行拼接的**反例排除**：shell 提示符行（`user@host:/path$`）的字符恰好全在
 #: URL 续接字符集里，会被误当成上一行 URL 的续接（实测把提示符粘进 URL 尾巴，
@@ -255,6 +274,10 @@ def _scan_login_urls(buf: str, **kw) -> List[str]:
 
     返回**已归一化**的 URL 列表（跨行拼回来的那条也在内），调用方直接播。
     同行线索算 PRE（URL 与线索同处一行时，两种语气都说得通）。
+
+    v0.13.88：`buf` 的**来源**是本通道判据的一部分 —— 泵只把**本轮那块**输出传进来
+    （见 pump 里的 `sess.last_chunk`），不再传整段 scrollback。原因是可证伪的：
+    传整段时，一次真登录提示会把其后 10 行输出整段毒化（用户二次报障）。
     """
     lines = buf.split("\n")
     cands: List[Tuple[int, str]] = [(i, u) for i, u, _l in _url_lines(buf)]
@@ -443,7 +466,11 @@ class Session:
         # announced = 已播过的**键**，**会话级**共享（换端重连不重播，同端也不刷屏）。
         # v0.13.87：键带通道前缀 —— 同一条 URL 在登录/页面两条通道下语义不同
         # （文案与点击行为都不同），只按 URL 去重会让后到的那条被静默吞掉。
+        # v0.13.88：last_chunk = **本轮 PTY 读到的这块**（剥过 ANSI），登录通道的
+        # 判定范围（见 AUTH_CUE_BACK_LINES ③）。与 url_buf 分开是**位置轴**的要求：
+        # url_buf 是整段 scrollback，拿它判登录会让一次真提示毒化其后 10 行输出。
         self.url_buf = ""
+        self.last_chunk = ""
         self.announced_urls: set = set()
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
@@ -1062,19 +1089,30 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
           · 页面路：`_scan_page_urls` 命中「URL + 同行人话」就发 `page_url`，
             auto 恒为 False —— 普通页面链接绝不该替用户自动弹浏览器。
         两条路都**只走 send_text 带外通道**，绝不 put 进 vq（那会被 xterm 当正文画出来）。
+
+        v0.13.88：**两路的扫描范围不同** —— 登录路只看 `sess.last_chunk`（本轮这块），
+        页面路看 `sess.url_buf`（整段 scrollback）。这不是笔误：一条线索播出后必须
+        "换一块就清零"，否则它会追认紧随其后的普通链接（用户二次报障的形态）；
+        而链接发现本身要跨块，否则折行/分批打印的 URL 会被漏掉。
         """
         try:
             chunk = strip_ansi(data.decode("utf-8", errors="replace"))
             sess.url_buf = (sess.url_buf + chunk)[-URL_SCAN_MAX:]
+            sess.last_chunk = chunk[-AUTH_CHUNK_MAX:]
             # 线索表可由 DB/env 覆盖；覆盖时**整表替换 PRE/POST 两张**（运维口子
             # 只需要"加一种文案"这一档能力，分两张表反而给不出可读的 diff）。
             cues = auth_cues()
             kw = {"cues_pre": cues, "cues_post": []} if cues != AUTH_CUES_PRE else {}
-            auth_urls = _scan_login_urls(sess.url_buf, **kw)
+            auth_urls = _scan_login_urls(sess.last_chunk, **kw)
             # **登录路优先**：同一条 URL 命中了登录就不在页面路重复播 ——
             # 否则同一串 URL 会在屏上留两行（`[登录链接] …` + `[链接] …`）并弹两次。
             # 两条通道的语义是「更具体的那条胜出」，不是"两个都要说"。
-            page_urls = [u for u in _scan_page_urls(sess.url_buf) if u not in auth_urls]
+            # v0.13.88 追加一条：登录路只看当前块后，一条**已判过登录**的 URL 仍留在
+            # url_buf 里，会被页面路看到并再播一遍 —— 已播过的登录 URL 必须一并退出
+            # 页面路（`auth|u` 就是它在 announced_urls 里的会话级键）。
+            page_urls = [u for u in _scan_page_urls(sess.url_buf)
+                         if u not in auth_urls
+                         and ("auth|" + u) not in sess.announced_urls]
             for ch, urls in (("auth", auth_urls), ("page", page_urls)):
                 for u in urls:
                     key = ch + "|" + u
@@ -1084,8 +1122,10 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
                     # auto 只对「明确在催你点浏览器」的场景开；默认给按钮。
                     # 自动开在手机上必被浏览器拦（无用户手势），反而让人以为功能坏了。
                     # v0.13.87：auto 只可能出现在登录路 —— 页面链接永远只给按钮。
+                    # v0.13.88：auto 的判据也跟着收到当前块，否则很久以前的一句
+                    # "press enter to open" 会让后来的登录提示被自动打开。
                     auto = ch == "auth" and any(
-                        k in sess.url_buf.lower() for k in
+                        k in sess.last_chunk.lower() for k in
                         ("press enter to open", "open this url",
                          "continue in your browser", "open_url:"))
                     try:
