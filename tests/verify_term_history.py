@@ -128,9 +128,15 @@ def wait_title(sid, budget=40):
 
 
 def main():
-    # 1) 旧行为不降级
+    # 1) 列表端点：**免 token 已不再是允许的行为**
+    #    ⚠️ 这条原判据是「免 token 仍 200」，写在 TERM_TOKEN 落地**之前**。鉴权收紧后
+    #    它常年是红基线（:3102 与影子 :3199 实测均为 401）—— 「旧行为不降级」的意图
+    #    已被更严的行为取代。改为断言**当前真值**：无凭据 401、带凭据 200。
+    #    2026-10-07 顺着 cursor 接入改判（原样留着会让整支探针永远非零退出）。
     code, d = call("/api/term/sessions", headers={})
-    chk("旧行为：GET /api/term/sessions 免 token 仍 200", code == 200, f"HTTP {code}")
+    chk("无 token → 401（fail-closed）", code == 401, f"HTTP {code}")
+    code, d = call("/api/term/sessions")
+    chk("带 token → 200", code == 200, f"HTTP {code}")
     chk("活会话条目带 title 字段（可为空串）", all("title" in s for s in d.get("sessions", [])),
         f"n={len(d.get('sessions', []))}")
 
@@ -164,7 +170,7 @@ def main():
     # 4) 逐 agent：列历史 → 续聊起 pty → 真续的是被点那条 + 终端有渲染 → 销毁
     #    内容级“旧会话正文出现在屏上”不在脚本里断言：TUI 开在**底部视口**，
     #    首条提问早已滚出屏（实测 grok 屏上是最后一次回答），该条归 Task 4 Step 4 眼校。
-    for agent in ["grok", "claude", "jcode", "hermes", "codex", "qoder"]:
+    for agent in ["grok", "claude", "jcode", "hermes", "codex", "qoder", "cursor"]:
         his = call(f"/api/term/history/{agent}?limit=1")[1].get("items") or []
         if not his:
             chk(f"{agent} 无历史可续（空态可接受）", True, "note 已给")
@@ -187,7 +193,11 @@ def main():
                 chk(f"{agent} /proc 实测子进程 cwd 一致", True, "子进程已退出，跳过（不作 FAIL）")
             # 顶栏芯片不得出现 hex sid：pid 反查不到就走 resume_of 直查盘上标题
             t = wait_title(s["id"])
-            chk(f"{agent} 顶栏芯片拿到中文标题", bool(t) and bool(re.search(r"[\u4e00-\u9fff]", t)),
+            # ⚠️ 判据刻意**不是**「必须含汉字」：cursor 的标题就是用户原话，可能是英文
+            #    （实测首条 "Cursor History Session Loading Issue"）。要钉的是
+            #    「拿到的是标题而不是 id 前缀」——那才是 D2 禁的东西。
+            chk(f"{agent} 顶栏芯片拿到会话标题（非 sid 前缀）",
+                bool(t) and t != his[0]["id"][:8] and bool(re.search(r"[^\W\d_]", t)),
                 f"title={t[:22]!r}")
             got = replay(s["id"]) or ""
             vis = " ".join(_clean(got).split())

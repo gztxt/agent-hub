@@ -175,7 +175,10 @@ PROFILES: List[dict] = [
      # inline mode, preserving terminal scrollback history."
      # ⚠️ 已知不足（上游仍 open，故不能靠它单独收口）：#14277/#10331/#20063/#23651
      # 报告即便关掉备用屏，codex 在普通屏做整屏重画时仍可能丢 scrollback。
-     # 本仓另有前端侧的跨会话复位（TERM_STATE_RESET）兜住污染，两条一起才完整。
+     # v0.13.83：前端改为**从根上吞掉 ?1049h**（03-agents-cards.js 的 termAltScreenBlock），
+     # 备用屏这件事已不靠这个 flag 收口。此处**继续保留**——它让 codex 自己的输出落进主屏
+     # scrollback（官方 flag 原文就是这句），且少一层无谓的「发了又被吞」。上面那条
+     # 上游不足依然成立，与本 flag 无关。
      "terminal": {"cmd": "codex --no-alt-screen", "cwd": "/fs/1000/ftp/技术文档"},
      "chat": None,
      "desc": "OpenAI Codex CLI（TUI），经 CCR :3456（~/.codex/config.toml 托管 profile）→ 原生终端会话"},

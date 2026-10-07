@@ -4,11 +4,11 @@
 （`Ran 71 tests ... OK`），而其中相当一部分断言的是**这台 NAS 上恰好存在的目录形态**
 —— 换台机器（或干净 CI runner）它们必然红，于是"能不能上 CI"这个问题一直没有答案。
 
-| 层 | 判据 | 换机行为 | 数量（2026-10-05 实测） |
+| 层 | 判据 | 换机行为 | 数量（2026-10-07 实测） |
 |---|---|---|---|
-| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **1261** |
-| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **55** |
-| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **44**（文件数，非用例数） |
+| **L0 hermetic** | 只依赖纯函数 / `tempfile` / AST 读源码。不读 `~/.claude` 等真盘、不起服务、不打网络、不 fork pty、**不 import `src.main`** | 结论必须一模一样；**出现 SKIP 即分层放错**，闸门判 FAIL（退出码 2） | **1272** |
+| **L1 host** | 断言本机真实仓库形态（`~/.grok/sessions`、`~/.claude/projects`、`~/.jcode/sessions`、`~/.qoder/projects`、`~/.hermes/state.db`、`~/.codex/state_5.sqlite`、`/fs` 真目录） | 显式 `SKIP(host-dependent)` + 因果与解法，**绝不静默通过** | **58** |
+| **L2 live** | 需要服务在跑：`verify_*.py`、`probe_*.py`（逐只的“需服务 / 不需服务”二分待重测，见下节口径注） | 手动单跑；不被 `discover -p "test_*.py"` 收进来 | **45**（文件数，非用例数） |
 
 > ⚠ **2026-10-05 更新计数时踩过的坑，记下来防重蹈**：
 > ① 三个数字**必须实测**，不能沿用上一版 —— 本表此前记 983/50/42，实际已是 1162/55/44
@@ -19,11 +19,13 @@
 >    `run_tier.py` 已从源头摘掉该变量，但**直接调 `pytest` 时仍会踩到** ——
 >    此时加 `env -u FORCE_COLOR` 或直接走 `bash scripts/run_tests.sh`。
 
-> 计数口径（写下来防后人重蹈“表里数字没来源”）：1261/55 来自 `run_tests.sh hermetic` 与
-> `run_tests.sh host` 的 `[tier] ran=` 行；两者相加 1316 = 收集器对账报的
-> `unittest=1316 = pytest=1316`，即**下面那张表与实际收集集一致**，没有“表里有、套件不收”。
-> L2 44 是 `tests/verify_*.py tests/probe_*.py` 的**文件数**，它不被 unittest 收，故与前两行不同量纲。
-> 历史：983/50/42（2026-10-02）→ 1162/55/44（2026-10-05 补完 v0.13.66~79 后）→ 1261/55/44（同日再补本轮八批的新闸门）。
+> 计数口径（写下来防后人重蹈“表里数字没来源”）：1272/58 来自 `run_tests.sh hermetic` 与
+> `run_tests.sh host` 的 `[tier] ran=` 行；两者相加 1330 = 收集器对账报的
+> `unittest=1330 = pytest=1330`，即**下面那张表与实际收集集一致**，没有“表里有、套件不收”。
+> L2 45 是 `tests/verify_*.py tests/probe_*.py` 的**文件数**，它不被 unittest 收，故与前两行不同量纲。
+> 历史：983/50/42（2026-10-02）→ 1162/55/44（2026-10-05 补完 v0.13.66~79 后）
+> → 1261/55/44（同日再补本轮八批的新闸门）→ **1272/58/45（2026-10-07，v0.13.83；
+> L1 多 3 例是 cursor 的 host 档用例）**。
 > 每一档都**按实测定稿**，旧数只作留痕、不作依据。
 
 ## 怎么跑

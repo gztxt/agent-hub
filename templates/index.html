@@ -760,14 +760,10 @@
                     background: transparent; color: var(--text-2); font-size: 11px; line-height: 1;
                     cursor: pointer; transition: .12s; }
         .ebar-btn:hover { background: var(--hover); color: var(--text-1); border-color: var(--border); }
-        /* 缓冲区状态字（v0.13.82）：读的是 xterm 内部量 term.buffer.active.type。
-           为什么要显出来：备用屏按设计没有 scrollback（见静态 hub 里 TERM_ALT_OFF 的注释），
-           "滚不动"时它是唯一的可判据 —— 把自检做进页面，端侧一眼能说清是「备用屏」
-           还是别的原因，不用靠"我感觉大概是"。 */
-        .ebar-chip { flex: none; font-size: 11px; line-height: 1; padding: 2px 6px; border-radius: 9px;
-                     color: var(--muted); border: 1px solid var(--border); background: transparent; }
-        .ebar-chip.alt { color: var(--danger); border-color: var(--danger); }
-        .ebar-chip:empty { display: none; }
+        /* v0.13.83：本行原先还有一个「缓冲区状态字」（.ebar-chip，v0.13.82 加的备用屏自检）
+           与旁边的「退出备用屏」按钮。用户裁定嵌入式终端只用主屏、相关 UI 全删，故连同
+           .ebar-chip 三条样式一并移除 —— 改在解析层直接吞掉 ?1049h，见 03-agents-cards.js
+           的 termAltScreenBlock()。 */
         .ebar-addr { display: flex; align-items: center; gap: 8px; flex: none; height: 29px; padding: 0 10px;
                      background: var(--embed-bg); border-bottom: 1px solid var(--embed-line); }
         .ebar-k { font-size: 11px; color: var(--muted); letter-spacing: .04em; flex: none; }
@@ -810,6 +806,21 @@
             align-items: center; gap: 5px; padding: 4px 5px; border-radius: 6px;
             background: var(--term-bg, #000); border: 1px solid var(--term-sel, #b0d0ff40); }
         .term-find.on { display: flex; }
+        /* v0.13.83（用户裁定）：终端页的**文字输入控件对鼠标失效，鼠标只保留页面滚动**。
+           理由（用户原话）：在 Windows 自带终端里 ssh 登录时，滚轮就直接是向上翻页面内容 ——
+           嵌入式终端也该这样，两边就不会抢鼠标焦点。
+           本页两个文字输入控件都关：本查找框，以及 xterm 自带的 .xterm-helper-textarea
+           （那个在 03-agents-cards.js 里运行时钉 style.pointerEvents —— vendor 的静态 CSS
+           只保证**静息态** 0×0，组字期间它会被 updateCompositionElements 挪到光标处并撑开）。
+
+           ⚠️ 查找框按**开/关**分档，不是一律禁（用户 2026-10-07 追认）：
+             · 关闭时（.term-find 无 .on、即**日常所有时刻**）—— 整条 `pointer-events:none`，
+               鼠标完全穿透；滚轮因此只滚页面/scrollback，不会被我这个 26px 浮层截走。
+             · 打开时（.term-find.on）—— 恢复 `auto`，Ctrl+F 期间鼠标照常可用
+               （点输入框置光标、选词、点 ↑↓✕ 按钮）。
+           `:not(.on)` 是**结构性**判据而不是状态变量：浮层的显隐本来就由 .on 一个类说了算
+           （见上一条 `display:flex`），所以两者不可能各说各话。 */
+        .term-find:not(.on), .term-find:not(.on) * { pointer-events: none; }
         .term-find input { width: 180px; max-width: 45vw; font: inherit; font-size: 13px;
             color: var(--term-fg, #fff); background: transparent;
             border: 1px solid transparent; outline: none; padding: 2px 4px; }
@@ -1257,8 +1268,6 @@
                             <span class="sess-row" id="termSessList"></span>
                             <span class="ebar-sp"></span>
                             <button class="ebar-btn" onclick="termNew()" title="新建终端会话"><svg class="i xs" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
-                            <span class="ebar-chip" id="termBufChip" title="xterm 当前缓冲区。备用屏按设计没有 scrollback ⇒ 显示「备用屏」时终端无法向上滚动查看历史"></span>
-                            <button class="ebar-btn" id="termAltOut" title="终端滚不动、状态字显示「备用屏」时点此退出备用屏（TUI 正在跑时点它画面可能像冻住，那时请重开该会话）">退出备用屏</button>
                             <button class="ebar-btn" id="termToEmbed" onclick="switchMode('embed')" title="改用内嵌的原生界面"><svg class="i xs" aria-hidden="true"><use href="#i-monitor"/></svg>原生界面</button></div>
                         <div class="term-body"><div id="termEl"></div>
                             <!-- 终端内查找（Ctrl/Cmd+F）。刻意用 absolute 浮层：不给 #termEl 的父层
@@ -2342,6 +2351,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=2242478c"></script>
+    <script src="/static/hub.js?v=a889f4d1"></script>
 </body>
 </html>

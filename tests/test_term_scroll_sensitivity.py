@@ -134,8 +134,20 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # + 工具栏「缓冲区状态字 / 退出备用屏」。
         # ⚠ 与 0.13.81 是**两条不同的腿**：那版治鼠标跟踪态，从没量过 buffer.active.type。
         "0.13.82": ("备用屏", "?1049h", "TERM_STATE_RESET", "--no-alt-screen", "term.reset()"),
+        # 0.13.83：用户裁定「只用主屏」+「输入控件关闭鼠标」+「cursor 没有会话记录」。三条：
+        #   ① 备用屏改从**解析层**禁掉（DECSET 1049/1047/47 注册成吞掉，返回 true 即拦下，
+        #      activateAltBuffer 不执行），v0.13.82 的 TERM_ALT_OFF/TERM_STATE_RESET、
+        #      状态字 #termBufChip 与按钮 #termAltOut 全删（备用屏不会发生 ⇒ 死码）。
+        #   ② 终端页唯一能吃鼠标的输入控件（查找框 #termFindInput）加 pointer-events:none，
+        #      鼠标事件透传给终端 ⇒ 滚轮只滚 scrollback，不再两边抢焦点。鼠标上报转发**不动**。
+        #   ③ cursor 补 SESSION_STORES + TERM_HIST_AGENTS：此前 CLI_ALIASES 有、这张表没有
+        #      ⇒ 前端根本不发历史请求。适配器以 chats/meta.json 为主表、转录只供标题。
+        # ⚠ 与 0.13.82 的关系：那版是「补写退出序列 + 手动逃生」，这版是**禁止进入**，
+        #   方向相反 —— 所以 0.13.82 的 TERM_ALT_OFF 在代码里已不存在，只留在注释与 CHANGELOG。
+        "0.13.83": ("termAltScreenBlock", "pointer-events", "cursor_json",
+                    "#termFindInput", "hasConversation"),
     }
-    CURRENT_VERSION = "0.13.82"
+    CURRENT_VERSION = "0.13.83"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

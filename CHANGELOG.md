@@ -1,3 +1,75 @@
+## v0.13.83 — 终端恒在主屏（吞 ?1049h）+ 输入控件去鼠标 + cursor 历史会话接入
+
+> 2026-10-07，用户报障（PT-20261006-01 续）。三条同一批裁定。
+
+① **备用屏从根上禁止，相关 UI 全删**。v0.13.82 的对策是「换会话那帧补写退出序列 +
+手点逃生按钮」；用户裁定嵌入式终端**只用主屏**。改为在**解析层**把 DECSET 的
+`1049/1047/47` 注册成「吞掉」（返回 true ⇒ 内建 `activateAltBuffer()` 不执行），
+其余 DECSET（鼠标/粘贴/同步块）一律放行 —— 只点名这三个。
+实测依据：`registerCsiHandler({prefix:'?',final:'h'})` 与内建 DECSET 共用一张表
+（键 = `_collect<<8|final`），且该表在**内建处理之前**被咨询。
+只吞「进入」不吞「退出」：从没进去过就没有什么要还原（且 `restoreCursor()` 不恢复滚动位置）。
+随之删除 `#termBufChip`/`#termAltOut`/`.ebar-chip` 与
+`termBufType/termAltChipSync/termAltOut/termAltBind`、`TERM_ALT_OFF`/`TERM_STATE_RESET`；
+`termConnect` 那行复位合并为无条件 `TERM_MOUSE_OFF`。逃生口改为控制台 `term.reset()`。
+`codex --no-alt-screen` **保留**（让 codex 输出落进主屏 scrollback，少一层无谓的吞）。
+
+② **终端页输入控件关闭鼠标，只保留页面滚动**。用户判据（更早的 Cursor 会话原话）：
+「Windows 系统自带终端 ssh 登录时……滚轮就直接是向上翻页面内容……嵌入式终端 文字输入框
+对鼠标失效 鼠标滚轮只对应页面显示内容 这样就不会 2 边抢鼠标焦点了」。
+两个控件**都**关，但查找框按**开/关**分档（用户 2026-10-07 追认）：
+  - 查找框 `#termFindInput`：**关闭时**（`.term-find:not(.on)`，即日常所有时刻）整条浮层
+    `pointer-events:none` ⇒ 鼠标完全穿透、滚轮不被这个 26px 浮层截走；
+    **打开时**（`.term-find.on`）恢复 `auto` ⇒ Ctrl+F 期间鼠标照常可用（点输入框置光标、
+    选词、点 ↑↓✕）。判据用 `:not(.on)` 是**结构性**的 —— 浮层显隐本来就由 `.on` 一个类说了算，
+    两者不可能各说各话。
+    （初版是一律 `none`，代价是查找框点击也穿透、等于顺手把 Ctrl+F 拆了半边；用户随即追认收紧。）
+  - xterm 自带的 `.xterm-helper-textarea` 光靠 vendor CSS 不够（见下第 2 条证伪），
+    运行时钉 `style.pointerEvents='none'`（恒生效，无分档）。
+滚轮因此只滚页面/scrollback；输入仍走键盘。**鼠标上报的转发逻辑不动**
+（TUI 主动请求鼠标时照旧转发），v0.13.81 看门狗保持原样。
+
+③ **cursor 接入历史会话**。症状：claude 点开菜单行展开历史下拉，cursor 没有。
+根因：`CLI_ALIASES` 有 cursor 而 `SESSION_STORES` 没有 ⇒ 前端 `TERM_HIST_AGENTS` 不含它，
+**根本不发历史请求**（不是"请求了没数据"）。新增 `cursor_json`，以 chats 为主表、转录供标题：
+  - `~/.cursor/chats/<md5(cwd)>/<sessionId>/meta.json` —— 有 `cwd`、`updatedAtMs`（**毫秒**）、
+    `hasConversation`；**没有正文**。`title` 只极少数有且是 Cursor 服务端生成的。
+  - `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl` —— 首行即用户原话，
+    包在 `<user_query>` 里；行形状是 **role 键**而非各家的 type 键 ⇒ 单设 `_cursor_first_user()`。
+  - `store.db` 是 zlib+XOR 加密正文库，**不解密**。
+实测本机 61 chats / 57 转录：`hasConversation=true` 与「有转录」**完全同一集合**；
+标题 57/57 可抽。续聊 `cursor-agent --resume {id}`，真 CLI 跑通「Loading conversation」。
+
+⚠️ 施工中修正的五处**实测证伪 / 自查缺陷**（注释与回归用例都留了）：
+  1. handler 实参是**参数数组本身**（`p[0]===1049`），不是 `{params:[…]}`。第一版按
+     `p.params[0]` 取参 ⇒ TypeError 被 catch 吞 ⇒ 静默失效、**页面毫无异常**。
+     是验收探针 B3 抓红的 —— 这就是"把判据写成可断言量"的价值。
+  2. `.xterm-helper-textarea` **并非"物理上吃不到鼠标"**：vendor 静态 CSS 只保证**静息态**
+     0×0；`updateCompositionElements()` 在**组字期间**把 inline `left/top/width/height`
+     改写到**光标处**并撑开（inline 压过 class）⇒ 组字那一刻它真能点，且正在中文输入路径上。
+  3. **列得出来却续不上**：`--resume <chatId>` 按 **md5(当前 cwd)** 定位会话，而
+     `session_cwd()` 在记录目录已删时退回画像目录；不等时 cursor **不报错**、静默开新会话
+     （实测续 cwd 已删的 `/tmp/cursorfwd` 会话屏上**没有** `Loading conversation`）。
+     用户看到的是「点了历史条目落进别的会话」，**比没有下拉更糟**。修法：`_cursor_resumable()`
+     用「桶名 == md5(将要生效的 cwd)」当判据（与 cursor 解析规则同构），列表侧与
+     `_exists_on_disk` 共用 ⇒ 本机 57→53。副产品：cwd 字段空但桶名恰是画像目录的那条**仍可续**。
+  4. 会话 id 一度按「32 位无连字符 hex」写 ⇒ 真机 61 条**全被形状门拒**（400 形状非法）。
+     实测 61/61 是**标准带连字符 UUID**，改用 `UUID_RE`。
+  5. `chats/` 桶名一度推断为 `md5(slug(cwd))`（样本碰巧相等）⇒ 全量 **60/60 vs 0/60** 证伪：
+     它是 `md5(原样 cwd)`。
+
+**闸门**：`tests/verify_term_altscreen.py` 由「造红→逃生」翻转为「证明已禁止」，16 项判据、
+连跑两次均 16/16：主屏不变（含 1047/47 变体）｜scrollback 不丢｜DECSET 未误伤（1003/2004 逐一验活）｜
+输入控件去鼠标**四个状态都量**（helper textarea 恒 `none`；查找框关闭 `none` → 打开 `auto`
+→ 再关闭又回 `none`，证状态可逆而非一次性）｜DOM 已无那两个元素。
+`tests/verify_term_history.py` 扩到七个 agent（含 cursor：真起 pty、真续、`/proc` 实测 cwd、
+真渲染 20866 字）**ALL GREEN**；顺带改判一条常年红基线（「免 token 仍 200」写在鉴权收紧之前，
+改为断言无凭据 401 / 有凭据 200）。`tests/test_sessions_store.py` 扩到八个 agent，新增两条
+把「列得出来 ⇒ 点得动」变成可断言量的回归用例。版本钉 0.13.83。
+前端改动需 `bash scripts/build_hubjs.sh` 重建 `static/hub.js`。
+
+---
+
 ## v0.13.82 — 备用屏（?1049）跨会话污染：终端「不能向上滚动」的根治
 
 > 2026-10-06，PT-20261006-01 续。用户报障：**跑过一次 codex 的嵌入式终端后，

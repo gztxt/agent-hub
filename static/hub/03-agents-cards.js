@@ -447,6 +447,18 @@ function ensureTerm() {
   } catch (e) { console.warn('[term] WebLinksAddon 挂载失败：' + ((e && e.message) || e)); }
 
   term.onData(termSend);
+  /* v0.13.83：xterm 自带的 helper textarea 也要对鼠标失效（用户裁定：终端页的文字输入
+     控件不吃鼠标，鼠标只保留页面/scrollback 滚动）。
+     ⚠️ 为什么光靠 vendor CSS 不够（实测读 vendor 源码 + 我第一版就写错了这条）：
+     vendor 静态 CSS 里它确实是 `0×0 / left:-9999em / z-index:-5`，**静息态**吃不到鼠标；
+     但 xterm 的 `updateCompositionElements()` 在**输入法组字期间**（`_isComposing` 为真、
+     compositionstart/update 都会直接调它，不等渲染帧）会改写它的 inline style：
+     `style.left/top/width/height` 被设到**光标所在处**并撑到至少 1px×cell 高
+     ⇒ 组字那一刻它就是个真实可点的小方块，正好落在用户天天用的中文/IME 输入路径上。
+     inline style 压过 vendor 的 class ⇒ 必须在运行时钉死。六个被 xterm 改写的属性里
+     **不含 pointer-events**，所以这一行不会被它盖掉；IME 也不需要鼠标点它
+     （走 compositionstart/update/end + focus），故关闭鼠标不影响组字。 */
+  try { if (term.textarea) term.textarea.style.pointerEvents = 'none'; } catch (e) {}
   /* 用户亲手点到终端 / 焦点落进来 ⇒ 本端主张尺寸所有权（见 termSizeIntent 注释）。
      这是「谁在用谁说了算」：正在操作的那一端永远能拿回尺寸，后台那一端拿不走。 */
   try { term.onFocus(() => { termSizeClaimed = true; }); } catch (e) {}
@@ -467,7 +479,7 @@ function ensureTerm() {
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
   termMouseResetBind();
-  termAltBind();   /* v0.13.82：备用屏状态字 + 逃生按钮（边界见上方 TERM_ALT_OFF 注释） */
+  termAltScreenBlock();   /* v0.13.83：从根上吞掉 ?1049h，终端恒在主屏（见函数注释） */
 }
 
 /* ── 鼠标跟踪看门狗（v0.13.81）───────────────────────────────────────────────
@@ -525,51 +537,45 @@ function termMouseResetBind() {
   el.addEventListener('mousedown', termMouseResetNow, { capture: true });
 }
 
-/* ── 备用屏状态字 + 逃生口（v0.13.82）───────────────────────────────────────
-   自动复位只发生在「换会话」那一帧（见 02-nav-and-poll.js 的 TERM_ALT_OFF 注释）。
-   剩下两种情形必须交给人：
-     ① 老会话的 TUI 崩掉/被杀、没发 ?1049l，本端留在备用屏上，而你还想接着看它；
-     ② 想确认「现在到底是不是备用屏」——端侧不可观测时把自检做进页面，
-        判据写成可读的量，而不是「我滚不动所以大概是」。
-   ⚠️ TUI 活着时点它画面会像冻住：codex 的 ?1049h **开机只发一次**、不随重画重发
-   （实测 688B 里 1049h 恰好 1 次，而 ?2026h/l 15 对），所以踢出来之后它不会自己回去。
-   那种情况下的正确操作是重开该会话，不是按这个按钮。 */
-function termBufType() {
-  try { return (term && term.buffer && term.buffer.active && term.buffer.active.type) || '?'; }
-  catch (e) { return '?'; }
-}
-function termAltChipSync() {
-  const el = $('termBufChip');
-  if (!el) return;
-  const t = termBufType();
-  el.textContent = t === 'alternate' ? '备用屏·不可上翻' : (t === 'normal' ? '主屏' : '');
-  el.classList.toggle('alt', t === 'alternate');
-}
-function termAltOut() {
-  if (!term) return;
-  const wasAlt = termBufType() === 'alternate';
-  try { term.write(TERM_ALT_OFF); } catch (e) {}
-  termAltChipSync();
-  /* term.write 是异步进解析器的：等一帧再回读，否则会把「还没生效」误报成失败 */
-  setTimeout(() => {
-    termAltChipSync();
-    termNotice(termBufType() === 'alternate'
-      ? '[退出备用屏未生效（仍是 alternate）——请重开该会话]'
-      : '[已退出备用屏（' + (wasAlt ? '原为 alternate' : '本来就是主屏') + '）——现在可向上滚动查看历史]');
-  }, 60);
-}
-function termAltBind() {
-  const b = $('termAltOut');
-  if (b && !b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', termAltOut); }
-  /* 状态字低频自刷：只在终端页可见时读；读的是 xterm 内部量，零副作用、零网络。 */
-  if (!termAltBind._t) {
-    termAltBind._t = setInterval(() => {
-      const pg = $('page-chat'), tp = $('termPane');
-      if (!pg || !tp || !pg.classList.contains('on') || !tp.classList.contains('on')) return;
-      termAltChipSync();
-    }, 1500);
-  }
-  termAltChipSync();
+/* ── 备用屏永久关闭（v0.13.83）──────────────────────────────────────────────
+   用户裁定（2026-10-07）：嵌入式终端**只用主屏**，v0.13.82 那套「状态字 + 退出备用屏
+   按钮」连同 UI 一并删除，改成从根上不让终端进备用屏。
+
+   为什么值得从根上拦：xterm.js 的备用屏按设计没有 scrollback（vendor 里是
+   `new Buffer(!1,…)`），TUI 一进去就永远滚不动；而整页只有一个 xterm 实例，
+   一次污染会跨会话传染到所有 agent，直到整页刷新。
+
+   做法：把 DECSET（`?h`）里的 1049 / 1047 / 47 注册成「吞掉」—— 解析器**先**遍历
+   用户 handler，全部返回 false 才落 `_csiHandlerFb`（内建）⇒ 返回 true 即拦下，
+   内建的 `activateAltBuffer()` 不执行。实测依据（本仓 vendor）：
+   `registerCsiHandler({prefix:'?',final:'h'},…)` 的注册表键 = `_collect<<8|final`，
+   prefix 已编进 `_collect` ⇒ 与内建 DECSET 共用同一张表，且该表在**内建之前**被咨询。
+
+   ⚠️ **只吞「进入」、不吞「退出」**：内建 1049h = `saveCursor()` + `activateAltBuffer()`，
+   而 `restoreCursor()` 实测只恢复 x/y/attr、**不恢复滚动位置**。既然从没进去过，
+   就没有什么要还原；万一某个程序仍旧发 `?1049l`，内建会走 `activateNormalBuffer()`
+   （本就是 normal，幂等无害）。
+
+   其余 DECSET（鼠标 1000/1002/1003、粘贴 2004、同步块 2026…）一律放行 —— 只点名这三个，
+   不是把 `?h` 整个闷掉。
+   逃生口（不占 UI）：万一端侧仍卡在异常状态，浏览器控制台执行 `term.reset()` 即可。 */
+const TERM_ALT_BLOCKED = new Set(['1049', '1047', '47']);
+function termAltScreenBlock() {
+  if (!term || !term.parser || typeof term.parser.registerCsiHandler !== 'function') return;
+  try {
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, p => {
+      /* ⚠️ **参数形状实测**（本仓 vendor，CDP 直接打印 handler 实参）：
+         handler 收到的是**参数数组本身** —— `p[0] === 1049`、`Array.isArray(p) === true`、
+         `p.params === undefined`。我第一版按 `String(p.params[0])` 取参，`undefined[0]`
+         当场抛 TypeError，被下面的 catch 吞掉 ⇒ 返回 false ⇒ 照旧进备用屏；
+         而验收探针 B3 一句 "写 ?1049h 后仍在主屏" 立刻把它抓红。故此处以 `p[0]` 为准、
+         `p.params` 只作老签名的兼容兜底。 */
+      let v;
+      try { v = (p && p[0] != null) ? p[0] : ((p && p.params) ? p.params[0] : null); }
+      catch (e) { v = null; }
+      return TERM_ALT_BLOCKED.has(String(v));
+    });
+  } catch (e) { /* 注册失败：终端仍可用，只是退回「换会话复位」那层兜底 */ }
 }
 
 /* ── 粘贴（bracketed paste 安全包装）──────────────────────────────────────────
@@ -860,11 +866,12 @@ function termConnect(sid, agent, opts) {
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
-      /* 复位本端解析态：鼠标模式**总是**清（回放里那些过期开关不算数）；
-         备用屏只在**换了会话**（!keepScreen）时清 —— 同一会话的重连里 TUI 可能
-         正活在备用屏上，把它踢出来会让画面停在不含 TUI 输出的缓冲区上（见
-         TERM_ALT_OFF 注释里那条实测边界）。 */
-      term.write(keepScreen ? TERM_MOUSE_OFF : TERM_STATE_RESET);
+      /* 复位本端解析态：只清**鼠标模式**（回放里那些过期开关不算数）。
+         v0.13.83 起备用屏不再需要在这里复位 —— `?1049h` 已在解析层被
+         termAltScreenBlock() 吞掉，终端从进来的那一刻起就恒在主屏，
+         没有「换会话时把上一会话拖进去的备用屏踢出来」这件事了。
+         于是 keepScreen 与否不再影响本行，两个分支合并成一条。 */
+      term.write(TERM_MOUSE_OFF);
       termHealBlank();   // 回放可能只是 64KB 尾巴里的半屏，见函数注释
       return;
     }

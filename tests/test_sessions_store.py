@@ -8,6 +8,7 @@
      venv/bin/python -m unittest tests.test_sessions_store -v
    历史：本文件原口径是「真磁盘只读断言（无网络、无进程、无 mock）」—— 口径不变，
    只是把离不开本机的那部分显式标出来，不让它们冒充全绿。"""
+import hashlib
 import json
 import re
 import sys
@@ -60,8 +61,13 @@ class TestMask(unittest.TestCase):
 
 
 class TestTable(unittest.TestCase):
-    def test_only_seven_agents(self):
-        self.assertEqual(set(ss.SESSION_STORES), {"grok", "claude", "qoder", "jcode", "hermes", "codex", "opencode"})
+    def test_agent_set(self):
+        """v0.13.83：cursor 接入（原为 7 个，测试名 test_only_seven_agents）。
+           加一张卡要同时动后端这张表**与**前端 TERM_HIST_AGENTS —— 漏一边的表现是
+           「菜单里有这张卡、点开却没有历史下拉」（cursor 就是这个症状，
+           因为前端白名单不含它 ⇒ 根本不发历史请求）。"""
+        self.assertEqual(set(ss.SESSION_STORES),
+                         {"grok", "claude", "qoder", "jcode", "hermes", "codex", "opencode", "cursor"})
 
     def test_hist_agents_front_back_same_set(self):
         """hub.js 的 TERM_HIST_AGENTS 与后端 SESSION_STORES 必须同集合——
@@ -83,6 +89,12 @@ class TestTable(unittest.TestCase):
         self.assertTrue(st["hermes"]["id_re"].match("20260921_221812_fa76f1"))
         self.assertTrue(st["grok"]["id_re"].match("01a0c91d-eb84-7130-9767-479821ef336c"))
         self.assertFalse(st["grok"]["id_re"].match("01a0c91d-eb84-7130-9767-479821ef336c; rm -rf /"))
+        # v0.13.83 cursor：**实测证伪**留在这里当回归——我一度按「32 位无连字符 hex」
+        # 写形状门，真机 61 条**全被拒**（提交时报 400「session_id 形状非法」）。
+        # 真值是标准带连字符 UUID，故它复用 UUID_RE（与 grok/claude/codex 同一支）。
+        self.assertTrue(st["cursor"]["id_re"].match("4a0d0eb5-8712-4d5a-bf0d-83215584ce28"))
+        self.assertFalse(st["cursor"]["id_re"].match("4a0d0eb587124d5abf0d83215584ce28"))   # 无连字符 ⇒ 拒
+        self.assertFalse(st["cursor"]["id_re"].match("4a0d0eb5-8712-4d5a-bf0d-83215584ce28; rm -rf /"))
 
 
 class TestResumeArgv(unittest.TestCase):
@@ -230,13 +242,68 @@ class TestRealStores(unittest.TestCase):
     def test_items_carry_their_own_cwd(self):
         """跳目录之后，条目若不带自己的 cwd，前端就无从标出「这条来自哪个工程」"""
         seen_other = False
-        for a in ("grok", "claude", "jcode", "qoder", "hermes", "codex"):
+        for a in ("grok", "claude", "jcode", "qoder", "hermes", "codex", "cursor"):
             for i in ss.list_history(a, CWD, 5)["items"]:
                 with self.subTest(agent=a, sid=i["id"][:10]):
                     self.assertIsInstance(i["cwd"], str)
                 if i["cwd"] and i["cwd"] != CWD:
                     seen_other = True
         self.assertTrue(seen_other, "跨目录必须真命中别的目录的条目，否则本次裁定没落地")
+
+    @tiers.host_only
+    def test_cursor_history_and_resume(self):
+        """v0.13.83 cursor 全链：列表 → 标题 → 续聊 argv → 存在性校验。
+           cursor 的会话分散在两处（chats 主表 + projects 转录供标题），
+           且行形状用 role 键而非各家的 type 键 —— 这条用例把「两处都对上」钉死。"""
+        items = ss.list_history("cursor", CWD, 5)["items"]
+        if not items:
+            self.skipTest("本机 cursor 无历史")
+        it = items[0]
+        self.assertRegex(it["id"], r"\A[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z",
+                         "cursor 会话 id 实测是标准带连字符 UUID（无连字符那条路已被证伪）")
+        self.assertGreater(it["ts"], 0, "updatedAtMs 是毫秒，转秒后不该为 0")
+        self.assertNotEqual(it["title"], "未命名会话", "标题应由转录首句用户提问抽出")
+        self.assertNotEqual(it["title"], it["id"][:8], "标题不许退化成 sid 前缀（D2）")
+        self.assertTrue(ss.title_for("cursor", it["id"]), "title_for 必须能按 id 直查")
+        self.assertEqual(ss.resume_argv("cursor", it["id"], CWD),
+                         ["cursor-agent", "--resume", it["id"]])
+
+    @tiers.host_only
+    def test_cursor_listed_implies_resumable(self):
+        """**列得出来就必须点得动**（v0.13.62 codex 那条教训的同构）。
+
+        cursor 的 `--resume <chatId>` 是按 **md5(当前 cwd)** 定位会话的；记录的 cwd 已删
+        （本机 4 条 /tmp/cursorfwd）或与画像目录不同桶时，cursor **不报错**，而是静默开一条
+        新会话 —— 用户点了历史条目却落进别的会话，比"没有历史下拉"更糟。
+        故 _t_cursor 与 _exists_on_disk 必须用**同一套**判据（hasConversation + 桶名一致）。
+
+        这条闸门的价值：它把「列表」与「续聊白名单」的**一致性**变成可断言的量，
+        而不是两处各写一遍、各自漂移（本仓反复吃亏的正是这种半边修复）。"""
+        items = ss.list_history("cursor", CWD, 20)["items"]
+        if not items:
+            self.skipTest("本机 cursor 无历史")
+        for i in items:
+            with self.subTest(sid=i["id"][:8]):
+                self.assertTrue(ss._exists_on_disk("cursor", i["id"], CWD),
+                                "列出来了却过不了续聊白名单 ⇒ 点了会静默开新会话")
+                # argv 真拼得出来（形状门 + 实盘门都过）
+                argv = ss.resume_argv("cursor", i["id"], CWD)
+                self.assertEqual(argv[:2], ["cursor-agent", "--resume"])
+
+    @tiers.host_only
+    def test_cursor_session_cwd_matches_bucket(self):
+        """resume 时要落到「能解析到该会话桶」的目录：session_cwd 的值必须与桶名自洽。
+           记录目录还在 ⇒ 用它；已删/为空 ⇒ 退回画像目录（只有桶名恰好相符时才允许列出）。"""
+        items = ss.list_history("cursor", CWD, 5)["items"]
+        if not items:
+            self.skipTest("本机 cursor 无历史")
+        for i in items:
+            with self.subTest(sid=i["id"][:8]):
+                got = ss.session_cwd("cursor", i["id"], CWD)
+                self.assertTrue(Path(got).is_dir(), f"续聊目录必须是真实存在的目录：{got!r}")
+                bucket = next(iter(ss.CURSOR_CHATS.glob(f"*/{i['id']}/meta.json"))).parent.parent.name
+                self.assertEqual(hashlib.md5(got.encode()).hexdigest(), bucket,
+                                 "session_cwd 与 cursor 的桶名不自洽 ⇒ --resume 找不到该会话")
 
     def test_missing_dir_degrades_not_raises(self):
         # 跳目录口径（用户 09-22 裁定）之后，"画像目录不存在"不再等于"无历史"：
@@ -286,7 +353,8 @@ class TestTitleFor(unittest.TestCase):
 
     def test_all_six_resolve_by_id(self):
         for agent, cwd in (("grok", CWD), ("claude", CWD), ("jcode", CWD),
-                           ("hermes", str(Path.home())), ("codex", CWD), ("qoder", QODER_CWD)):
+                           ("hermes", str(Path.home())), ("codex", CWD), ("qoder", QODER_CWD),
+                           ("cursor", CWD)):
             with self.subTest(agent=agent):
                 items = ss.list_history(agent, cwd, 1)["items"]
                 if not items:

@@ -79,18 +79,35 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.82"   # 备用屏（?1049）跨会话污染 —— 终端「不能向上滚动」的根治
-#   根因：codex 的 TUI 开机发 \x1b[?1049h 进备用屏，而 xterm.js 的备用屏**按设计没有
-#   scrollback**；整页共用一个 xterm 实例，切会话的 term.clear() 只清当前缓冲区的行、
-#   **不退出备用屏**（只有 term.reset() 会）⇒ 一次 codex 把整页拖进备用屏，之后所有
-#   agent（含 cursor Agent）的终端都滚不动，直到整页刷新。cloudcli 正常是因为它是
-#   普通 shell→TTY，从不发 ?1049h。
-#   修复：① 前端 TERM_STATE_RESET（鼠标模式 + ?1049l/?47l/?1047l）在**新建连接/切会话**
-#   那一帧写（termClear 后、回放帧里），跨会话污染清零；② codex 启动带 --no-alt-screen
-#   （新会话 + 续聊两条路），让它自己的输出落进普通屏 scrollback；③ 终端工具栏加
-#   「缓冲区状态字 + 退出备用屏」逃生口，把「滚不动」变成可判据的观察。
-#   ⚠️ 已知残留：上游 open（#14277/#10331/#20063/#23651）指出即便关掉备用屏，
-#   codex 在普通屏整屏重画时仍可能丢 scrollback ⇒ 后端 ② 是改善不是根治，①③ 才是收口。
+VERSION = "0.13.83"   # 终端恒在主屏（吞 ?1049h）+ 输入控件去鼠标 + cursor 历史会话接入
+#   根因与修复（三条，2026-10-07 用户裁定）：
+#   ① **备用屏从根上禁止**：v0.13.82 是「换会话那帧补写退出序列 + 手点逃生按钮」，
+#      用户裁定改为嵌入式终端**只用主屏** —— 在解析层把 DECSET 的 1049/1047/47 注册成
+#      「吞掉」（返回 true，内建 activateAltBuffer 不执行），其余 DECSET（鼠标/粘贴/
+#      同步块）一律放行。实现见 static/hub/03-agents-cards.js 的 termAltScreenBlock()。
+#      v0.13.82 的 TERM_ALT_OFF/TERM_STATE_RESET、缓冲区状态字
+#      #termBufChip 与「退出备用屏」#termAltOut 全部删除（备用屏不会发生，它们已是死码）。
+#      实测依据：registerCsiHandler({prefix:'?',final:'h'}) 与内建 DECSET 共用一张表，
+#      且该表在建内建处理之前被咨询。⚠️ handler 收到的是**参数数组本身**（`p[0]===1049`），
+#      不是 `{params:[…]}` —— 按 p.params 取参会抛 TypeError 被 catch 吞掉、静默失效
+#      （第一版就是这样，靠验收探针 B3 抓红）。
+#   ② **输入控件关闭鼠标功能，只保留页面滚动**（用户判据：Windows 自带终端里滚轮就是
+#      向上翻页面内容，嵌入式终端也该如此，两边不抢鼠标焦点）。终端页有两个文字输入控件：
+#      查找框 #termFindInput 按**开/关**分档 —— 关闭时（.term-find:not(.on)，即日常所有时刻）
+#      整条浮层 pointer-events:none，鼠标完全穿透、滚轮不被截走；打开时恢复 auto，
+#      Ctrl+F 期间鼠标照常可用（初版一律 none，等于顺手把 Ctrl+F 拆了半边，用户当日追认收紧）。
+#      xterm 自带的 .xterm-helper-textarea 只靠 vendor CSS 不够 —— 它静息态是 0×0/left:-9999em，
+#      但组字期间 updateCompositionElements 会把 inline left/top/width/height 改写到
+#      光标处并撑开（inline 压过 class）⇒ 运行时钉 style.pointerEvents='none'。
+#      滚轮因此只滚 scrollback。鼠标上报的转发逻辑**不动**（TUI 主动请求鼠标时照旧转发）。
+#   ③ **cursor 接入历史会话**：cursor 之前只出现在菜单里（CLI_ALIASES 有、SESSION_STORES 没有）
+#      ⇒ 前端 TERM_HIST_AGENTS 不含它，点开菜单行没有历史下拉。新增 cursor_json 适配器：
+#      以 ~/.cursor/chats/<md5(cwd)>/<id>/meta.json 为主表（有 cwd 与毫秒时间戳、有
+#      hasConversation），转录 ~/.cursor/projects/*/agent-transcripts/<id>/<id>.jsonl 只供
+#      标题（首句用户提问）；录制的行形状是 role 键而非各家的 type 键，故单设 _cursor_first_user。
+#   ⚠️ 已知残留（不在本次收口）：上游 open（#14277/#10331/#20063/#23651）指出 codex 在
+#   普通屏整屏重画时仍可能丢 scrollback（\x1b[2J 把 viewportY 拽回底部，xterm.js#5801 未修）
+#   —— 本次只解决**备用屏**这一条腿。
 
 # ── 以下为 v0.13.81 的根因备忘（保留原文，不删；与 v0.13.82 是**两条不同的腿**）──
 #   根因：TUI 程序开启 xterm 鼠标跟踪（1003h）后滚轮/拖选被吞，异常退出不发

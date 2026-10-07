@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -26,6 +27,20 @@ JCODE_RE = re.compile(r"\Asession_[a-z]+_\d{13}_[0-9a-f]{6,16}\Z")
 HERMES_RE = re.compile(r"\A\d{8}_\d{6}_[0-9a-f]{6}\Z")
 OPENCODE_RE = re.compile(r"\Ases_[0-9a-zA-Z]{6,64}\Z")   # 实测 1.18.32：ses_ + 22 位 base62
 OPENCODE_DB = HOME / ".local" / "share" / "opencode" / "opencode.db"
+# cursor（Cursor Agent CLI，实装名 cursor-agent）—— 会话分散在两处，见 _t_cursor：
+#   ① ~/.cursor/projects/<slug>/agent-transcripts/<agentId>/<agentId>.jsonl  转录（有正文）
+#   ② ~/.cursor/chats/<md5(cwd)>/<agentId>/meta.json                         元信息（有 cwd/时间）
+#   同目录下的 store.db 是 zlib+XOR 加密的正文库（逐会话 blobEncryptionKey），**不解密**。
+#   ⚠️ 两个桶名别搞混（2026-10-07 实测）：projects/ 下是 **slug**（非字母数字→'-'、
+#   合并连续'-'、去首尾，取自其 bundle 的 workspace-paths.js），chats/ 下是 **md5(原样 cwd)**。
+#   我一度以为后者也是 md5(slug)——单个样本碰巧相等，全量一测 60/60 vs 0/60 直接证伪。
+#   本模块**不需要**这两个映射：条目自带 cwd，按 id 定位走 `*/{sid}/meta.json` 通配。
+CURSOR_PROJECTS = HOME / ".cursor" / "projects"
+CURSOR_CHATS = HOME / ".cursor" / "chats"
+# 会话 id 形状实测（2026-10-07，61/61）：标准带连字符 UUID —— 复用 UUID_RE，
+# 不另立正则。⚠️ 我一度按「32 位无连字符 hex」写，真机一跑 61 条**全被形状门拒掉**
+# （表现为提交 cursor 会话时报 400 "session_id 形状非法"），故此处钉死为 UUID_RE。
+# 注：store.db 的加密 meta 里那个 agentId 也是同一个带连字符的 UUID，不是另一种形状。
 
 # 实测：grok 把用户真问题包在 <user_query> 里（chat_history.jsonl 第 4 行）；
 # 这几个前缀是注入块（拆不到 user_query 时必须跳过，否则标题会变成 system prompt）。
@@ -334,6 +349,127 @@ def _t_opencode(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     return items, ("" if items else "opencode 无可续聊历史")
 
 
+# ── cursor 专用助手 ─────────────────────────────────────────────────────────
+def _cursor_first_user(p: Path) -> str:
+    """从转录 jsonl 取首句用户提问。
+
+       ⚠️ 形状与各家都不同，所以**不能复用** `_first_user_text()`（它要求 `type=='user'`）：
+       实测 cursor 的行是 `{"role":"user","message":{"content":[{"type":"text","text":…}]}}`
+       —— **role 键**、且正文在 message.content 里。`<user_query>` 拆标签照样复用 `_UQ`。
+       头部只读 HEAD_CHARS、errors=ignore：与其它适配器同口径（只读、不写不删）。"""
+    for d in _head_lines(p, 400):
+        if d.get("role") != "user":
+            continue
+        s = _text_of((d.get("message") or {}).get("content"))
+        if not s:
+            continue
+        m = _UQ.search(s)
+        if m:
+            got = m.group(1).strip()
+            if got:
+                return got
+            continue
+        if s.startswith(_INJECT_PREFIX) or s.startswith("<"):
+            continue
+        return s
+    return ""
+
+
+def _cursor_meta(sid: str) -> Optional[dict]:
+    """按会话 id 定位它的 meta.json（跳目录口径下 id 全局唯一，实测各桶不撞名）。"""
+    if not UUID_RE.match(sid or ""):
+        return None
+    hit = next(iter(CURSOR_CHATS.glob(f"*/{sid}/meta.json")), None)
+    if not hit:
+        return None
+    try:
+        return _load(hit)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cursor_resumable(meta_path: Path, meta: dict, fallback_cwd: str) -> bool:
+    """这一条**真续得上吗** —— 判据取 cursor 自己的解析规则，不是「目录还在不在」。
+
+    ⚠️ 实测根因（2026-10-07）：`cursor-agent --resume <chatId>` 是**按当前工作目录定位会话**的
+    —— 它算 `md5(进程 cwd)` 当桶名，再去 `<chats>/<md5(cwd)>/<chatId>/` 找那条。而我们起 pty
+    用的是 `session_cwd()`：记录的 cwd 已不存在就退回画像目录。两者一旦不等，cursor 就找不到
+    该会话、**静默开一条新的**——实测从 `/fs/1000/ftp/技术文档` 续一条 cwd 已删的
+    `/tmp/cursorfwd` 会话，屏上**没有** `Loading conversation`；续同一工作区的会话就有。
+    对用户的表现是「点了历史条目却落进别的/空白会话」，**比"没有历史下拉"更糟**
+    （v0.13.62 那条教训的同构：列得出来就必须点得动，半边修复最害人）。
+    所以桶名对不上的一律不列。
+
+    桶名 = `md5(原样 cwd)`，与 `projects/` 下的 slug 不是一回事（见上方常量注释）。
+    反过来的好处：cwd 字段缺失但桶名恰好等于画像目录的会话**照常可续**（本机实测有 1 条），
+    比「目录存在性」判据更准。"""
+    bucket = meta_path.parent.parent.name
+    cwd = (meta.get("cwd") or "").strip()
+    resolved = cwd if (cwd and Path(cwd).is_dir()) else fallback_cwd
+    return hashlib.md5(resolved.encode()).hexdigest() == bucket
+
+
+def _t_cursor(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
+    """cursor 的历史会话分散在两处，**以 chats/meta.json 为主表、转录只供标题**：
+
+       ① `~/.cursor/chats/<md5(cwd)>/<agentId>/meta.json`
+          有 cwd、有 updatedAtMs（**毫秒**）、有 hasConversation；**没有正文**。
+          title 字段只有极少数条目有（本机 3/61），且是 Cursor **服务端**生成的
+          （用户自己 `--resume` 的选择器里显示的就是它，来源是服务端会话列表，
+          离线读不到）⇒ 标题不能指望它，必须回落。
+       ② `~/.cursor/projects/<slug>/agent-transcripts/<agentId>/<agentId>.jsonl`
+          第一行就是用户原话，包在 `<user_query>` 里。
+
+       实测（2026-10-07，本机 57/61）：②的目录集合与「①中 hasConversation=true」**完全
+       同一集合**（57 vs 57，无孤儿）⇒ `hasConversation` 足以当「可续聊」判据，
+       不需要额外的 proc 探测。（`meta.json` 里的 `cwd` 恰好能补 `agent-transcripts`
+       只有 slug 没有真路径的那一半，两个仓库是互补的，故必须同时用。）
+       `hasConversation=false` 的是无正文的空会话（Cursor 自己的选择器里显示 "New Agent"），
+       没有续聊价值，与 opencode 用 `exists(message)` 挡空会话同口径。
+       **还要过 `_cursor_resumable()`**：cursor 的 --resume 是按 md5(当前 cwd) 定位会话的，
+       记录目录已删（本机 4 条）或与画像目录不同桶的条目点了也续不上（会静默开新会话）
+       ⇒ 列得出来就必须点得动（v0.13.62 codex 那条教训），不满足的一律不列。
+
+       跳目录（09-22 裁定）：不按 cwd 过滤，按时间倒序取 limit 条，cwd 逐条自带。"""
+    if not CURSOR_CHATS.is_dir():
+        return [], "cursor 无会话仓库"
+    metas: List[Tuple[str, dict]] = []
+    for p in CURSOR_CHATS.glob("*/*/meta.json"):
+        if time.time() - t0 > HARD_BUDGET_S:
+            break
+        try:
+            m = _load(p)
+        except Exception:  # noqa: BLE001
+            continue
+        if not m.get("hasConversation"):     # 空会话：无正文，续不了
+            continue
+        if not _cursor_resumable(p, m, cwd):  # 桶名对不上 ⇒ 点了也是开新会话
+            continue
+        metas.append((p.parent.name, m))
+    if not metas:
+        return [], "cursor 暂无可续聊历史"
+    # 转录表一次建好（跳目录口径下条目可能来自任何工程，不能按 cwd 的 slug 收窄，
+    # 收窄会漏掉别的工程的历史）。全局扫一遍比逐条 glob 便宜。
+    transcripts: Dict[str, Path] = {}
+    for f in CURSOR_PROJECTS.glob("*/agent-transcripts/*/*.jsonl"):
+        transcripts[f.parent.name] = f
+    items: List[dict] = []
+    for sid, m in metas:
+        if time.time() - t0 > HARD_BUDGET_S:
+            return items, "扫描超时，仅显示已读到的条目"
+        t = (m.get("title") or "").strip()
+        if not t:
+            f = transcripts.get(sid)
+            if f:
+                t = _cursor_first_user(f)
+        items.append({"agent": "cursor", "id": sid,
+                      "title": mask_title(t) or "未命名会话",
+                      "ts": int(m.get("updatedAtMs") or 0) // 1000,   # 实测毫秒（同 opencode）
+                      "msgs": None, "cwd": m.get("cwd") or ""})
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:limit], ""
+
+
 SESSION_STORES: Dict[str, dict] = {
     "grok":     {"kind": "grok_dir",       "id_re": UUID_RE,      "resume": ["grok", "--resume", "{id}"],             "fn": _t_grok},
     "claude":   {"kind": "claude_dir",     "id_re": UUID_RE,      "resume": ["claude", "--resume", "{id}"],           "fn": _t_claude},
@@ -343,8 +479,14 @@ SESSION_STORES: Dict[str, dict] = {
     # 同上的理由：续聊进来的 codex TUI 一样会进备用屏、一样滚不动（实测与依据见
     # profiles.py 的 codex 条目）。--no-alt-screen 是顶层选项（`codex [OPTIONS] <COMMAND>`），
     # 放子命令之前；实测 `codex --no-alt-screen resume <id>` 与放在后面都被接受。
+    # v0.13.83：前端已在解析层吞掉 ?1049h（termAltScreenBlock），备用屏不再靠这个 flag 收口；
+    # 保留它是因为它让 codex 的输出落进主屏 scrollback（官方 flag 原文），也少一层无谓的吞。
     "codex":    {"kind": "codex_sqlite",   "id_re": UUID_RE,      "resume": ["codex", "--no-alt-screen", "resume", "{id}"], "fn": _t_codex},
     "opencode": {"kind": "opencode_sqlite", "id_re": OPENCODE_RE, "resume": ["opencode", "--session", "{id}"],        "fn": _t_opencode},
+    # cursor：`--resume [chatId]` 由实装入口 ~/.local/bin/cursor-agent 转发到它的 local
+    # runtime（官方 `cursor-agent --help` 原文：`--resume [chatId]  Select a session to resume`）。
+    # 用实装名 cursor-agent 而非官网名 cursor —— 后者 which 落空（与 profiles.CLI_ALIASES 同款理由）。
+    "cursor":   {"kind": "cursor_json",    "id_re": UUID_RE, "resume": ["cursor-agent", "--resume", "{id}"],     "fn": _t_cursor},
 }
 
 _CACHE: Dict[tuple, Tuple[float, dict]] = {}
@@ -397,6 +539,10 @@ def _store_path(agent_id: str, sid: str):
     if agent_id == "jcode":
         f = HOME / ".jcode" / "sessions" / f"{sid}.json"
         return f if f.is_file() else None
+    if agent_id == "cursor":
+        if not UUID_RE.match(sid or ""):
+            return None
+        return next(iter(CURSOR_CHATS.glob(f"*/{sid}/meta.json")), None)
     return None
 
 
@@ -420,6 +566,17 @@ def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
         return bool(_sql_one(OPENCODE_DB,
                              "select 1 from session where id=? and (parent_id is null or parent_id='')"
                              " and time_archived is null", (sid,)))
+    if agent_id == "cursor":
+        # 与 _t_cursor **同一套**判据：hasConversation（有正文）+ _cursor_resumable
+        # （桶名与**将要生效**的 cwd 一致 ⇒ 点了真能续上那条）。
+        # 半边修复的代价见上面 codex 那条（列表能列、点不动必 404）；cursor 这里更隐蔽
+        # ——桶名不对时 cursor 不报错，而是**静默开一条新会话**，看着像"续聊失败但没提示"。
+        # fallback 用 cwd 参数（term.py 传的是画像目录），与 session_cwd() 的口径一致。
+        m = _cursor_meta(sid)
+        if not (m and m.get("hasConversation")):
+            return False
+        hit = next(iter(CURSOR_CHATS.glob(f"*/{sid}/meta.json")), None)
+        return bool(hit) and _cursor_resumable(hit, m, cwd)
     return _store_path(agent_id, sid) is not None
 
 
@@ -445,6 +602,9 @@ def session_cwd(agent_id: str, sid: str, fallback: str = "") -> str:
         elif agent_id == "opencode":
             r = _sql_one(OPENCODE_DB, "select directory from session where id=?", (sid,))
             c = (r["directory"] or "") if r else ""
+        elif agent_id == "cursor":
+            m = _cursor_meta(sid) or {}
+            c = m.get("cwd") or ""      # 实测有 1 条 cwd 为空 ⇒ 走下面的 fallback
     except Exception:  # noqa: BLE001
         c = ""
     c = (c or "").strip()
@@ -641,6 +801,16 @@ def _title_of_session(agent: str, sid: Optional[str], cwd: Optional[str] = None)
         objs = _head_lines(hit, 400)
         p = next((d.get("lastPrompt", "") for d in objs if d.get("type") == "last-prompt"), "")
         return mask_title(p or _first_user_text(objs))
+    if agent == "cursor":
+        # 与 _t_cursor 同口径：meta 的 title（Cursor 服务端生成的，罕见）优先，
+        # 否则回落到转录里的首句用户提问。绝不回落成 id 前缀（D2）。
+        m = _cursor_meta(sid) or {}
+        t = (m.get("title") or "").strip()
+        if not t:
+            f = next(iter(CURSOR_PROJECTS.glob(f"*/agent-transcripts/{sid}/{sid}.jsonl")), None)
+            if f:
+                t = _cursor_first_user(f)
+        return mask_title(t)
     return ""
 
 
