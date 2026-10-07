@@ -491,6 +491,7 @@ function ensureTerm() {
   termFindBind();
   termPasteBind();
   termCopyBind();   /* P1/P2：复制通道（有选区拦 C/V + 容器 copy 兜底），与粘贴通道对称 */
+  termCtxBind();    /* v0.13.92：右键菜单（复制/粘贴/全选），替掉 canvas 的「图片另存为」 */
   /* 触摸层最后挂：它要读 term.options（字号/行高）做手势换算，构造完才有意义。
      内部自带 touch 判定，桌面端这行是空操作。 */
   if (typeof termTouchBind === 'function') termTouchBind();
@@ -544,12 +545,20 @@ function termMouseResetNow() {
     try { term.write(TERM_MOUSE_OFF); } catch (e) {}   // 只清本端解析态（见 termMouseArm 注释）
   }
 }
-/* wheel 分层入口（v0.13.84）：
-   - app 声明要鼠标（live）⇒ 什么都不做：让 xterm 生成本格滚轮上报，
-     termSend 闸门放行 ⇒ 上报进 pty ⇒ 全屏 TUI 应用内翻历史（用户判据「向上翻看内容」）；
+/* wheel 分层入口（v0.13.84，v0.13.92 修回装时机）：
+   - app 声明要鼠标（live）⇒ 让 xterm 生成本格滚轮上报，termSend 闸门放行
+     ⇒ 上报进 pty ⇒ 全屏 TUI 应用内翻历史（用户判据「向上翻看内容」）；
+     · v0.13.92：装回跟踪态的时机从 mouseup 挪到这里 —— **有选区就不装**。
+       mouseup 时若是拖选，装回会经 xterm `SelectionService.disable()`
+       （`clearSelection()`）把刚建好的选区抹掉（2026-10-08「选不中/复制不动」根因，
+       见 termMouseArm 注释）。选区在 = 用户要复制，此时滚轮走 scrollback 不打扰它；
+       选区清掉后（下一次点击/滚轮）这里把上报通道装回来，应用内滚动照常恢复。
    - 未声明（shell/codex/线性族）⇒ 维持 v0.13.81 自愈复位，当次事件走原生 scrollback。 */
 function termWheelNow() {
-  if (termMouseLive) return;
+  if (termMouseLive) {
+    if (!term.hasSelection()) termMouseArm();
+    return;
+  }
   termMouseResetNow();
 }
 function termMouseResetBind() {
@@ -613,7 +622,19 @@ function termAltScreenBlock() {
         if (p && p.length != null) vals = Array.from(p);
         else if (p && p.params) vals = Array.from(p.params);
       } catch (e) { vals = []; }
-      if (!vals.some(x => TERM_ALT_BLOCKED.has(String(x)))) return false;
+      const hasAlt = vals.some(x => TERM_ALT_BLOCKED.has(String(x)));
+      if (!hasAlt) {
+        /* ★ v0.13.92：**有选区时吞掉 app 的鼠标跟踪 DECSET**（2026-10-08「选不中」第二半根因）。
+           为什么只挡不够、还得加这一条：我们在「有选区」时故意把协议留成 NONE
+           （termMouseArm 早退，见 02 注释），但 claude/codex 这类 TUI **每帧重画都会重断言**
+           `?1000;1002;1003;1006h`。协议一旦 NONE→非 NONE，xterm 的
+           `SelectionService.disable()`（`clearSelection()`）就把用户刚拖出的选区抹掉 ——
+           于是「agent 正在流式输出时永远选不中」。吞掉重断言，xterm 的跟踪态维持 NONE，
+           选区保住；app 侧无感（这是显示方向的数据流，不是发给 pty 的）。
+           选区清掉后由 termMouseArm() 按 want 表回装（want 由 02 的原始帧扫描维护，不受本吞影响）。 */
+        if (vals.some(x => TERM_MOUSE_MODES.has(String(x))) && term.hasSelection()) return true;
+        return false;
+      }
 
       /* ★ v0.13.91 根治「jcode 启动嵌入式终端带入乱码」（2026-10-08 用户报障）——
          病灶：内建 1049h = `saveCursor()` + `activateAltBuffer()`，而 xterm.js 的备用屏是
@@ -817,6 +838,90 @@ function termCopyBind() {
   });
 }
 
+/* ── 终端右键菜单（v0.13.92）──────────────────────────────────────────────────
+   用户报障（2026-10-08）：「agent-hub 嵌入式终端 页面文字无法选择 复制，
+   按右键显示是图片」。
+   为什么必须自己出菜单：终端是 WebGL 渲染器画在 <canvas> 上的（`?term=webgl` / 默认），
+   浏览器眼里那块就是一张图 —— 右键给的是「图片另存为/复制图片」，没有文字的
+   「复制」项；而容器上那条原生 `copy` 兜底因此永远等不到触发（那条路只在浏览器
+   给出文字的复制菜单项时才走）。所以这里把右键接管过来，给回终端真正该有的三项。
+   浮层纪律（AGENTS 4.2）：开启只有 termCtxOpen 一个入口（内部只此一处 add('on')）；
+   关闭只有 termCtxClose；document 捕获阶段 pointerdown 关（含触屏点空白逃生）、
+   Escape 关、窗口失焦关、终端滚动/尺寸变化关 —— 导航点击同样会先落到 pointerdown。
+   三项的可用性在打开时按当时状态定（复制要有选区、粘贴要有可读剪贴板的 API），
+   按钮点击即关菜单，不留「菜单开着但点了没反应」的状态。 */
+function termCtxClose() {
+  const el = $('termCtx');
+  if (el && el.classList.contains('on')) el.classList.remove('on');
+}
+function termCtxOpen(x, y) {
+  const el = $('termCtx');
+  const host = $('termEl');
+  if (!el || !host) return;
+  const cp = $('termCtxCopy'), ps = $('termCtxPaste'), sa = $('termCtxSelAll');
+  if (cp) cp.disabled = !(term && term.hasSelection());
+  /* 只允许一个浮层接收点击（AGENTS 4.2 ①）：右键菜单开时收掉终端内查找条。 */
+  if (typeof termFindClose === 'function') termFindClose();
+  /* 非安全上下文（局域网 http，用户实际访问方式）没有 navigator.clipboard.readText
+     ⇒ 菜单粘贴给不出内容。这时**不隐藏**：点了转「请按 Ctrl+V」的显式提示，
+     比留一个静默无效的按钮好（与 v0.13.90 的「显式失败」同一口径）。 */
+  if (ps) ps.disabled = false;
+  if (sa) sa.disabled = !term;
+  el.classList.add('on');
+  /* 先加 on 再量尺寸：display:none 时 getBoundingClientRect 全是 0，定位会算飞。 */
+  const r = el.getBoundingClientRect(), a = host.getBoundingClientRect();
+  let left = x - a.left, top = y - a.top;
+  left = Math.max(4, Math.min(left, Math.max(4, a.width - r.width - 4)));
+  top = Math.max(4, Math.min(top, Math.max(4, a.height - r.height - 4)));
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+  const first = el.querySelector('button:not([disabled])');
+  if (first) { try { first.focus({ preventScroll: true }); } catch (e) {} }
+}
+function termCtxPasteManual() {
+  if (term && typeof termFocusWanted === 'function') {
+    try { if (termFocusWanted({ user: true })) term.focus(); } catch (e) {}
+  }
+  if (typeof toast === 'function') toast('此环境不支持读取剪贴板，请按 Ctrl+V 粘贴', 'err');
+}
+function termCtxBind() {
+  const el = $('termEl');
+  if (!el || el.dataset.ctxBound) return;
+  el.dataset.ctxBound = '1';
+  /* 只接管终端区的右键；菜单自身在 .term-body 内、不在 #termEl 内，不会自触发。 */
+  el.addEventListener('contextmenu', e => {
+    if (!term) return;
+    e.preventDefault();            // 盖掉浏览器对 canvas 的「图片另存为」
+    termCtxOpen(e.clientX, e.clientY);
+  });
+  const cp = $('termCtxCopy'), ps = $('termCtxPaste'), sa = $('termCtxSelAll');
+  if (cp) cp.addEventListener('click', () => { termCtxClose(); void termCopySelection(); });
+  if (ps) ps.addEventListener('click', () => {
+    termCtxClose();
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(t => { if (t) termPasteText(t); },
+                                          () => termCtxPasteManual());
+    } else termCtxPasteManual();
+  });
+  if (sa) sa.addEventListener('click', () => {
+    termCtxClose();
+    if (term && typeof term.selectAll === 'function') { try { term.selectAll(); } catch (e) {} }
+  });
+  /* 关闭路径（唯一出口）：菜单外 pointerdown（捕获，先于任何业务点击）/ Escape /
+     窗口失焦 / 终端滚动与尺寸变化。触屏没有 ESC 也没有右键外的关闭手势 ⇒
+     点空白这一条是必需的逃生口（AGENTS 4.2 ③）。 */
+  document.addEventListener('pointerdown', e => {
+    const m = $('termCtx');
+    if (m && m.classList.contains('on') && !m.contains(e.target)) termCtxClose();
+  }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') termCtxClose(); });
+  window.addEventListener('blur', termCtxClose);
+  if (term) {
+    try { term.onScroll(termCtxClose); } catch (e) {}
+    try { term.onResize(termCtxClose); } catch (e) {}
+  }
+}
+
 /* ── 终端内查找（Ctrl/Cmd + F）─────────────────────────────────────────────────
    SearchAddon 挂上之后必须给它一个入口，否则只是「插件挂了但用户够不着」。
    keydown 走**捕获阶段**：xterm 会吞掉大部分按键，只有捕获阶段能抢在它前面拦下。
@@ -827,6 +932,8 @@ function termFindOpen() {
   if (!term) return;
   const box = $('termFind');
   if (!box) return;
+  /* 单浮层纪律（AGENTS 4.2 ①）：开查找条时收掉右键菜单，两个浮层不并存。 */
+  if (typeof termCtxClose === 'function') termCtxClose();
   box.classList.add('on');
   const inp = $('termFindInput');
   if (inp) { try { inp.focus(); inp.select(); } catch (e) {} }
@@ -947,7 +1054,14 @@ function termConnect(sid, agent, opts) {
   if (!o.reconnect) termToastClear();   // 用户主动接的线：收掉「正在重连」提示；自动重连则留到 hb 往返成功才结案
   /* 保留画面时别清屏：清屏 = 先给用户一屏白底，而服务端只回放 ring 里最近 64KB
      （整屏帧早被增量帧挤出去）⇒ 补不满就一直白着，就是用户报的现象。 */
-  if (!keepScreen) term.clear();
+  if (!keepScreen) {
+    term.clear();
+    /* v0.13.92：换会话时清掉上一会话遗留的选区。不清的话，新会话来声明鼠标模式时
+       termMouseArm 会因「有选区」早退（见其注释），滚轮上报通道建不起来
+       —— 实测 verify_term_mouse_apps 的 opencode A1 因此 rep=0 转红。新会话 = 新画面，
+       旧选区本就无意义。term.clear() 不清选区（vendor 实证：只动 buffer.lines）。 */
+    try { term.clearSelection(); } catch (e) {}
+  }
   termConnecting(true);
   termDecodeReset();   // 上一连接可能残留半个 UTF-8 字符，别带进新会话
   const ws = new WebSocket(wsUrl('/ws/term/' + sid));

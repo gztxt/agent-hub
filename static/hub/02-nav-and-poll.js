@@ -320,9 +320,21 @@ function termWantCacheGet(sid) {
 /* 把 app 声明的模式装回 xterm 解析器。⚠️ term.write 是**显示数据流**（pty→画面方向），
    不是发给 pty —— app 从没感知被摘过，它内部的鼠标状态一直是开的（实测 claude
    只在重画时重新断言、opencode 开机断言一次就再不重发；不靠回装的话，一次拖选
-   之后 opencode 的滚轮永远回不到 app 手里）。want 为空则什么都不做。 */
+   之后 opencode 的滚轮永远回不到 app 手里）。want 为空则什么都不做。
+
+   ★ v0.13.92：**有选区时不回装**（2026-10-08 用户报障「嵌入式终端文字无法选择、复制」）。
+   机制（vendor/xterm.js 5.5/6.0 逐字实证）：
+     CoreMouseService 协议一从 NONE 变非 NONE，xterm 就调
+     `SelectionService.disable()`，而它的实现是 `clearSelection(); _enabled=false`
+     —— **回装 = 当场把刚拖出来的选区抹掉**。时序正是用户的体感：
+       拖选（mousedown 复位 ⇒ 选区能建）→ 松开鼠标（window 上挂的 mouseup
+       ⇒ setTimeout(termMouseArm)）⇒ 选区在用户看到之前就没了 ⇒「选不中/复制不动」。
+     真 chromium + CDP 实测（本机修复前）：程序化建选区后调 termMouseArm()，
+     `term.getSelection()` 由 '❯ echo …' 变 ''；只调 termMouseResetNow() 则保留。
+   所以鼠标此刻归浏览器：等选区清掉（下一次点击/滚轮）再回装，见 termWheelNow。 */
 function termMouseArm() {
   if (!term || !termMouseWant.size) return;
+  if (term.hasSelection()) return;
   try { term.write('\x1b[?' + Array.from(termMouseWant).join(';') + 'h'); } catch (e) {}
 }
 

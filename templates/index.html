@@ -837,6 +837,18 @@
             color: var(--term-fg, #fff); background: transparent;
             border: 1px solid var(--term-sel, #b0d0ff40); border-radius: 4px; }
         .tf-btn:hover { background: var(--term-sel, #b0d0ff40); }
+        /* 终端右键菜单（v0.13.92）：同 .term-find 一样是 absolute 浮层，不进 flex 流，
+           不影响 #termEl 内容盒（FitAddon 行数口径）。display 由 .on 单独说了算。 */
+        .term-ctx { position: absolute; z-index: 40; display: none; flex-direction: column;
+            min-width: 96px; padding: 4px; border-radius: 6px; background: var(--term-bg, #000);
+            border: 1px solid var(--term-sel, #b0d0ff40); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+        .term-ctx.on { display: flex; }
+        .term-ctx .tc-btn { font: inherit; font-size: 13px; text-align: left; line-height: 1.2;
+            padding: 6px 10px; cursor: pointer; color: var(--term-fg, #fff);
+            background: transparent; border: 0; border-radius: 4px; }
+        .term-ctx .tc-btn:hover:not([disabled]), .term-ctx .tc-btn:focus:not([disabled]) {
+            background: var(--term-sel, #b0d0ff40); outline: none; }
+        .term-ctx .tc-btn[disabled] { opacity: .4; cursor: default; }
         @keyframes term-connecting { from { background-position: -40% 0; } to { background-position: 140% 0; } }
         @media (prefers-reduced-motion: reduce) {
             #termPane.connecting .term-body::before { animation: none; opacity: .35; }
@@ -1288,6 +1300,14 @@
                                 <button class="tf-btn" id="termFindPrev" title="上一个（Shift+Enter）" aria-label="上一个">↑</button>
                                 <button class="tf-btn" id="termFindNext" title="下一个（Enter）" aria-label="下一个">↓</button>
                                 <button class="tf-btn" id="termFindClose" title="关闭（Esc）" aria-label="关闭查找">✕</button>
+                            </div>
+                            <!-- 终端右键菜单（v0.13.92）。WebGL 渲染器把终端画在 canvas 上，
+                                 浏览器右键只给「图片另存为/复制图片」⇒ 自己接管 contextmenu，
+                                 给回复制/粘贴/全选。同为 absolute 浮层，不占 flex 空间。 -->
+                            <div class="term-ctx" id="termCtx" role="menu" aria-label="终端菜单">
+                                <button class="tc-btn" id="termCtxCopy" role="menuitem">复制</button>
+                                <button class="tc-btn" id="termCtxPaste" role="menuitem">粘贴</button>
+                                <button class="tc-btn" id="termCtxSelAll" role="menuitem">全选</button>
                             </div>
                         </div>
                     </div>
@@ -2368,6 +2388,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=ffab545e"></script>
+    <script src="/static/hub.js?v=55f8b475"></script>
 </body>
 </html>

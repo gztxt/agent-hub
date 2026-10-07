@@ -186,8 +186,15 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # 三处最易被后人改坏/删掉的点：拦截函数名、同步清屏这一声、以及"必须同步
         # （不能改成异步 term.write）"这条判据本身。
         "0.13.91": ("termAltScreenBlock", "同步清屏", "备用屏", "乱码"),
+        # v0.13.92 是另一条终端报障线（用户 2026-10-08）：「嵌入式终端 页面文字无法选择
+        # 复制，按右键显示是图片」。关键词取三处最容易在半年后被改坏/删掉的点：
+        # ① 回装清选区的机制来源（`SelectionService.disable` —— xterm 一进鼠标跟踪就
+        #    clearSelection，忘了它就会把「有选区不回装」这行"顺手删掉"）；
+        # ② 右键菜单的唯一入口/出口（浮层纪律，AGENTS 4.2）；
+        # ③ 用户原话「图片另存为」——它记着"为什么必须自己出菜单"。
+        "0.13.92": ("SelectionService.disable", "回装", "termCtxOpen", "图片另存为"),
     }
-    CURRENT_VERSION = "0.13.91"
+    CURRENT_VERSION = "0.13.92"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

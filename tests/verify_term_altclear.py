@@ -80,12 +80,15 @@ def extract_src():
     src = HX.read_hub()
     const = HX.extract_line(src, "const TERM_ALT_BLOCKED =")
     fn = HX.extract_function(src, "termAltScreenBlock")
+    # v0.13.92：函数新增「有选区吞鼠标跟踪 DECSET」分支，引用 02 片的 TERM_MOUSE_MODES，
+    # 抽真函数时要一并注入（否则独立页 ReferenceError、拿不到结果）。
+    mouse = HX.extract_line(src, "const TERM_MOUSE_MODES =")
     if not const or not fn:
         return None, "抽不到 TERM_ALT_BLOCKED / termAltScreenBlock"
     if os.environ.get("HUB_ALT_CLEAR_DISABLE") == "1":
         # 红向自证：把同步清屏那一句摘掉，其余原样
         fn = fn.replace("try { term.clear(); } catch (e) {", "try { /*disabled*/ } catch (e) {")
-    return const + "\n" + fn, None
+    return const + "\n" + (mouse or "") + "\n" + fn, None
 
 
 BODY = """

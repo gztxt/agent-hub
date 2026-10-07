@@ -79,7 +79,35 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.91"   # 吞备用屏时同步清屏（jcode 启动期残影已修；症状身份待端侧确认）
+VERSION = "0.13.92"   # 嵌入式终端「选不中/复制不动」根治 + 右键菜单（canvas 图片菜单退场）
+#   根因（2026-10-08 用户报障：「agent-hub 嵌入式终端 页面文字无法选择 复制，
+#   按右键显示是图片」）——两个症状一个源头：终端是 WebGL 渲染器画在 <canvas> 上的。
+#   ① **选区在松手瞬间被自己清掉（真缺陷，探针红绿可分）**：
+#     xterm 的 CoreMouseService 协议一从 NONE 变非 NONE，就会调
+#     `SelectionService.disable()`，其实现是 `clearSelection(); _enabled=false`
+#     （vendor/xterm.js 逐字实证）——**把跟踪态装回去 = 当场把刚拖出的选区抹掉**。
+#     时序正是体感：拖选（mousedown 复位 ⇒ 选区能建）→ 松手（window mouseup 上挂的
+#     `setTimeout(termMouseArm)`）⇒ 选区在用户看到之前没了 ⇒「选不中/复制不动」。
+#     真 chromium + CDP 实测（修复前）：程序化建选区后调 termMouseArm()，
+#     `term.getSelection()` 由 '❯ echo …' 变 ''；只调 termMouseResetNow() 则保留。
+#     修法（三处，缺一不可）：(a) termMouseArm() 在 `term.hasSelection()` 时**不回装**
+#     （鼠标此刻归浏览器），回装时机从 mouseup 挪到 wheel（termWheelNow 里、无选区时才装）；
+#     (b) 有选区时在 `?h` CSI 处理器里**吞掉 app 的鼠标跟踪 DECSET**（claude/codex 每帧
+#     重画都重断言 `?1000;1002;1003;1006h`，不挡的话协议又被翻回非 NONE、选区照样被清）；
+#     (c) 换会话时 `term.clearSelection()`（term.clear() 不清选区 ⇒ 残留选区会让新会话的
+#     上报通道建不起来，实测 opencode A1 rep=0 转红）。
+#   ② **右键给的是「图片另存为」**：浏览器眼里 canvas 就是一张图，没有文字的「复制」项；
+#     容器上那条原生 `copy` 兜底因此永远等不到触发。修法：接管 contextmenu、自出菜单
+#     （复制 / 粘贴 / 全选）。浮层纪律按 AGENTS 4.2：唯一入口 termCtxOpen、唯一出口
+#     termCtxClose、点空白（capture pointerdown）/Esc/失焦/滚动即关，触屏可逃生。
+#   闸门：`tests/test_term_select_persist.py`（L0 静态契约 + 红基线）+
+#   `tests/verify_term_select_persist.py`（真 chromium 真渲染：选区抗 mouseup / 抗 app
+#   重断言、右键菜单出项/复制落盘/点空白关；红绿对照＝打到 v0.13.91 实例 10 FAIL、
+#   打到修复态 0 FAIL）。
+#   本批为**纯静态前端**（static/hub/02、03 + templates/index.html + 重建 static/hub.js），
+#   下次页面加载即生效，不需要重启服务。
+
+# ── 以下为 v0.13.91 的根因（本版摘要：吞备用屏时同步清屏 —— jcode 启动期残影），保留供追溯，非本版条目 ──
 #   ⚠️ **范围更正（2026-10-08 自审）**：不得写成「根治」。已证并已修的是「客户端 resize
 #   之前那段 245B 真实回放里的残影」；用户报的「乱码」是否就是它，**无端侧证据**
 #   （稳态跑起来改前改后都干净，jcode 自己的 2J 会自愈）。详见 CHANGELOG v0.13.91 顶部横幅。
