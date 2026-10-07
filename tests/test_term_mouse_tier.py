@@ -46,9 +46,16 @@ class TestMouseTier(unittest.TestCase):
         self.assertNotIn("el.addEventListener('wheel', termMouseResetNow", self.s03,
                          "旧形状复活 = claude/opencode 的滚轮又被掐死（用户报障原文）")
         i = self.s03.index("function termWheelNow")
-        body = self.s03[i:i + 200]
-        self.assertRegex(body, r"if\s*\(\s*termMouseLive\s*\)\s*return;",
-                         "live ⇒ 上报放行给 app（应用内滚动）必须是第一分支")
+        body = self.s03[i:i + 400]
+        # v0.13.92 改判：live 分支从「裸 return」变成「先按选区情况回装 termMouseArm()
+        # 再 return」。判据的**意图不变** —— live 分支必须最先命中且不得落到
+        # termMouseResetNow()（否则 claude/opencode 的应用内滚动又被掐死）。
+        # 锁成结构：live 分支在前 + 分支体内 return + termMouseResetNow 只出现在 live 之后。
+        self.assertRegex(body, r"if\s*\(\s*termMouseLive\s*\)\s*\{",
+                         "live 必须是第一分支（应用内滚动的分流口）")
+        live_br = body[body.index("if (termMouseLive)"):body.index("termMouseResetNow")]
+        self.assertIn("return;", live_br,
+                      "live 分支内必须 return，不能落到 termMouseResetNow()")
 
     def test_R2_reset_never_touches_live(self):
         i = self.s03.index("function termMouseResetNow")

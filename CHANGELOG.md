@@ -1,3 +1,83 @@
+## v0.13.92 — 嵌入式终端「选不中/复制不动」根治 + 右键菜单
+
+> 2026-10-08 用户报障：「agent-hub 嵌入式终端 页面文字无法选择 复制，按右键显示是图片」。
+
+### 一、根因（两个症状一个源头：终端画在 canvas 上）
+
+WebGL 渲染器（默认档，`termRendererPref()` 为空即尝试挂 WebglAddon）把终端画在
+`<canvas>` 上 —— 每个格子不再是 DOM，`elementFromPoint` 命中的就是 canvas。
+
+1. **选区在松手瞬间被自己清掉（真缺陷，红绿可分）**
+   xterm 的 `CoreMouseService` 协议一从 `NONE` 变非 `NONE`，就调
+   `SelectionService.disable()`，其实现是 `clearSelection(); _enabled=false`
+   （`vendor/xterm.js` 逐字实证）。而 v0.13.84 为了「松手后滚轮恢复应用内滚动」，
+   在 `window` 的 `mouseup` 上挂了 `setTimeout(termMouseArm)` —— **回装跟踪态 =
+   当场把刚拖出来的选区抹掉**。用户的体感就是「拖了半天，一松手选区没了 = 选不中」。
+   真 chromium + CDP 实测（修复前，生产 `:3102` 真会话，`claude` 已声明
+   `?1000;1002;1003;1006h`）：
+
+   | 动作 | `term.getSelection()` | `mouseTrackingMode` |
+   |---|---|---|
+   | `term.select(...)` 建选区后 | `'❯ echo ARMPROBE …'` | any |
+   | 调 `termMouseResetNow()` | 仍在 | **none** |
+   | 再调 `termMouseArm()` | **`''`（被清）** | any |
+
+   拖选端到端复现同一现象：拖动中 `hasSelection=True`、文本 ` SELECTPROBE`；
+   `mouseup` 后 `hasSelection=False`、文本 `''`。
+
+2. **右键给的是「图片另存为」**
+   浏览器眼里 canvas 就是一张图，右键菜单没有文字的「复制」项；容器上那条原生
+   `copy` 兜底（v0.13.90 P2）因此永远等不到触发。这解释了用户「复制不动」。
+
+### 二、修法
+
+- **`termMouseArm()` 在 `term.hasSelection()` 时不回装**（`static/hub/02-nav-and-poll.js`）。
+  鼠标此刻归浏览器；回装时机从 `mouseup` 挪到 `wheel`：`termWheelNow()`
+  （`static/hub/03-agents-cards.js`）在 `termMouseLive` 分支里**仅当无选区时**
+  调 `termMouseArm()`。语义代价如实登记：拖选出选区后，滚轮暂时走 scrollback
+  而不是喂回 app，直到选区被清（下一次点击/滚轮）；点击清掉选区后即恢复
+  v0.13.84 的应用内滚动。这比「保留选区」优先 —— 用户拖选的下一步几乎必然是复制。
+- **有选区时吞掉 app 的鼠标跟踪 DECSET**（`termAltScreenBlock` 的 `?h` 处理器，`03`）。
+  上半条只挡住我们自己的回装还不够：claude/codex 这类 TUI **每帧重画都重断言**
+  `?1000;1002;1003;1006h`，协议一旦 `NONE→非 NONE` 就 `disable()→clearSelection()`
+  —— 也就是「agent 正在流式输出时永远选不中」。吞掉重断言（`term.hasSelection()` 为真时），
+  xterm 跟踪态维持 NONE，选区保住；want 表由原始帧扫描维护，不受影响。
+- **换会话清掉遗留选区**（`termConnect`，`03`）。`term.clear()` 只动 buffer.lines、
+  **不清选区**（vendor 实证）⇒ 从 claude 拖选后切到 opencode，残留选区会让 termMouseArm
+  一直早退、上报通道建不起来（实测 opencode A1 rep=0 转红）。新会话 = 新画面，
+  `term.clearSelection()` 一句修好。
+- **接管右键**：`contextmenu` 上 `preventDefault()`（盖掉 canvas 图片菜单）并弹
+  `#termCtx`（复制 / 粘贴 / 全选，`templates/index.html` 内 `.term-body` 的 absolute
+  浮层）。浮层纪律按 AGENTS 4.2：唯一入口 `termCtxOpen`（唯一 `add('on')`）、
+  唯一出口 `termCtxClose`；点空白（document capture `pointerdown`）/`Escape`/失焦/
+  终端滚动与 resize 即关；触屏可点空白逃生。复制项无选区时置灰；菜单粘贴在
+  非安全上下文（无 `navigator.clipboard.readText`）不静默失效，转「请按 Ctrl+V」提示。
+  与终端内查找条（Ctrl+F）互斥：任一开启时收掉另一个。
+
+### 三、闸门与取证
+
+- `tests/test_term_select_persist.py`（L0 静态契约）：锁 `termMouseArm` 的
+  `hasSelection` 早退、`termWheelNow` 的分层回装形态、`termCtx*` 三件套与浮层
+  出/入口唯一性；并从 git 取 v0.13.91 旧字节做**红基线自证**。
+- `tests/verify_term_select_persist.py`（L2 真 chromium 真渲染，生产/shadow 均可跑）：
+  A1/A2（选区抗回装 + 抗 app 重断言 DECSET）、B1（真拖选松开后仍在）、C1/C2/C2b
+  （右键菜单三按钮 / 有选区可点 / 无选区置灰）、D1（点复制 → 通道承载选区文本）、
+  E1/E2（点空白 / Escape 关闭）、F 零异常；先等屏面静止（`wait_idle`）再测，
+  避免 TUI 流式输出造成的**探针时序**假红。
+  **红绿对照**：同一探针打到生产 `:3102`/pre-fix 影子（v0.13.91）→ **10 项 FAIL**；
+  打到本修复 → **0 项 FAIL**。这就是红向自证（无脚本开关，靠真实未修实例）。
+- `tests/verify_term_altclear_params.py` / `verify_term_altclear.py` 抽真函数时需一并注入
+  `TERM_MOUSE_MODES`（`termAltScreenBlock` 新增分支的依赖）——已同步修好。
+- 既有 `tests/test_term_mouse_tier.py`（R1–R5）不回归：R3 只锁 mouseup 回装是
+  window bubble，本批未改那一行；分层入口与 `termMouseWant` 派生口径原样保留。
+
+### 四、生效面
+
+纯静态前端（`static/hub/02-nav-and-poll.js`、`03-agents-cards.js` +
+`templates/index.html` + 重建 `static/hub.js`），**下次页面加载即生效，不需重启服务**。
+
+---
+
 ## v0.13.91 — 备用屏「吞而不清」根治：jcode 启动嵌入式终端带入乱码
 
 > **⚠️ 范围更正（2026-10-08 自审）**：标题里的「根治」说过头。已证并已修＝客户端 resize
