@@ -62,8 +62,9 @@ WebGL 渲染器（默认档，`termRendererPref()` 为空即尝试挂 WebglAddon
 - `tests/verify_term_select_persist.py`（L2 真 chromium 真渲染，生产/shadow 均可跑）：
   A1/A2（选区抗回装 + 抗 app 重断言 DECSET）、B1（真拖选松开后仍在）、C1/C2/C2b
   （右键菜单三按钮 / 有选区可点 / 无选区置灰）、D1（点复制 → 通道承载选区文本）、
-  E1/E2（点空白 / Escape 关闭）、F 零异常；先等屏面静止（`wait_idle`）再测，
-  避免 TUI 流式输出造成的**探针时序**假红。
+  D2（真 Ctrl+C 键事件 → 通道承载选区文本）、D3（浏览器原生 copy 事件 → 写入选区文本）、
+  D4（负控：无选区时容器 copy 不接管）、E1/E2（点空白 / Escape 关闭）、F 零异常；
+  共 17 项。先等屏面静止（`wait_idle`）再测，避免 TUI 流式输出造成的**探针时序**假红。
   **红绿对照**：同一探针打到生产 `:3102`/pre-fix 影子（v0.13.91）→ **10 项 FAIL**；
   打到本修复 → **0 项 FAIL**。这就是红向自证（无脚本开关，靠真实未修实例）。
 - `tests/verify_term_altclear_params.py` / `verify_term_altclear.py` 抽真函数时需一并注入

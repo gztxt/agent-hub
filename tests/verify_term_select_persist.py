@@ -21,6 +21,9 @@ clearSelection），DOM 里没有任何静态痕迹可断言；右键菜单的�
   C1  终端上右键 ⇒ #termCtx 出现，且恰好三个按钮。
   C2  有选区时「复制」可点；无选区时置灰。
   D1  点「复制」⇒ 复制通道被调用且承载的是选区文本；菜单随即关闭。
+  D2  真 Ctrl+C（键事件）⇒ 复制通道承载选区文本（与 attachCustomKeyEventHandler 同一条）。
+  D3  容器 copy 兜底：浏览器原生 copy 事件打到 #termEl ⇒ 写入选区文本（与系统菜单复制同路）。
+  D4  **负控**：无选区时容器 copy 不得被接管（prevented=False、无数据）——防 D3 假绿。
   E1  菜单外 pointerdown ⇒ 关闭（点空白逃生）。
   E2  Escape ⇒ 关闭。
   F   全程零 JS 异常。
@@ -50,6 +53,22 @@ def chk(name, ok, detail=""):
     if not ok:
         FAILED.append(name)
     return bool(ok)
+
+
+def key(cdp, k, code, vk, mods):
+    for t in ("keyDown", "keyUp"):
+        cdp.send("Input.dispatchKeyEvent", type=t, key=k, code=code,
+                 windowsVirtualKeyCode=vk, nativeVirtualKeyCode=vk, modifiers=mods)
+
+
+#: 浏览器原生 copy 事件打到 #termEl（与「右键菜单复制/系统菜单复制」同一条路）。
+COPY_EVENT_JS = r"""(function(){
+  var ta = term.textarea; if (ta) ta.focus();
+  var dt = new DataTransfer();
+  var ev = new ClipboardEvent('copy', {bubbles:true, cancelable:true, clipboardData:dt});
+  document.getElementById('termEl').dispatchEvent(ev);
+  return {prevented: ev.defaultPrevented, data: dt.getData('text/plain')};
+})()"""
 
 
 INSTRUMENT = r"""(function(){
@@ -208,6 +227,42 @@ def main():
         bool(copies) and "SELPROBE" in (copies[-1] or ""),
         "copies=%s" % [c[:20] for c in (copies or [])][-2:])
     chk("D1b 点后菜单关闭", cdp.eval("!document.getElementById('termCtx').classList.contains('on')"))
+
+    # ── D2：Ctrl+C 路（真实键事件；与 attachCustomKeyEventHandler 同一条）──
+    # ⚠️ 不要用鼠标点击来抢焦点：无选区时 xterm 处于跟踪态，点击会被上报给 claude
+    # ⇒ 触发重画、缓冲区一动刚才选中的行索引就失效（实测 copies[-1]='' / D3 全空）。
+    # 用 term.focus() 直接把焦点交给 helper textarea，零鼠标上报。
+    wait_idle(cdp)
+    ln = cdp.eval("(function(){var b=term.buffer.active;for(var i=0;i<b.length;i++){var l=b.getLine(i);"
+                  "if(l&&l.translateToString(true).indexOf('SELPROBE')>=0)return i;}"
+                  "return Math.max(0,b.length-1);})()")
+    cdp.eval("term.focus()"); time.sleep(0.2)
+    cdp.eval("term.select(0, %d, 30)" % ln); time.sleep(0.2)
+    chk("D2 前置：焦点在终端且选区非空",
+        cdp.eval("document.activeElement===term.textarea") and
+        "SELPROBE" in (cdp.eval("term.getSelection()") or ""),
+        "focus=%s sel=%r" % (cdp.eval("document.activeElement===term.textarea"),
+                             (cdp.eval("term.getSelection()") or "")[:20]))
+    n0 = cdp.eval("window.__r.copies.length")
+    key(cdp, "c", "KeyC", 67, 2)          # modifiers=2 ⇒ Ctrl
+    time.sleep(0.6)
+    copies2 = cdp.eval("window.__r.copies")
+    chk("D2 真 Ctrl+C ⇒ 复制通道承载选区文本",
+        len(copies2) > n0 and "SELPROBE" in (copies2[-1] or ""),
+        "copies=%s" % [c[:20] for c in (copies2 or [])][-2:])
+
+    # ── D3：容器 copy 兜底路（浏览器原生 copy 事件）──
+    got = cdp.eval(COPY_EVENT_JS)
+    chk("D3 容器 copy 兜底写入选区文本",
+        bool(got) and got["prevented"] and "SELPROBE" in (got["data"] or ""),
+        "prevented=%s data=%r" % (got and got["prevented"], (got and got["data"] or "")[:24]))
+
+    # ── D4：负控 —— 无选区时容器 copy **不得**被接管（防 D3 因「恒 preventDefault」假绿）──
+    cdp.eval("term.clearSelection()"); time.sleep(0.2)
+    neg = cdp.eval(COPY_EVENT_JS)
+    chk("D4 无选区时容器 copy 不接管（prevented=False 且无数据）",
+        bool(neg) and (not neg["prevented"]) and not (neg["data"] or ""),
+        "prevented=%s data=%r" % (neg and neg["prevented"], (neg and neg["data"] or "")[:16]))
 
     # ── C2b：无选区时置灰 ──
     cdp.eval("term.clearSelection()")
