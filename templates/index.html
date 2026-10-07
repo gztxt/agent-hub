@@ -657,6 +657,10 @@
         .set-agents { display: flex; flex-wrap: wrap; gap: 6px; }
         .set-agents .btn.on { font-weight: 600; }
         .set-agents .btn[aria-disabled="true"] { opacity: .5; }
+        /* v0.13.85：漂移标记。用一个边框色 + **按钮文字里的** ⚠（文字由 JS 加，
+           不用 CSS ::after —— 读屏对 CSS 生成内容的播报不一致，文字进 DOM 才可靠）。 */
+        .set-agents .btn.drift { border-color: var(--warn, #b8860b); }
+        #setDriftBox:empty { display: none; }
         .set-diff { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
         .set-diff-hd { background: var(--surface-2); padding: 6px 10px; font-size: var(--fs-sm); color: var(--text-2); }
         .set-diff-row { padding: 6px 10px; border-top: 1px solid var(--divider); font-size: var(--fs-sm); }
@@ -2009,6 +2013,9 @@
                         <div class="hint" style="margin-bottom:10px">保存同时写入<b>该 agent 自己的配置文件</b>
                             （落笔前自动时间戳备份）与 <b>hub 侧</b>（拉起终端时按白名单注入 <code>--model</code>）。</div>
                         <div class="set-sub">1 · 选择 agent</div>
+                        <!-- v0.13.85：漂移体检常驻展示位。后端 /api/settings/models 一直在算
+                             drift，但前端从不渲染 ⇒ 这类问题在界面上完全不可见。 -->
+                        <div id="setDriftBox" class="hint"></div>
                         <div id="setAgentList" class="set-agents"><span class="hint">加载中…</span></div>
                         <div id="setModelStep" style="display:none">
                             <div class="set-sub">2 · 选择模型（CCR :3456 清单）</div>
@@ -2351,6 +2358,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=e485ff8b"></script>
+    <script src="/static/hub.js?v=01bd76c9"></script>
 </body>
 </html>

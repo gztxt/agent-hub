@@ -79,7 +79,20 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.84"   # 鼠标模式分层：全屏 TUI（claude/opencode）的滚轮上报归应用内滚动
+VERSION = "0.13.85"   # 模型设置补齐 10 家 agent + 「原生+插入」写入 + 漂移可见
+#   根因（2026-10-07 用户报障「模型设置里没有 agents 的所有模型」+「优化操作逻辑与准确性」）：
+#   ① SPECS 只列 6 家、本机实有 10 家 ⇒ opencode/qoder/cursor 在设置页压根不出现。
+#      三家落点形状各异，逐家实测后落笔：opencode 要 provider 前缀且在 provider.models
+#      里补登记（缺则 UnknownError）；qoder 只吃原生名、官方明令禁止手写 settings.json；
+#      cursor 三键同源 + 参数表索引。用户口径「原生 + 插入」＝只落该 agent 本就要读的
+#      字段、只动目标键，不碰安装目录与无关配置面 ⇒ 新增 write_mode（ccr/native/argv）。
+#   ② grok 的「当前」恒"（未读到）"：_toml_get 把 section 按 "." 切，而表头
+#      [model.ccr-hub] 在 tomllib 里是一个含点号的键 ⇒ 整键优先、查不到再逐级下钻。
+#   ③ grok 的 --model 注入值错：实弹 `-m alibaba/qwen3.8-max` ⇒ 硬报 unknown model id，
+#      `-m ccr-hub` ⇒ 正常；README 言「header 名即选择器里的名字」⇒ 改注入 profile 表头键。
+#   ④ 「默认（网关路由）」永远存不了（前端 early-return + 后端 validate_model("") 400）
+#      ⇒ 改为**撤销**语义：只删 hub 侧持久化行，不写配置文件（不猜"原本是什么"）。
+#   ⑤ drift_report 后端一直在算、前端零引用 ⇒ 漂移在界面上完全不可见，已补常驻展示。
 #   根因（2026-10-07 续报；取证：真 PTY 流分析 /tmp/mouse_probe3~7 + CDP 红基线
 #   tests/verify_term_mouse_apps.py 实测 A1 rep=0/A2 翻不到头）：
 #   v0.13.81/82/83 的「看门狗复位 + 吞 1049」对**主屏线性输出、不开鼠标**的 agent

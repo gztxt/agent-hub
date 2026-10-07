@@ -151,8 +151,12 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #   滚轮 SGR 上报喂回 pty 由 app 自滚。want（app 意图）与 xterm 临时态分家、
         #   wheel 分层、mouseup 回装、非 shell 回放信任 + per-sid 缓存、4410 清零防死轮。
         "0.13.84": ("termMouseWant", "termMouseArm", "4410", "死轮", "应用内滚动"),
+        # v0.13.85 不是终端批次，但版本钉只跟当前版本号走 ⇒ 这一版的"根因关键字"
+        # 取它自己的四件事（缺任一件，半年后就没人知道模型设置为何长这样）。
+        # 关键词取自 main.py 的 VERSION 注释块（2400 字符窗口内）与 CHANGELOG v0.13.85 段。
+        "0.13.85": ("write_mode", "profile 表头键", "撤销", "漂移"),
     }
-    CURRENT_VERSION = "0.13.84"
+    CURRENT_VERSION = "0.13.85"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

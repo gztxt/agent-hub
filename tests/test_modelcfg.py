@@ -85,6 +85,34 @@ toolsets:
 """
 CCR_CONFIG = {"APIKEY": "ccr-key-fixture", "Router": {"default": "alibaba,qwen3.8-flash"}}
 
+# ── 2026-10-07 新增三家的夹具（形状照本机真实文件取，见各家 read 的注释）──
+OPENCODE_JSON = {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {"some-server": {"type": "local", "command": ["node", "x.js"], "enabled": True}},
+    "provider": {"ccr": {"npm": "@ai-sdk/openai-compatible", "name": "CCR local router",
+                         "options": {"baseURL": "http://127.0.0.1:3456/v1", "apiKey": "k"},
+                         "models": {"old/model-b": {"name": "model-b"}}}},
+    "model": "ccr/old/model-b",
+    "small_model": "ccr/old/model-b",
+    "permission": {"bash": "ask"},
+}
+QODER_JSON = {
+    "model": {"name": "Qwen3.8-Flash"},
+    "securityScan": {"l1StaticCheck": True, "l3DeepScan": True},
+    "permissions": {"additionalDirectories": [], "trustDirectories": ["/fs/1000/ftp/技术文档"]},
+    "security": {"auth": {"selectedType": "qoder-browser"}},
+}
+CURSOR_JSON = {
+    "permissions": {"allow": ["Shell(ls)"], "deny": []}, "version": 1,
+    "editor": {"vimMode": False}, "display": {"mode": "zen"},
+    "model": {"modelId": "old/model-a", "displayModelId": "old/model-a",
+              "displayName": "old/model-a", "displayNameShort": "old/model-a", "aliases": []},
+    "hasChangedDefaultModel": True,
+    "modelParameters": {"old/model-a": []},
+    "selectedModel": {"modelId": "old/model-a", "parameters": []},
+    "network": {"useHttp1ForAgent": False}, "sandbox": {"mode": "disabled"},
+}
+
 
 class _HomeFixture(unittest.TestCase):
     """造假 HOME：modelcfg 的所有落点都在 ~ 下，换 HOME 即可全隔离。"""
@@ -102,6 +130,9 @@ class _HomeFixture(unittest.TestCase):
         self._write(".pi/agent/models.json", json.dumps(PI_MODELS))
         self._write(".grok/config.toml", GROK_TOML)
         self._write(".hermes/config.yaml", HERMES_YAML)
+        self._write(".config/opencode/opencode.json", json.dumps(OPENCODE_JSON))
+        self._write(".qoder/settings.json", json.dumps(QODER_JSON))
+        self._write(".cursor/cli-config.json", json.dumps(CURSOR_JSON))
         self._write(".claude-code-router/config.json", json.dumps(CCR_CONFIG))
 
     def tearDown(self):
@@ -127,14 +158,18 @@ class AReadCurrent(_HomeFixture):
     def test_each_agent_reads_its_own_field(self):
         for aid, want in (("claude", "old/model-a"), ("jcode", "old/model-a"),
                           ("codex", "old/model-a"), ("pi", "old/model-a"),
-                          ("grok", "old/model-a"), ("hermes", "old/model-a")):
+                          ("grok", "old/model-a"), ("hermes", "old/model-a"),
+                          # v0.13.85 新增三家。⚠ opencode 的现值**自带 provider 前缀**
+                          # （`ccr/old/model-b`）—— 这是它文档要求的形状，不是脏数据。
+                          ("opencode", "ccr/old/model-b"), ("qoder", "Qwen3.8-Flash"),
+                          ("cursor", "old/model-a")):
             st = modelcfg.agent_state(aid)
             self.assertTrue(st["supported"], aid)
             self.assertTrue(st["writable"], aid)
             self.assertEqual(st["current"], want, aid)
 
     def test_unsupported_agents_are_marked_not_writable(self):
-        for aid in ("codebuddy", "qwenpaw"):
+        for aid in ("codebuddy", "qwenpaw", "cloudcli"):
             st = modelcfg.agent_state(aid)
             self.assertFalse(st["supported"], aid)
             self.assertFalse(st["writable"], aid)
@@ -157,9 +192,15 @@ class BPreviewNoWrite(_HomeFixture):
         before = {f: self._read(f) for f in (".claude/settings.json", ".jcode/config.toml",
                                              ".codex/config.toml", ".pi/agent/settings.json",
                                              ".pi/agent/models.json", ".grok/config.toml",
-                                             ".hermes/config.yaml")}
+                                             ".hermes/config.yaml",
+                                             ".config/opencode/opencode.json",
+                                             ".qoder/settings.json", ".cursor/cli-config.json")}
         for aid in ("claude", "jcode", "codex", "pi", "grok", "hermes"):
             modelcfg.preview(aid, "new/model-z")
+        # 新三家各自的合法输入形状（opencode 要前缀、qoder 只认原生名）
+        modelcfg.preview("opencode", "ccr/new/model-z")
+        modelcfg.preview("qoder", "Qwen3.8-Max")
+        modelcfg.preview("cursor", "new/model-z")
         for f, was in before.items():
             self.assertEqual(self._read(f), was, f"preview 落笔了：{f}")
 
@@ -469,6 +510,209 @@ class EPasscodeGate(unittest.TestCase):
         self.assertEqual(e.status_code, 401)
         self.assertNotIn("secret-pc", str(e.detail), "拒绝原因里回显了口令")
 
+
+
+class IThreeNewAgents(_HomeFixture):
+    """v0.13.85（2026-10-07）：用户报障「模型设置里没有 agents 的所有模型」。
+
+    原先 SPECS 只有 6 家（claude/jcode/codex/pi/grok/hermes），而本机实有的 CLI agent 是
+    10 家 ⇒ opencode / qoder / cursor 三家在设置页里**压根不出现**。
+    这三家的落点形状互不相同，故逐家钉「只动目标键」与「拒绝不该写的东西」。
+    """
+
+    # ── opencode：双登记（opencode.json 一份 + CLI 侧一份），缺一份就哑火 ──
+    def test_opencode_writes_model_and_registers_in_provider(self):
+        modelcfg.apply_model("opencode", "ccr/new/model-z")
+        d = json.loads(self._read(".config/opencode/opencode.json"))
+        self.assertEqual(d["model"], "ccr/new/model-z")
+        self.assertIn("new/model-z", d["provider"]["ccr"]["models"],
+                      "opencode 只认 provider.models 里登记过的 ID，缺登记会 UnknownError")
+        self.assertIn("old/model-b", d["provider"]["ccr"]["models"], "原有登记不许被删")
+        # 无关面必须原样（整文件重写最容易冲掉这些）
+        self.assertEqual(d["permission"], {"bash": "ask"})
+        self.assertTrue(d["mcp"]["some-server"]["enabled"])
+        self.assertEqual(d["provider"]["ccr"]["options"]["baseURL"], "http://127.0.0.1:3456/v1")
+
+    def test_opencode_small_model_follows_only_when_it_matched(self):
+        """small_model 与 model 原本同值 ⇒ 跟随（否则"主模型换了、轻量任务还走旧模型"）。"""
+        modelcfg.apply_model("opencode", "ccr/new/model-z")
+        d = json.loads(self._read(".config/opencode/opencode.json"))
+        self.assertEqual(d["small_model"], "ccr/new/model-z")
+
+    def test_opencode_small_model_not_clobbered_when_user_set_otherwise(self):
+        """用户**故意**把 small_model 设成别的模型 ⇒ 那是他的配置意图，hub 不许改。"""
+        path = self.home / ".config/opencode/opencode.json"
+        d = json.loads(path.read_text(encoding="utf-8"))
+        d["small_model"] = "ccr/poolside/laguna-xs-2.1:free"
+        path.write_text(json.dumps(d), encoding="utf-8")
+        modelcfg.apply_model("opencode", "ccr/new/model-z")
+        d2 = json.loads(self._read(".config/opencode/opencode.json"))
+        self.assertEqual(d2["small_model"], "ccr/poolside/laguna-xs-2.1:free",
+                         "不许覆盖用户自己设的 small_model")
+        self.assertEqual(d2["model"], "ccr/new/model-z")
+
+    def test_opencode_rejects_model_without_provider_prefix(self):
+        with self.assertRaises(modelcfg.ModelCfgError) as cm:
+            modelcfg.apply_model("opencode", "no-prefix-model")
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("provider 前缀", cm.exception.args[0])
+
+    def test_opencode_refuses_to_invent_provider(self):
+        """provider 段不存在时拒绝凭空新建（那样会缺 baseURL/apiKey，比报错更坏）。"""
+        with self.assertRaises(modelcfg.ModelCfgError) as cm:
+            modelcfg.apply_model("opencode", "nosuchprov/new/model-z")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("拒绝凭空新建 provider", cm.exception.args[0])
+
+    # ── qoder：官方明令 BYOK 只走 /model 向导、禁止手写 settings.json ──
+    def test_qoder_writes_only_native_name(self):
+        modelcfg.apply_model("qoder", "Qwen3.8-Max")
+        d = json.loads(self._read(".qoder/settings.json"))
+        self.assertEqual(d["model"]["name"], "Qwen3.8-Max")
+        for k in ("securityScan", "permissions", "security"):
+            self.assertIn(k, d, f"qoder 的 {k} 段不许被写坏")
+
+    def test_qoder_rejects_ccr_model_id(self):
+        """CCR 的 provider/model ID 塞进 qoder 的 model.name 会被 CLI 拒 ⇒ 写前就必须拒。"""
+        with self.assertRaises(modelcfg.ModelCfgError) as cm:
+            modelcfg.apply_model("qoder", "alibaba/deepseek-v4.1-flash")
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("原生名", cm.exception.args[0])
+        self.assertEqual(json.loads(self._read(".qoder/settings.json"))["model"]["name"],
+                         "Qwen3.8-Flash", "被拒的写入不许留痕")
+
+    # ── cursor：三键同源 + 参数表索引 ──
+    def test_cursor_writes_all_three_same_source_keys(self):
+        modelcfg.apply_model("cursor", "new/model-z")
+        d = json.loads(self._read(".cursor/cli-config.json"))
+        self.assertEqual(d["model"]["modelId"], "new/model-z")
+        self.assertEqual(d["model"]["displayModelId"], "new/model-z")
+        self.assertEqual(d["selectedModel"]["modelId"], "new/model-z")
+        self.assertTrue(d["hasChangedDefaultModel"])
+        self.assertIn("new/model-z", d["modelParameters"],
+                      "参数表要按 ID 建索引，否则参数面板查不到这个模型")
+        # 用户与 cursor 自己的配置面一概不许碰
+        for k, want in (("permissions", {"allow": ["Shell(ls)"], "deny": []}),
+                        ("display", {"mode": "zen"}), ("editor", {"vimMode": False}),
+                        ("sandbox", {"mode": "disabled"}),
+                        ("network", {"useHttp1ForAgent": False})):
+            self.assertEqual(d[k], want, f"cursor 的 {k} 被动了")
+
+    def test_new_agents_get_argv_injection(self):
+        """三家都认 --model（逐家 --help 实测），故 hub 拉起的终端必须带注入。"""
+        for aid in ("opencode", "qoder", "cursor"):
+            self.assertEqual(modelcfg.terminal_argv(aid, "m/x"), ["--model", "m/x"], aid)
+
+    def test_write_mode_is_exposed_for_every_agent(self):
+        """字段认什么必须可机读（前端文案由它派生），否则用户会把 CCR ID 塞进原生字段。"""
+        modes = {a["id"]: a["write_mode"] for a in modelcfg.list_agents()}
+        self.assertEqual(modes["qoder"], "native")
+        for aid in ("claude", "jcode", "codex", "pi", "grok", "hermes", "opencode", "cursor"):
+            self.assertEqual(modes[aid], "ccr", aid)
+
+
+class JGrokReadFix(_HomeFixture):
+    """2026-10-07 修的真缺陷：grok 的「当前」在设置页恒显示"（未读到）"。
+
+    根因＝`_toml_get` 把 section 按 "." 切分，而 grok 的表头 `[model.ccr-hub]`
+    在 tomllib 里是**一个含点号的键** ⇒ data["model"]["ccr-hub"] 恒 None。
+    表现＝「库里明明设了模型，设置页却说没读到」。
+    """
+
+    def test_dotted_section_header_is_readable(self):
+        text = ('[models]\ndefault = "ccr-hub"\n\n'
+                '[model.ccr-hub]\nmodel = "alibaba/deepseek-v4.1-flash"\n')
+        self.assertEqual(modelcfg._toml_get(text, "model.ccr-hub", "model"),
+                         "alibaba/deepseek-v4.1-flash", "含点号的表头必须整键查得到")
+        self.assertEqual(modelcfg._toml_get(text, "models", "default"), "ccr-hub")
+
+    def test_nested_section_still_works(self):
+        """整键优先不能把「逐级嵌套 section」的既有能力改坏。"""
+        text = '[providers.ccr]\ndefault_model = "x"\n'
+        self.assertEqual(modelcfg._toml_get(text, "providers.ccr", "default_model"), "x")
+
+    def test_grok_current_is_model_id_and_provider_is_header_key(self):
+        """口径对齐 grok 自己的 `grok models`：它报 `Default model: ccr-hub`，
+        而真正发出去的模型是 `[model.ccr-hub].model`。设置页两者都要给对。"""
+        st = modelcfg.agent_state("grok")
+        self.assertEqual(st["current"], "old/model-a", "current 必须是真正发出去的模型 ID")
+        self.assertEqual(st["provider"], "ccr-old", "provider 必须是表头键（profile 名）")
+
+    def test_grok_argv_injects_profile_key_not_raw_id(self):
+        """判据（本机实弹）：`grok -m alibaba/qwen3.8-max` ⇒ 硬报 unknown model id；
+        `grok -m ccr-hub` ⇒ 正常且账本 served 精确命中。故注入表头键。"""
+        self.assertEqual(modelcfg.terminal_argv("grok", "alibaba/deepseek-v4.1-flash"),
+                         ["--model", "ccr-hub"])
+        self.assertEqual(modelcfg.terminal_argv("grok", "anything/else"), ["--model", "ccr-hub"])
+
+    def test_grok_default_pointing_at_builtin_id(self):
+        """官方 README 允许 `[models] default = "grok-4.6"`（内置 ID，无 [model.*] 块）
+        ⇒ 此时 current 就该是它本身，不许读成空。"""
+        self._write(".grok/config.toml", '[models]\ndefault = "grok-4.6"\n')
+        st = modelcfg.agent_state("grok")
+        self.assertEqual(st["current"], "grok-4.6")
+        self.assertEqual(st["provider"], "grok-4.6")
+
+
+class KClearHubModel(_HomeFixture):
+    """「撤销 hub 侧默认」这条路（设置页下拉的第一项）。
+
+    2026-10-07 前的缺陷：前端 `if (!model) return`、后端 `validate_model("")` 抛 400
+    ⇒ 这一项**永远存不了**，用户点了保存什么都不发生（连请求都不发）。
+    """
+
+    def test_clear_removes_persisted_value(self):
+        modelcfg.apply_model("cursor", "new/model-z")
+        self.assertEqual(modelcfg.hub_model("cursor"), "new/model-z")
+        out = modelcfg.apply_model("cursor", "")
+        self.assertEqual(out["mode"], "clear")
+        self.assertEqual(modelcfg.hub_model("cursor"), "")
+
+    def test_clear_does_not_touch_any_config_file(self):
+        """清空**只**撤销注入，不改任何配置文件（不猜"原本是什么"——那个值只在备份里）。"""
+        modelcfg.apply_model("cursor", "new/model-z")
+        before = self._read(".cursor/cli-config.json")
+        n_bak = len(self._backups(".cursor/cli-config.json"))
+        modelcfg.apply_model("cursor", "")
+        self.assertEqual(self._read(".cursor/cli-config.json"), before, "清空不许改配置")
+        self.assertEqual(len(self._backups(".cursor/cli-config.json")), n_bak,
+                         "清空不该产生备份")
+
+    def test_clear_makes_argv_empty(self):
+        modelcfg.apply_model("claude", "new/model-z")
+        self.assertEqual(modelcfg.terminal_argv("claude", modelcfg.hub_model("claude")),
+                         ["--model", "new/model-z"])
+        modelcfg.apply_model("claude", "")
+        self.assertEqual(modelcfg.terminal_argv("claude", modelcfg.hub_model("claude")), [],
+                         "撤销后 hub 拉起的终端不应再带 --model")
+
+    def test_preview_clear_is_read_only_and_says_so(self):
+        modelcfg.apply_model("cursor", "new/model-z")
+        before = self._read(".cursor/cli-config.json")
+        p = modelcfg.preview("cursor", "")
+        self.assertEqual(p["mode"], "clear")
+        self.assertEqual(p["files"], [])
+        self.assertIn("配置文件", p["note"])
+        self.assertEqual(self._read(".cursor/cli-config.json"), before)
+
+    def test_clear_on_unknown_agent_is_rejected(self):
+        with self.assertRaises(modelcfg.ModelCfgError):
+            modelcfg.apply_model("codebuddy", "")
+
+
+class LQoderDriftExempt(_HomeFixture):
+    """qoder 的漂移比对必须豁免 —— 否则恒报假漂移，且 repair_drift 会去写它不认的值。"""
+
+    def test_qoder_is_not_reported_as_drifted(self):
+        modelcfg.set_hub_model("qoder", "alibaba/deepseek-v4.1-flash")
+        ids = [d["id"] for d in modelcfg.drift_report()]
+        self.assertNotIn("qoder", ids, "原生名 vs CCR ID 形状不可比，比了是恒假警报")
+
+    def test_qoder_drift_repair_skips_it(self):
+        modelcfg.set_hub_model("qoder", "alibaba/deepseek-v4.1-flash")
+        out = modelcfg.repair_drift()
+        self.assertNotIn("qoder", [r["id"] for r in out["repaired"]],
+                         "repair 不许把 CCR ID 写进 qoder 的原生字段")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,69 @@
+## v0.13.85 — 模型设置：补齐全部 agent + 「原生 + 插入」写入 + 漂移可见
+
+> 2026-10-07，用户报障两件：「agent-hub 模型设置里面没有 agents 的所有模型」
+> 「优化和完善模型设置操作逻辑和准确性」。用户口径：「模型选择尽量按原生 + 插入这种模式，
+> 不要破坏原生模型，插入模型要精确，不破坏 agent 的原有代码」。
+> 取证方式：逐家 CLI `--help` / `--list-models` 实测 + 官方文档（curl 抓
+> code.claude.com、opencode.ai/docs、docs.qoder.com/cli/custom-models、grok 自带 README）
+> + CCR usage.sqlite 账本（`served` 列，判据只看账本不看 CLI 回显）。
+
+### ① 报障本体：设置页只列 6 家，本机实有 10 家
+
+`modelcfg.SPECS` 原只有 claude/jcode/codex/pi/grok/hermes。**opencode / qoder / cursor
+三家压根不出现在设置页**。三家落点形状各不相同，故逐家实测后按各家真实形状落笔，
+而不是塞进一个通用写手（那必然退化成整文件重写 —— 09-07 pi 改 CCR 配置把同文件
+其它 profile 一起改坏就是那类事故面）：
+
+| agent | 落点 | 写入精确度 | 已证实的坑 |
+|---|---|---|---|
+| opencode | `opencode.json` 顶层 `model`（`provider/model` 形状） | 只改 model/small_model + **在 provider.ccr.models 里补登记** | 无前缀 ⇒ CLI 报 `UnknownError`（HTTP 层看不出是模型问题）；provider 段不存在 ⇒ **拒绝凭空新建**（会缺 baseURL/apiKey） |
+| qoder | `~/.qoder/settings.json` 的 `model.name` | **只**改这一个键（securityScan/permissions/security 原样） | 官方文档明令 BYOK 只走 `/model` 向导、**禁止手写 settings.json**；实测 `-m` 收原生名（Qwen3.8-Max），塞 CCR ID 会被 CLI 拒 ⇒ **写前硬拒并给出替代路径** |
+| cursor | `~/.cursor/cli-config.json` 三键同源 + 参数表 | 只改 `model.*` / `selectedModel.modelId` / `modelParameters[id]` / `hasChangedDefaultModel` | permissions/display/editor/sandbox 一概不动 |
+
+另补 `cloudcli` 进 UNSUPPORTED（实测 `cloudcli --help` 无 `--model`，其模型由内嵌的
+claude/codex/opencode 各自决定 ⇒ 应去对应 agent 上设，不是"漏了它"）。
+
+### ② 「原生 + 插入」的可机读判据：`write_mode`
+
+新增 `WRITE_MODE`（ccr / native / argv / none），随 `/api/settings/models` 透出，
+前端文案由它派生 ⇒ 用户不会再"把 CCR ID 塞进只吃原生名的字段"然后以为保存成功了。
+
+### ③ 三个真缺陷（都不是"优化"，是坏）
+
+1. **grok 的「当前」恒显示"（未读到）"** —— `_toml_get` 把 section 按 `.` 切分，
+   而 grok 表头 `[model.ccr-hub]` 在 tomllib 里是**一个含点号的键** ⇒
+   `data["model"]["ccr-hub"]` 恒 None。现场文件里明明写着
+   `default = "ccr-hub"` + `[model.ccr-hub] model = "alibaba/deepseek-v4.1-flash"`。
+   修法：整键优先、查不到再逐级下钻（保留对 `providers.ccr` 这类嵌套 section 的兼容）。
+2. **grok 的 `--model` 注入值是错的** —— 实弹判据：`grok -m alibaba/qwen3.8-max`
+   ⇒ 硬报 `unknown model id` 并 exit；`grok -m ccr-hub` ⇒ 正常且账本 served 精确命中。
+   README 亦言「header 名是模型选择器里显示的名字」。改注入 **profile 表头键**（恒为 `ccr-hub`）。
+   ⚠ 旧写法只因"该 ID 恰好等于某块里的 model 值"才碰巧能用 —— 属侥幸。
+3. **「默认（网关路由）」这一项永远存不了** —— 前端 `if (!model) return`（连请求都不发）、
+   后端 `validate_model("")` 抛 400 ⇒ 用户点它毫无反应。改为**撤销语义**：
+   `preview_clear` / `clear_model` / `clear_hub_model`，**只删 hub 侧持久化行**，
+   **不写任何配置文件**（不猜"原本是什么"——那个值只在备份里，凭猜写回去是制造错误）。
+
+### ④ 漂移体检此前后端算了、前端从不显示
+
+`drift_report()` 一直在算，`static/hub/*.js` 里**零个 `drift` 引用** ⇒
+「CCR 重启把 claude 的 env 三兄弟改回旧模型」这类问题在界面上完全不可见，
+与"体检全绿"无从区分。新增 `#setDriftBox` 常驻展示 + 漂移 agent 的按钮标记。
+另：qoder 进 `DRIFT_EXEMPT`（原生名 vs CCR ID 形状不可比，比了是恒假警报，
+且 `repair_drift` 会去写它不认的值）。
+
+### 验证（判据可断言，不以"我看了截图"交差）
+
+- L0 hermetic：**1299 例全绿、0 跳过**，收集器对账 1357=1357；`prepush.sh` 六项全绿。
+- 新增 `tests/test_modelcfg.py` 4 个 TestCase / 22 例（I 三家新 agent、J grok 读修、
+  K 撤销路径、L qoder 漂移豁免），并把三家夹具并入既有 A/B 组（读现值、预览不落笔）。
+- L2 live（真 chromium + CDP + 真点击，`/tmp/verify_model_ui.py`）：R1 9 家全出现 /
+  R2 状态行给出字段口径 / R3 撤销项在首位且现值不在清单时补项默认选中 /
+  R4 漂移框可见 / R5 撤销预览写明"不写配置文件" —— **ALL PASS**。
+- HTTP 实弹（影子 3198，沙箱 HOME）：错口令 401 / 正确口令落笔 + 时间戳备份 /
+  清空后配置文件字节未变 / qoder 塞 CCR ID 得 400。
+- 本改动**不动任何 agent 的安装目录**，只写各自配置文件 + argv 注入。
+
 ## v0.13.84 — 鼠标模式分层：claude/opencode 嵌入式终端「向上翻看」根治（滚轮上报归应用内滚动）
 
 > 2026-10-07，用户续报（v0.13.83 批后）：其他 agent 的嵌入式终端都正常了，

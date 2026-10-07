@@ -51,6 +51,24 @@ MODEL_ARGV: Dict[str, str] = {
     "grok": "--model",
     "pi": "--model",
     "hermes": "-m",          # hermes help 只给短选项 [-m MODEL]
+    # ── 2026-10-07 新增三家（逐家 `--help` 实测，不是猜的）──
+    "opencode": "--model",   # opencode --help: -m, --model  model to use in the format of provider/model
+    "qoder": "--model",      # qodercli --help: -m, --model <model>  Model for the current session
+    "cursor": "--model",     # cursor-agent --help: --model <model>  Model to use (e.g. gpt-5, sonnet-4-thinking)
+}
+
+#: 写入模式（2026-10-07，用户裁定「原生 + 插入」）。三类语义不同，设置页必须分开说：
+#:   "ccr"    —— 该字段**就是**给 CCR/OpenAI 兼容网关用的，可直写 CCR 的 `provider/model` ID。
+#:   "native" —— 该字段只认**本家原生模型名**（或本家 ID 形状）。hub 可以写，但要写原生名；
+#:               塞 CCR ID 会被 CLI 拒（qoder 实测），故 _qoder_write 里硬拒并给出替代路径。
+#:   "argv"   —— **无默认配置文件可落**，只能靠 hub 拉起终端时的 `--model` 注入。
+#:               设置页对这类要写明「只影响 hub 拉起的会话」，避免"改了没生效"的误解。
+#: 这一列同时是设置页文案与测试判据的单一真相源。
+WRITE_MODE: Dict[str, str] = {
+    "claude": "ccr", "jcode": "ccr", "codex": "ccr", "pi": "ccr",
+    "grok": "ccr", "hermes": "ccr",
+    "opencode": "ccr", "cursor": "ccr",
+    "qoder": "native",
 }
 
 #: pi 走 CCR 时用的 provider（~/.pi/agent/models.json 里 baseUrl = CCR 的那个）
@@ -208,10 +226,22 @@ def _toml_get(text: str, section: Optional[str], key: str) -> str:
         return ""
     node = data
     if section:
-        for part in section.split("."):
-            node = node.get(part) if isinstance(node, dict) else None
-            if node is None:
-                return ""
+        # ⚠ 2026-10-07 修的真缺陷：section 可能**自带点号**。grok 的表头是 `[model.ccr-hub]`，
+        # tomllib 里它就是字符串 "model.ccr-hub" **一个键**（官方文档：header 名即模型 ID，
+        # ID 本身含点号）。旧实现一律按 "." 切分 ⇒ data["model"]["ccr-hub"] ⇒ None
+        # ⇒ `_grok_read()` 的 current 恒空。**实测症状**：文件里明写
+        # `default = "ccr-hub"` + `[model.ccr-hub] model = "alibaba/deepseek-v4.1-flash"`，
+        # 设置页 grok 的「当前」却显示"（未读到）"，而 provider 串位显示成模型 ID。
+        # 口径：**先整键查**，查不到再逐级下钻（保留对嵌套 section 如 "providers.ccr" 的兼容）。
+        node = data.get(section)
+        if node is None:                      # 整键查不到 ⇒ 退回逐级下钻（嵌套 section）
+            node = data
+            for part in section.split("."):
+                node = node.get(part) if isinstance(node, dict) else None
+                if node is None:
+                    break
+        if node is None:
+            return ""
     v = node.get(key) if isinstance(node, dict) else None
     return str(v) if v is not None else ""
 
@@ -365,13 +395,40 @@ def _grok_existing_api_key(text: str) -> str:
 
 
 def _grok_read() -> dict:
+    """grok 的「默认模型」＝ `[models] default` 指向的那个**表头键**，值在 `[model.<键>] model`。
+
+    2026-10-07 修（原先 current 恒空，见 _toml_get 的注释）。本机实测全链：
+      `[models] default = "ccr-hub"` + `[model.ccr-hub] model = "alibaba/deepseek-v4.1-flash"`
+      ⇒ 真正发出去的模型 ID 是 `alibaba/deepseek-v4.1-flash`（CCR 账本 served 逐次命中）。
+    故展示**模型 ID**（那是用户关心的"现在用哪个模型"），`provider` 字段放表头键（
+    用于区分「内置 grok-4.6」与「自定义 CCR 块」两类来源）。"""
     p = _home() / ".grok" / "config.toml"
     if not p.exists():
         return {"current": "", "files": [], "note": "未找到 ~/.grok/config.toml"}
     text = _read_text(p)
     key = _toml_get(text, "models", "default")
-    cur = _toml_get(text, f"model.{key}", "model") if key else ""
-    return {"current": cur, "provider": key, "files": [str(p)]}
+    if not key:
+        return {"current": "", "provider": "", "files": [str(p)]}
+    # `[models] default` 允许两种写法，grok 两种都认（2026-10-07 实测）：
+    #   ① 表头键（官方 README 的写法：`default = "company-grok"` → `[model.company-grok]`）
+    #   ② 某个 `[model.*]` 块里的 model **值**（模型 ID 本身）
+    # ⚠ 本机现场正是 ②：文件里是 `default = "alibaba/deepseek-v4.1-flash"`，
+    # 而 `grok models` 报 `Default model: ccr-hub` ⇒ grok 自己会按"值→块"反解出表头。
+    # 设置页要对齐 grok 的口径：current 报**真正发出去的模型 ID**，provider 报表头键。
+    tbl = {}
+    try:
+        import tomllib
+        tbl = tomllib.loads(text).get("model") or {}
+    except Exception:  # noqa: BLE001 —— 读坏了只影响展示
+        tbl = {}
+    if key in tbl:
+        blk = tbl.get(key) if isinstance(tbl.get(key), dict) else {}
+        return {"current": str(blk.get("model") or key), "provider": key, "files": [str(p)]}
+    for name, blk in tbl.items():
+        if isinstance(blk, dict) and str(blk.get("model") or "") == key:
+            return {"current": key, "provider": name, "files": [str(p)]}
+    # 既不是表头也不是任何块的值 ⇒ 内置模型 ID（如官方示例 grok-4.6）
+    return {"current": key, "provider": key, "files": [str(p)]}
 
 
 def _grok_write(model: str):
@@ -449,6 +506,203 @@ def _hermes_write(model: str):
     return [(p, "\n".join(new_lines) + "\n", changes)]
 
 
+# ── 第二阶段（2026-10-07）新增三家的读写器 ──────────────────────────
+#
+# 【用户裁定：模型选择按「原生 + 插入」】
+#   ① **不破坏原生模型**：hub 只往该 agent「本来就要读」的字段里落值，绝不新建/覆盖
+#      agent 自己的模型清单、默认值以外的结构、provider 定义、凭据。
+#   ② **插入要精确**：只动目标 key（逐行定点改写），不整文件重写、不全局替换。
+#   ③ **不破坏 agent 原有代码**：hub 只写配置文件；除 argv 注入外不碰 agent 的安装目录。
+#
+# 本组三家与既有六家最大的不同：它们的 CLI 都用 `--model`，故 **argv 注入是首选通路**，
+# 配置文件写入是「让不带 --model 的启动（如用户自己在终端敲、或续聊）也跟随」的兜底。
+# 两件事互相独立：注入只影响 hub 拉起的会话，配置只影响该 agent 的默认值。
+
+
+def _opencode_path() -> Path:
+    return _home() / ".config" / "opencode" / "opencode.json"
+
+
+def _opencode_read() -> dict:
+    """读 opencode 的默认模型（顶层 `model` = `provider_id/model_id`）。
+
+    ⚠ 本机实测的坑（agent-knowledge/50 第九节）：opencode 是**双登记** ——
+    光把 ID 写进 `opencode.json` 的 provider.models 还不够，CLI 侧还要认这个 ID；
+    两者缺一，`opencode run --model ccr/...` 会回 `UnknownError / Unexpected server error`
+    （**HTTP 层看不出是模型问题**）。所以写入时必须在**同一个 provider** 内登记，
+    而不是凭空造一条。"""
+    p = _opencode_path()
+    if not p.exists():
+        return {"current": "", "files": [], "note": "未找到 ~/.config/opencode/opencode.json"}
+    try:
+        d = json.loads(_read_text(p))
+    except json.JSONDecodeError as e:
+        return {"current": "", "files": [str(p)], "note": f"opencode.json 解析失败：{e}"}
+    return {"current": str(d.get("model") or ""),
+            "provider": "ccr",
+            "extra": {"small_model": str(d.get("small_model") or "")},
+            "files": [str(p)]}
+
+
+def _opencode_write(model: str):
+    """把 `<provider>/<model_id>` 写进顶层 `model`（opencode 的官方默认模型落点）。
+
+    **只在 JSON 的 3 个键上落值**，其余原样保留（json.loads/dumps 保序、缩进 2 格）：
+      model        —— 本次选定值（含 provider 前缀，opencode 要求该形状）
+      small_model  —— 仅当它**本来就等于旧的 model** 时跟随更新。
+                      为什么要这条：本机 `small_model` 与 `model` 原本同值，留旧值会造成
+                      「主模型换了、轻量任务仍走旧模型」的**静默分叉**（用户看到的仍是旧模型在工作）。
+                      ⚠ 只在「两者原本相同」时才跟随 —— 用户若**故意**把 small_model 设成别的模型，
+                      那是他的配置意图，hub 不许替他改。
+      provider.ccr.models —— **精确插入**：仅当目标 ID 不在该 provider 的清单里才追加一条
+                      （`{id, name}`，与既有条目同形）。**不删除、不重排、不动其它 provider**。
+                      这是「插入」二字的落点：opencode 只认清单内 ID，缺了就整个跑不起来。
+
+    ⚠ provider 前缀是**必须**的：本机实测 `/model` 的默认值即 `ccr/...` 形状，
+    而 provider 段已存在（`provider.ccr`），故本函数**不新建 provider**。
+    若该 provider 段不存在 ⇒ 抛错而不是凭空造一个（凭空造会缺 baseURL/apiKey，
+    等于给用户一个连不上的 provider，比报错更坏）。"""
+    p = _opencode_path()
+    text = _read_text(p)
+    d = json.loads(text)
+    prov_id, _, mid = model.partition("/")
+    prov = (d.get("provider") or {}).get(prov_id)
+    if prov_id == model or not mid:
+        # 没有 provider 前缀 ⇒ opencode 无法定位 provider（实测会 UnknownError）
+        raise ModelCfgError(
+            f"OpenCode 的模型 ID 必须带 provider 前缀（形如 ccr/{prov_id}）："
+            f"当前 {model!r} 缺前缀，直接写下去会报 UnknownError", 400)
+    if prov is None:
+        raise ModelCfgError(
+            f"opencode.json 里没有 provider {prov_id!r}（本机应已配好 ccr）。"
+            f"拒绝凭空新建 provider：那样会缺 baseURL/apiKey，等于给一个连不上的配置", 409)
+
+    changes: List[dict] = []
+    old = str(d.get("model") or "")
+    d["model"] = model
+    changes.append({"where": "opencode.json:model", "from": old, "to": model, "op": "set"})
+
+    old_small = str(d.get("small_model") or "")
+    if old_small and old and old_small == old:
+        d["small_model"] = model
+        changes.append({"where": "opencode.json:small_model", "from": old_small, "to": model, "op": "set"})
+
+    ids = list((prov.get("models") or {}).keys())
+    if mid not in ids:
+        prov.setdefault("models", {})[mid] = {"name": mid.split("/", 1)[-1]}
+        changes.append({"where": f"opencode.json:provider.{prov_id}.models.{mid}",
+                        "from": "", "to": f"登记模型（原 {len(ids)} 条 → {len(ids) + 1} 条）",
+                        "op": "add-key"})
+    return [(p, json.dumps(d, ensure_ascii=False, indent=2) + "\n", changes)]
+
+
+def _qoder_path() -> Path:
+    return _home() / ".qoder" / "settings.json"
+
+
+def _qoder_read() -> dict:
+    """读 qoder 的默认模型（`~/.qoder/settings.json` 的 `model.name`，原生模型名）。
+
+    ⚠ 官方文档（docs.qoder.com/cli/custom-models，2026-10-07 实测抓取）明确：
+    BYOK 自定义模型**必须走 `/model` 的 Custom 向导**，且「**不要手工写进 settings.json**」
+    —— 可用 provider/模型/凭据字段由当前账号的 BYOK 目录决定。故 hub **只写原生模型名**，
+    **不替它造 custom provider 配置**（那正是官方禁止的写法，也是"破坏原生"的典型）。
+
+    ⚠ `model.name` 取的是**原生模型名**（如 `Qwen3.8-Max`），不是 CCR 的 provider/model ID。
+    若 hub 侧存着 CCR ID，本函数会如实把「原生值 vs hub 值」的差异摆在设置页，
+    由用户用命令行 `-m` 的注入值去覆盖 —— **不把 CCR ID 塞进这个字段**（塞了 qoder 不认）。"""
+    p = _qoder_path()
+    if not p.exists():
+        return {"current": "", "files": [], "note": "未找到 ~/.qoder/settings.json"}
+    try:
+        d = json.loads(_read_text(p))
+    except json.JSONDecodeError as e:
+        return {"current": "", "files": [str(p)], "note": f"settings.json 解析失败：{e}"}
+    return {"current": str((d.get("model") or {}).get("name") or ""),
+            "provider": "",
+            "files": [str(p)]}
+
+
+def _qoder_write(model: str):
+    """只改 `settings.json:model.name` 一个键，其余（securityScan/permissions/security）原样保留。
+
+    ⚠ 传进来的若是 CCR ID（含 `/` 或 `:`），qoder 不认 —— 这里**拒绝落笔**而不是写进去。
+    为什么必须拒：写进去的后果是「设置页显示已保存、而 qoder 侧 default 变成不存在的模型」，
+    静默失败比报错更难查。CCR 模型在 qoder 上只能靠 `--model` 注入（那种会话里 qoder 只是
+    个普通客户端，模型由 CCR 侧决定），故设置页对近类 agent 的文案要说明这一点。"""
+    p = _qoder_path()
+    text = _read_text(p)
+    d = json.loads(text)
+    if "/" in model or ":" in model:
+        raise ModelCfgError(
+            f"Qoder CLI 的模型名是本家的原生名（如 Qwen3.8-Max），不接受 CCR 的 "
+            f"provider/model ID：{model!r}。要用 CCR 模型请改走「终端 --model 注入」"
+            f"（在终端里拉起 qoder 会话时 hub 会追加 --model）", 400)
+    blk = d.get("model")
+    if not isinstance(blk, dict):
+        blk = {}
+        d["model"] = blk
+    old = str(blk.get("name") or "")
+    blk["name"] = model
+    return [(p, json.dumps(d, ensure_ascii=False, indent=2) + "\n",
+             [{"where": "settings.json:model.name", "from": old, "to": model, "op": "set"}])]
+
+
+def _cursor_path() -> Path:
+    return _home() / ".cursor" / "cli-config.json"
+
+
+def _cursor_read() -> dict:
+    """读 cursor-agent 的默认模型（`~/.cursor/cli-config.json`）。
+
+    落点是**三个同源键**（本机实测，2026-10-06 用 `--model alibaba/deepseek-v4.1-flash`
+    之后 CLI 自己写下来的形状）：`model.modelId` / `selectedModel.modelId` 与
+    `hasChangedDefaultModel` 旗标。`model` 块还被 `modelParameters` 按 ID 索引
+    ⇒ 换模型时要在那里补一条空参数表，否则参数面板查不到当前模型。"""
+    p = _cursor_path()
+    if not p.exists():
+        return {"current": "", "files": [], "note": "未找到 ~/.cursor/cli-config.json"}
+    try:
+        d = json.loads(_read_text(p))
+    except json.JSONDecodeError as e:
+        return {"current": "", "files": [str(p)], "note": f"cli-config.json 解析失败：{e}"}
+    return {"current": str((d.get("model") or {}).get("modelId") or ""),
+            "provider": "ccr",
+            "files": [str(p)]}
+
+
+def _cursor_write(model: str):
+    """精确落 4 处：`model.{modelId,displayModelId,displayName,displayNameShort}`、
+    `selectedModel.modelId`、`modelParameters[model]`、`hasChangedDefaultModel=true`。
+
+    **绝不碰的**：permissions / display / editor / sandbox / attribution / network / hooks
+    —— 这些是用户与 cursor 自己的配置面，hub 只负责「默认模型」这一件事。"""
+    p = _cursor_path()
+    text = _read_text(p)
+    d = json.loads(text)
+    changes: List[dict] = []
+    blk = d.get("model") if isinstance(d.get("model"), dict) else {}
+    old = str(blk.get("modelId") or "")
+    for k in ("modelId", "displayModelId", "displayName", "displayNameShort"):
+        blk[k] = model
+        changes.append({"where": f"cli-config.json:model.{k}", "from": old if k == "modelId" else "",
+                        "to": model, "op": "set"})
+    d["model"] = blk
+    sel = d.get("selectedModel") if isinstance(d.get("selectedModel"), dict) else {}
+    sel["modelId"] = model
+    sel.setdefault("parameters", [])
+    d["selectedModel"] = sel
+    changes.append({"where": "cli-config.json:selectedModel.modelId", "from": "", "to": model, "op": "set"})
+    params = d.get("modelParameters") if isinstance(d.get("modelParameters"), dict) else {}
+    if model not in params:
+        params[model] = []
+        changes.append({"where": f"cli-config.json:modelParameters.{model}",
+                        "from": "", "to": "空参数表", "op": "add-key"})
+    d["modelParameters"] = params
+    d["hasChangedDefaultModel"] = True
+    changes.append({"where": "cli-config.json:hasChangedDefaultModel", "from": "", "to": "true", "op": "set"})
+    return [(p, json.dumps(d, ensure_ascii=False, indent=2) + "\n", changes)]
+
 #: agent_id -> {name, read, write, argv}
 SPECS: Dict[str, dict] = {
     "claude": {"name": "Claude Code", "read": _claude_read, "write": _claude_write},
@@ -457,12 +711,21 @@ SPECS: Dict[str, dict] = {
     "pi": {"name": "Pi Agent", "read": _pi_read, "write": _pi_write},
     "grok": {"name": "Grok CLI", "read": _grok_read, "write": _grok_write},
     "hermes": {"name": "Hermes", "read": _hermes_read, "write": _hermes_write},
+    # ── 2026-10-07 新增三家（用户报障「模型设置里没有 agents 的所有模型」）──
+    "opencode": {"name": "OpenCode", "read": _opencode_read, "write": _opencode_write},
+    "qoder": {"name": "Qoder CLI", "read": _qoder_read, "write": _qoder_write},
+    "cursor": {"name": "Cursor Agent", "read": _cursor_read, "write": _cursor_write},
 }
 
 #: 在册但**不可统一设置**的 agent（理由必须写清，前端据此置灰）
 UNSUPPORTED: Dict[str, str] = {
     "codebuddy": "WorkBuddy 包内 CLI：--model 只认自有清单（hy4-preview/hy3/…），与 CCR 的 provider/model ID 不通用",
     "qwenpaw": "纯 Web 型，无 CLI 与本机模型配置文件",
+    # 2026-10-07 实测取证（不是想当然）：cloudcli --help 的全部命令是
+    # start / sandbox / browser-use-mcp / status / update / help / version，
+    # 无 --model 选项，其模型由内嵌的 claude / codex / opencode 客户端各自决定。
+    "cloudcli": "CloudCLI 是 Web 宿主（cloudcli --help 实测无 --model 选项）："
+                "它的模型由内嵌的 claude/codex/opencode 客户端各自决定，应在对应 agent 上设置",
 }
 
 
@@ -497,6 +760,31 @@ def set_hub_model(agent_id: str, model: str) -> None:
                (agent_id, model, _now()))
 
 
+def clear_hub_model(agent_id: str) -> None:
+    """撤掉 hub 侧默认值（2026-10-07）——**删行，不写空串**。
+
+    为什么要它：设置页有「默认（网关路由）」这个选项，但保存路径只认非空 model
+    ⇒ 用户选它会被 400 拒（`validate_model("")` 抛"模型 ID 为空"），而前端又在
+    自动补预览处静默返回 —— 表现就是**点了保存什么都不发生**。
+    语义上"恢复默认"＝「不再由 hub 注入 --model」＝删掉这行持久化值，
+    而不是存一个空字符串（存空串会让 `drift_report` 的 `if not want: continue` 与
+    `chat_model` 的回退都走到另一条分支，属隐式歧义）。"""
+    _ensure_table()
+    db.execute("DELETE FROM agent_models WHERE agent_id=?", (agent_id,))
+
+
+#: 原生字段与 CCR 模型 ID 形状不同、**不能互比**的 agent（2026-10-07）。
+#: qoder 的 `model.name` 收的是本家原生名（`qwencli --list-models` 实测 Qwen3.8-Max /
+#: Qwen3.8-Flash），CCR 的 `alibaba/xxx` 塞进去不被接受（`_qoder_write` 硬拒）。
+#: ⇒ 它的「hub 持久化值（CCR ID）」与「文件现值（原生名）」本来就**必然不等**，
+#: 拿它们比会**恒报漂移**，而 `repair_drift` 又会去写一个 qoder 不认的值 ⇒ 假警报 + 真风险。
+#: 这类 agent 的漂移比对跳过，由设置页文案说明「CCR 模型只经 --model 注入生效」。
+DRIFT_EXEMPT: Dict[str, str] = {
+    "qoder": "字段为本家原生模型名，与 CCR 的 provider/model ID 不可互比，"
+             "CCR 模型只经终端 --model 注入生效",
+}
+
+
 def chat_model(agent_id: str, requested: Optional[str] = None) -> str:
     """对话 / 任务通道（`POST /api/agents/{id}/chat`）的模型取值。
 
@@ -526,6 +814,8 @@ def drift_report() -> List[dict]:
         want = hub_model(aid)
         if not want:
             continue
+        if aid in DRIFT_EXEMPT:
+            continue                  # 见 DRIFT_EXEMPT：形状不可比，比了是恒假的警报
         try:
             st = SPECS[aid]["read"]()
         except ModelCfgError as e:
@@ -605,6 +895,18 @@ def terminal_argv(agent_id: str, model: str) -> List[str]:
     flag = MODEL_ARGV.get(agent_id)
     if not flag or not model:
         return []
+    # ⚠ 2026-10-07 精准化（判据＝官方 README + 本机实弹）：**grok 的 `-m` 收的是
+    # `[model.*]` 的表头键，不是 provider/model ID**。
+    #   · `grok -m alibaba/qwen3.8-max`       ⇒ 硬报 `unknown model id` 并 exit（实测）
+    #   · `grok -m ccr-hub` / `-m ccr-qwen38-flash` ⇒ 正常，账本 served 精确命中（实测）
+    #   · README 原话：「The name in the TOML header is what appears in the model picker;
+    #     the `model` field is the identifier sent to the API」，示例 `-m my-model` 亦为表头键。
+    # 而 `_grok_write` 恒定把选中的 ID 落进 `[model.ccr-hub].model` 并把 `[models].default`
+    # 指向该键 ⇒ **注入这个键才与配置文件同源、且换任一个模型都不会落空**。
+    # 若这里继续注入裸 ID，只因该 ID「恰好等于某块里的 model 值」才碰巧能用 —— 属侥幸，
+    # 一旦值不再匹配（如又切了一次模型）就会变成 `unknown model id` 硬失败。
+    if agent_id == "grok":
+        return [flag, GROK_PROFILE_KEY]
     return [flag, model]
 
 
@@ -614,6 +916,9 @@ def agent_state(agent_id: str) -> dict:
     if not spec:
         return {"id": agent_id, "supported": False, "writable": False,
                 "reason": UNSUPPORTED.get(agent_id, "不在模型设置白名单内"),
+                # write_mode 统一给 "argv" 之外的语义：这两个 agent 连注入都不做，
+                # 故用 "none"，前端据此不显示"字段认什么"那行（没有字段可认）。
+                "write_mode": "none",
                 "current": "", "hub_model": hub_model(agent_id)}
     try:
         st = spec["read"]()
@@ -625,6 +930,9 @@ def agent_state(agent_id: str) -> dict:
             "current": st.get("current", ""), "provider": st.get("provider", ""),
             "extra": st.get("extra", {}), "note": st.get("note", ""),
             "files": files, "argv": MODEL_ARGV.get(agent_id, ""),
+            # v0.13.85：把「这个 agent 的模型字段认什么」摆到设置页，否则用户会把
+            # 原生名/CCR ID/只有注入三条路混着用，改了不生效却看上去"保存成功"。
+            "write_mode": WRITE_MODE.get(agent_id, "argv"),
             "hub_model": hub_model(agent_id)}
 
 
@@ -650,8 +958,48 @@ def ccr_router_view() -> dict:
     return out
 
 
+def _spec_or_raise(agent_id: str) -> dict:
+    spec = SPECS.get(agent_id)
+    if not spec:
+        raise ModelCfgError(UNSUPPORTED.get(agent_id, f"{agent_id} 不在模型设置白名单内"), 400)
+    return spec
+
+
+def preview_clear(agent_id: str) -> dict:
+    """「默认（网关路由）」的预览：**不写任何文件**，只撤销 hub 侧的注入。
+
+    为什么清空不去改 agent 配置文件（2026-10-07 定）：我们无法知道该文件
+    「原本」是什么值 —— hub 首次落笔时覆盖掉的就是用户原先的默认模型，而那个值
+    只存在于时间戳备份里，不保证还在（可被清理）。凭猜测往用户配置里写一个"默认"
+    是**制造**错误而非修复。故清空的语义严格限定为：「hub 不再注入 --model」。
+    设置页必须把这句原样说出来，否则用户会以为"配置也被还原了"。"""
+    spec = _spec_or_raise(agent_id)
+    return {"agent_id": agent_id, "model": "", "mode": "clear",
+            "write_mode": WRITE_MODE.get(agent_id, "argv"),
+            "hub_model_from": hub_model(agent_id), "hub_model_to": "",
+            "argv": [], "files": [],
+            "note": f"只撤销 hub 侧默认模型，不再向 {spec['name']} 注入 --model；"
+                    f"该 agent 自己的配置文件保持现值不变（不猜测、不回写）。"}
+
+
+def clear_model(agent_id: str) -> dict:
+    """落笔版的清空：删 hub 持久化行。不碰任何配置文件，故无需备份。"""
+    spec = _spec_or_raise(agent_id)
+    was = hub_model(agent_id)
+    clear_hub_model(agent_id)
+    return {"agent_id": agent_id, "model": "", "mode": "clear", "applied": [],
+            "hub_model_from": was, "hub_model_to": "", "argv": [], "at": _now(),
+            "note": f"已撤销 hub 侧默认模型（原 {was or '（无）'}）；"
+                    f"{spec['name']} 的配置文件未改动。"}
+
+
 def preview(agent_id: str, model: str) -> dict:
-    """写前预览：只算 diff，落零字节。"""
+    """写前预览：只算 diff，落零字节。
+
+    `model == ""` ⇒ **清空语义**（对应设置页的「默认（网关路由）」），只撤 hub 侧注入，
+    不动任何 agent 配置文件（理由见 clear_model）。"""
+    if not (model or "").strip():
+        return preview_clear(agent_id)
     model = validate_model(model)
     spec = SPECS.get(agent_id)
     if not spec:
@@ -671,17 +1019,18 @@ def preview(agent_id: str, model: str) -> dict:
                       "writable": os.access(p, os.W_OK),
                       "backup": str(p) + ".bak-<时间戳>-hub-modelcfg-" + agent_id,
                       "changes": [c for c in changes if c.get("op") != "skip"]})
-    return {"agent_id": agent_id, "model": model,
+    return {"agent_id": agent_id, "model": model, "mode": "set",
             "hub_model_from": hub_model(agent_id), "hub_model_to": model,
+            "write_mode": WRITE_MODE.get(agent_id, "argv"),
             "argv": terminal_argv(agent_id, model), "files": files}
 
 
 def apply_model(agent_id: str, model: str) -> dict:
     """落笔：先备份 → 再写 → 再存 Hub 侧。任一步失败即抛错（不半写）。"""
+    if not (model or "").strip():
+        return clear_model(agent_id)
     model = validate_model(model)
-    spec = SPECS.get(agent_id)
-    if not spec:
-        raise ModelCfgError(UNSUPPORTED.get(agent_id, f"{agent_id} 不在模型设置白名单内"), 400)
+    spec = _spec_or_raise(agent_id)
     writes = spec["write"](model)
     for p, _new, _c in writes:
         if not p.exists():
@@ -708,7 +1057,8 @@ def apply_model(agent_id: str, model: str) -> dict:
                 pass
         raise ModelCfgError(f"写入失败已回滚：{e}", 500) from e
     set_hub_model(agent_id, model)
-    return {"agent_id": agent_id, "model": model, "applied": applied,
+    return {"agent_id": agent_id, "model": model, "mode": "set", "applied": applied,
+            "write_mode": WRITE_MODE.get(agent_id, "argv"),
             "argv": terminal_argv(agent_id, model), "at": _now()}
 
 
@@ -749,7 +1099,12 @@ async def settings_models():
 
 
 @router.get("/api/settings/model/preview")
-async def settings_model_preview(agent_id: str, model: str):
+async def settings_model_preview(agent_id: str, model: str = ""):
+    """`model` 允许为空（= 设置页的「默认（网关路由）」，清空语义，见 preview_clear）。
+
+    2026-10-07 修：原先 `model: str` 是必填且空值会在 validate_model 里抛 400，
+    而前端"保存自己补预览"那条路在拿不到 SET_DIFF 时**静默 return** ⇒
+    用户选「默认」再点保存，看日志连一条请求都没有，表现就是"点了没反应"。"""
     try:
         return preview(agent_id, model)
     except ModelCfgError as e:
@@ -763,5 +1118,6 @@ async def settings_model_apply(body: ApplyIn, request: Request):
         out = apply_model(body.agent_id, body.model)
     except ModelCfgError as e:
         raise _guard(e) from e
-    print(f"[settings] 模型设置落笔：{body.agent_id} → {body.model}", flush=True)
+    act = "清空默认模型" if out.get("mode") == "clear" else f"设为 {body.model}"
+    print(f"[settings] 模型设置落笔：{body.agent_id} → {act}", flush=True)
     return out
