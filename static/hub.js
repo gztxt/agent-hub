@@ -2683,12 +2683,44 @@ function termAltScreenBlock() {
          handler 收到的是**参数数组本身** —— `p[0] === 1049`、`Array.isArray(p) === true`、
          `p.params === undefined`。我第一版按 `String(p.params[0])` 取参，`undefined[0]`
          当场抛 TypeError，被下面的 catch 吞掉 ⇒ 返回 false ⇒ 照旧进备用屏；
-         而验收探针 B3 一句 "写 ?1049h 后仍在主屏" 立刻把它抓红。故此处以 `p[0]` 为准、
-         `p.params` 只作老签名的兼容兜底。 */
-      let v;
-      try { v = (p && p[0] != null) ? p[0] : ((p && p.params) ? p.params[0] : null); }
-      catch (e) { v = null; }
-      return TERM_ALT_BLOCKED.has(String(v));
+         而验收探针 B3 一句 "写 ?1049h 后仍在主屏" 立刻把它抓红。故此处以参数数组为准、
+         `p.params` 只作老签名的兼容兜底。
+         ⚠️ 判据从「只看 p[0]」改为「任一参数命中」：DECSET 允许合并（`?1049;1003h`），
+         只认 p[0] 时 `?1003;1049h` 会漏吞 ⇒ 照旧进备用屏。代价是这种合并串被**整条**
+         吞掉（同串里的 1003 鼠标也就丢了）——但两条已知 TUI（jcode/claude）都分开发，
+         而「进了备用屏」是本仓反复报障的形态，两害相权取其轻。 */
+      let vals = [];
+      try {
+        if (p && p.length != null) vals = Array.from(p);
+        else if (p && p.params) vals = Array.from(p.params);
+      } catch (e) { vals = []; }
+      if (!vals.some(x => TERM_ALT_BLOCKED.has(String(x)))) return false;
+
+      /* ★ v0.13.91 根治「jcode 启动嵌入式终端带入乱码」（2026-10-08 用户报障）——
+         病灶：内建 1049h = `saveCursor()` + `activateAltBuffer()`，而 xterm.js 的备用屏是
+         **初始空白的新缓冲**。本函数只吞「进入」、从不切缓冲 ⇒ TUI 会在**旧画面上**按绝对
+         坐标作画：hub 头部（「jcode · 终端」「提示：点『新会话』…」）与 jcode 自己的
+         「Connecting to server...」留在第 0~2 行，和 TUI 首帧叠在一起 —— 用户看到的「乱码」。
+         实测（真 chromium + 本仓 vendor xterm，喂 jcode v0.91.0 真首帧 2895B）：
+           吞而不清 ⇒ 0-2 行残影（`jcode · 终端` / `Connecting to server...`）＋ TUI 正常；
+           吞 + 同步 term.clear() ⇒ 屏面干净、TUI 完好（正是真终端里进备用屏的观感）。
+         对策：吞掉的**同一刻**同步清屏，等价于备用屏那块「空白画布」。
+
+         ⚠️ 必须**同步** `term.clear()`，不能写成 `term.write('\\x1b[2J')`：xterm 的 write 是
+         异步队列，嵌套 write 会被排到本帧全部字节之后 ⇒ 把刚画好的 TUI 一起抹掉
+         （实测那一档：整屏空白、TUI 全丢）。`term.clear()` 直接操作缓冲、同步生效，
+         其后同一帧里的 TUI 字节照常落在干净画布上。
+         ⚠️ `term.clear()` 连 scrollback 一起清（`buffer.lines.length=1`）。对备用屏类 TUI
+         这与真终端「主屏被备用屏遮住」的观感等价；而**要进 scrollback 的 codex 走
+         `--no-alt-screen`、根本不发 ?1049h**，不受影响（见 src/profiles.py）。
+         ⚠️ 已知与 xterm 的差异（如实登记，不做守卫）：xterm 内建 `activateAltBuffer()` 在
+         **已在备用屏时提前返回**（不清），故重复 `?1049h` 不重清；本实现无条件清。
+         实测 jcode v0.91.0 一次会话只发 1 次（喂输入 + 59 对同步块重画后仍是 1 次），
+         codex 走 --no-alt-screen、claude/opencode 开机各一次 ⇒ 现实里不会命中"重复清"。
+         若将来真遇到会重发的 TUI，再加"进入态"守卫（代价是守卫失同步会让残影复发，
+         故此刻意不加）。 */
+      try { term.clear(); } catch (e) { /* 清屏失败也要吞：宁可留残影，绝不放它进备用屏 */ }
+      return true;
     });
   } catch (e) { /* 注册失败：终端仍可用，只是退回「换会话复位」那层兜底 */ }
 }

@@ -79,7 +79,32 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.90"   # 会话计数不再依赖终端口令 + 终端复制粘贴（焦点归还 / 原生粘贴通道）
+VERSION = "0.13.91"   # 吞备用屏时同步清屏（jcode 启动嵌入式终端带入乱码根治）
+#   根因（2026-10-08 用户报障：「agent-hub 的 jcode 启动嵌入式终端时会带入乱码」）：
+#   ① **报障形态与病灶**：v0.13.83 为治 codex「终端滚不动」，把 DECSET 的 1049/1047/47
+#   注册成**吞掉**（termAltScreenBlock，内建 activateAltBuffer 不执行），终端恒在主屏。
+#   内建 `?1049h` 的语义是 `saveCursor + 进备用屏`，而 xterm.js 的备用屏是**初始空白的新缓冲**
+#   —— 只吞、不切缓冲 ⇒ 全屏 TUI 会在**旧画面**上按绝对坐标作画：hub 写在第 0~1 行的头部
+#   （「jcode · 终端」「提示：点『新会话』…」）与 jcode 的 `Connecting to server...` 留在屏上，
+#   和 TUI 首帧叠在一起 —— 用户看到的「乱码」就是这团叠加，真终端里它会被备用屏的空白画布盖掉。
+#   ② **修法与两条硬判据**：吞掉的**同一刻同步** term.clear()，等价于那块空白画布。
+#      (a) 必须**同步**调用：`term.write('\x1b[2J')` 会被 xterm 的异步 write 队列排到本帧
+#      之后、把刚画好的 TUI 一起抹掉（实测那一档：整屏空白、TUI 全丢）；term.clear()
+#      直接操作缓冲、同步生效，同帧其后的 TUI 字节照常落在干净画布上。
+#      (b) 判据从「只看 p[0]」改为「任一参数命中」：DECSET 允许合并（`?1049;1003h`），
+#      只认 p[0] 时 `?1003;1049h` 会漏吞 ⇒ 照旧进备用屏。
+#   ③ **取证与闸门**（真 chromium + 本仓 vendor xterm，喂 jcode v0.91.0 真首帧 2895B）：
+#     吞而不清 ⇒ 第 0~2 行残影（`jcode · 终端` / `Connecting to server...`）+ TUI 正常；
+#     吞 + 同步 term.clear() ⇒ 屏面干净、TUI 完好。
+#   ④ **已知差异（如实登记）**：重复 `?1049h` 本实现会重清，xterm 内建不重清；
+#   实测 jcode 一次会话只发 1 次（喂输入 + 59 对同步块重画后仍 1 次），codex 走
+#   --no-alt-screen 不发、claude/opencode 开机各一次 ⇒ 现实里不会命中。
+#   闸门：`tests/test_term_altclear.py`（5 例静态契约，含分片/产物一致）+
+#   `tests/verify_term_altclear.py`（真浏览器 3 项，含 `HUB_ALT_CLEAR_DISABLE=1` 红向自证）。
+#   本批为**纯静态前端**（static/hub/03-agents-cards.js + 重建 static/hub.js），
+#   下次页面加载即生效，不需要重启服务。
+
+# ── 以下为 v0.13.90 的根因（本版摘要：会话计数不再依赖终端口令 + 终端复制粘贴（焦点归还 / 原生粘贴通道）），保留供追溯，非本版条目 ──
 #   根因（2026-10-07 用户同日两项报障）：
 #   ① **顶栏「会话数」一时显示一时不显示**：该指示读的是 localStorage 里的
 #      `hub.term.token`，没口令就直接放弃渲染。而 localStorage **按 origin 隔离** ——

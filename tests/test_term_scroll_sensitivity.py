@@ -181,8 +181,13 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #     或"省掉那次 focus()"，而失效方式完全安静（探针会红，肉眼看不出来）。
         "0.13.90": ("api/term/activity", "在跑 N · 会话 M", "焦点归还",
                     "preventDefault", "原生粘贴"),
+        # v0.13.91 回到备用屏这条线：v0.13.83「吞掉 ?1049h」的副作用 —— 只吞不清，
+        # TUI 在旧画面上作画 ⇒ 用户报「jcode 启动嵌入式终端带入乱码」。关键词取
+        # 三处最易被后人改坏/删掉的点：拦截函数名、同步清屏这一声、以及"必须同步
+        # （不能改成异步 term.write）"这条判据本身。
+        "0.13.91": ("termAltScreenBlock", "同步清屏", "备用屏", "乱码"),
     }
-    CURRENT_VERSION = "0.13.90"
+    CURRENT_VERSION = "0.13.91"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

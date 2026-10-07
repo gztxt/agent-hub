@@ -1,3 +1,70 @@
+## v0.13.91 — 备用屏「吞而不清」根治：jcode 启动嵌入式终端带入乱码
+
+> 2026-10-08 用户报障：「agent-hub 的 jcode 启动嵌入式终端时 会带入乱码」。
+
+### 一、根因（字节级 + 渲染双重取证）
+
+v0.13.83 为了治 codex 的「终端滚不动」，在解析层把 DECSET 的 `1049/1047/47`
+注册成**吞掉**（`termAltScreenBlock`）—— 内建的 `activateAltBuffer()` 不再执行，
+终端恒在主屏。这条对 codex 是对的（它改走 `--no-alt-screen`），但留下了**副作用**：
+
+内建 `?1049h` 的语义是 `saveCursor()` + 进备用屏，而 xterm.js 的备用屏是
+**初始空白的新缓冲**。本实现**只吞、不切缓冲** ⇒ 全屏 TUI 会在**旧画面**上按绝对
+坐标作画。于是：
+
+```
+第 0 行  jcode · 终端            ← hub 自己写的头部（termConnect / termAutoAttach）
+第 1 行  提示：点「新会话」拉起 jcode 的原生终端
+第 2 行  Connecting to server... ← jcode 自己进备用屏前的最后一行
+第 4..  jcode 的 TUI 首帧（绝对定位）叠在这三行上面
+```
+
+用户看到的「乱码」就是这团叠加。真终端里第 0~2 行会被备用屏的空白画布盖掉。
+
+### 二、修法：吞掉的同一刻**同步**清屏
+
+在 `termAltScreenBlock` 的拦截回调里，命中 `1049/1047/47` 时**同步** `term.clear()`，
+等价于备用屏那块「空白画布」。
+
+- ⚠️ **必须同步**：`term.write('\x1b[2J')` 会被 xterm 的异步 write 队列排到本帧
+  **之后** ⇒ 把刚画好的 TUI 一起抹掉（实测那一档：整屏空白、TUI 全丢）。
+  `term.clear()` 直接操作缓冲、同步生效，同帧其后的 TUI 字节照常落在干净画布上。
+- 判据从「只看 `p[0]`」改为「任一参数命中」：DECSET 允许合并（`?1049;1003h`），
+  只认 `p[0]` 时 `?1003;1049h` 会漏吞 ⇒ 照旧进备用屏。
+- `term.clear()` 连 scrollback 一起清；对备用屏类 TUI 与「主屏被遮住」观感等价，
+  而**要进 scrollback 的 codex 走 `--no-alt-screen`、根本不发 `?1049h`**，不受影响。
+- 与 xterm 的已知差异（如实登记）：重复 `?1049h` 本实现会重清、xterm 内建不重清。
+  实测 jcode 一次会话只发 1 次（喂输入 + 59 对同步块重画后仍 1 次），
+  codex 不发、claude/opencode 开机各一次 ⇒ 现实里不会命中。
+
+### 三、取证（真 chromium + 本仓 vendor xterm）
+
+喂 jcode v0.91.0 **真首帧 2895B**（bytes 级抓取，非手抄）：
+
+| 档 | 首行 | 结论 |
+|---|---|---|
+| 吞而不清（改前） | `jcode · 终端` / `Connecting to server...` 残影 + TUI | 用户报障形态 |
+| 同步 `term.clear()`（改后） | 空白 → TUI 完好 | 正确 |
+| `term.write('\x1b[2J')`（反例） | 整屏空白、TUI 全丢 | 证明"必须同步" |
+
+### 四、闸门
+
+- `tests/test_term_altclear.py`（L0 静态 5 例）：拦截集合完整、任一参数命中、
+  **同步** `term.clear()` 在且未被写成异步、根因注释含报障日期与症状、分片与
+  `static/hub.js` 产物逐字一致。剥注释后再判，防"删真调用只留注释"假绿。
+- `tests/verify_term_altclear.py`（真浏览器 3 项）：A1 仍在主屏 / A2 旧画面已清 /
+  A3 TUI 未误伤；`HUB_ALT_CLEAR_DISABLE=1` 红向自证 A2 立刻转红。
+- 既有 `tests/verify_term_altscreen.py` 16/16 仍 PASS（吞 1049/1047/47、放行
+  2004/1003 的精确点名未变）。
+
+### 五、生效面
+
+纯**静态前端**（`static/hub/03-agents-cards.js` + 重建 `static/hub.js` + 缓存提手
+`templates/index.html`）。下次页面加载即生效，**不需要重启服务**。`src/main.py::VERSION`
+与版本钉、分片/产物对账已同步到 0.13.91。
+
+---
+
 ## v0.13.90 — 会话计数不再依赖终端口令 + 终端复制粘贴（焦点归还 / 原生粘贴通道）
 
 > 2026-10-07 用户同日两项报障：
