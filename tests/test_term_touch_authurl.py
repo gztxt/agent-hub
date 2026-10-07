@@ -348,6 +348,59 @@ class TestTermTouchAuthUrlGates(unittest.TestCase):
         assert "ws" not in assigned, "Session 上出现单一 ws 字段 ⇒ 会退回多观看者互偷字节"
         assert "viewers" in assigned, "viewers 字典不见了（多观看者架构被破坏）"
 
+    # ── ──── G 组：v0.13.89 总开关（用户 2026-10-07 三次报障的裁定：全部静默）
+
+    def test_g1_link_bypass_is_off_by_default(self):
+        """★ 用户裁定「全部静默，连登录提示也不要」⇒ 通道默认必须是关的。
+
+        这条盯的是**默认值**：整条通道的代码全留着（E/F/D 组十几条判据要它留着），
+        所以"关"这件事只由这一个常量表达。谁把它改回 True，本闸门先红。
+        """
+        assert term.LINK_BYPASS_ENABLED is False, \
+            "带外链接通道又默认打开了 ⇒ 终端会重新弹「检测到链接」浮层/插图注"
+
+    def test_g2_switch_gates_before_any_scan_or_frame(self):
+        """★★ 本批主判据（结构钉）：早退必须在**任何状态写入与 send_text 之前**。
+
+        为什么是结构钉：开着通道时"闸在哪一步"看不出区别，只有关掉时才分高下 ——
+        闸在扫描之后等于每块输出照旧做 strip_ansi + 正则 + 维护 url_buf；闸在最前面
+        才是"关掉时每块输出只多一次函数调用"。且只要有一次 send_text 排在早退之前，
+        「全部静默」立刻不成立。故判据读泵里的代码结构（与 f2/e11 同一手法）。
+        搜的是**赋值与 await 调用**而非裸名字：docstring 里也写着 sess.url_buf /
+        sess.last_chunk / send_text，按裸名字搜会自己判自己红。
+        """
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        seg = src[src.index("async def _scan_auth_urls"):src.index("# 回放最近输出")]
+        guard = seg.index("if not LINK_BYPASS_ENABLED:")
+        for later in ("sess.url_buf =", "sess.last_chunk =", "await ws.send_text"):
+            assert guard < seg.index(later), \
+                f"总开关排在 `{later}` 之后 ⇒ 关掉通道仍会扫/仍会发帧"
+        # 早退必须紧跟判据（`return` 就在下一行），不许先做半件事再 return
+        assert seg[guard:guard + 200].splitlines()[1].strip() == "return", \
+            "开关后不是立刻 return ⇒ 中间夹了别的事"
+
+    def test_g3_switch_documents_the_reenable_path(self):
+        """开关处必须写明**怎么再打开**：半年后看到"提示不弹了"才不会当成功能坏了。
+
+        判据取常量上方那段连续注释块：既要有重开动作（把常量改成 True 并重启），
+        也要标明这是哪一版做的裁定（v0.13.89）—— 否则日后无从判断它是否过时。
+        """
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        # 按常量名定位、不写死取值：本组只查"有没有写清重开路径"，取值归 g1 管。
+        m = re.search(r"^LINK_BYPASS_ENABLED = ", src, re.M)
+        assert m, "总开关常量不见了（整条通道的默认档无处表达）"
+        at = m.start()
+        block = []
+        for ln in reversed(src[:at].splitlines()):
+            if ln.lstrip().startswith("#"):
+                block.append(ln)
+            else:
+                break
+        comment = "\n".join(reversed(block))
+        assert "改成 True" in comment, "没说怎么重开这条通道（留开关的意义就没了）"
+        assert "重启" in comment, "没写重开需要重启 hub（src/term.py 是常驻进程内逻辑）"
+        assert "v0.13.89" in comment, "没标这是哪一版的裁定，日后无法判断是否过时"
+
 
 
 if __name__ == "__main__":
