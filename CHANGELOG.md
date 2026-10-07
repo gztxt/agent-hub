@@ -66,8 +66,20 @@ v0.13.83 为了治 codex 的「终端滚不动」，在解析层把 DECSET 的 `
 - `tests/verify_term_altclear_live.py`（真 hub 页面 + 真 jcode + 真 WS，7 项）：
   **稳态 / 不回归**闸门 —— 它**不能**区分修复前后（jcode 的 `2J` 会自愈稳态），
   守的是"真进程路径没被搞坏"。文件头已写清这一定位，避免后人把它当红绿判据。
+- `tests/verify_term_altclear_params.py`（真浏览器 5 项）**判据边界回归**：v0.13.91 把
+  判据改成「任一参数命中」后必须钉住两件相反的事 ——
+  P1 合并鼠标 `?1000;1002;1003;1006h` **照常放行且生效**（`.some` 误判会吞掉鼠标，
+  比备用屏严重）；P2 含 1049 的合并串 `?1003;1049h` 必须被吞（宁可丢同串 1003，
+  也不进备用屏）；P3 空参 `?h` / 重复 `?1049h` 不抛；P4 命中即**同步清屏**（baseY 归 0）。
+  `HUB_ALT_CLEAR_DISABLE=1` 红向自证 P4 转红、P1-P3 仍绿。
 - 既有 `tests/verify_term_altscreen.py` 16/16 仍 PASS（吞 1049/1047/47、放行
   2004/1003 的精确点名未变）。
+
+**回归实测（真进程，非合成）**：
+| 对象 | 结果 | 说明 |
+|---|---|---|
+| claude TUI（影子实例 + 真 claude v2.1.273） | `verify_term_altclear_live` **7/7 PASS** | claude 自身在 `?1049h` 后发 `\x1b[2J`，与我们的清屏同向；它另有一条"fullscreen 起不来就退 classic renderer"的自愈路径，未受影响 |
+| **生产 `:3102`**（真 token + 真 chromium + 真 WS + 真 jcode） | `verify_term_altclear_live` **7/7 PASS** | 屏上无 hub 头部 / 无 `Connecting to server...` 残影，恒在主屏，芯片重连后仍干净 |
 
 ### 五、实测踩坑（写给下一个人）
 

@@ -14,7 +14,7 @@
 
 判据（可断言）：
   E1 页面里真有 jcode 的 TUI（buffer 含 `jcode · client` 或 `server:`）
-  E2 hub 自己写的头部**不在**屏上（`· JCode 终端` / `提示：点「新会话」`）
+  E2 hub 自己写的头部**不在**屏上（`提示：点「新会话」` 那两行）
   E3 jcode 进备用屏前的 `Connecting to server...` **不在**屏上
   E4 仍在主屏（备用屏永不出现）
   E5-E7 点当前会话芯片重连（keepScreen=true 的 ring 回放路径）后仍主屏 / TUI 仍在 / 无残影
@@ -44,7 +44,12 @@ BASE = os.environ.get("HUB_PROBE_BASE", "http://127.0.0.1:3199")
 PORT = int(os.getenv("HUB_PROBE_CDP_PORT", "9454"))
 TOKEN = os.environ.get("HUB_PROBE_TERM_TOKEN", "probe-term-token")
 
-AGENT = "jcode"
+AGENT = os.environ.get("HUB_PROBE_AGENT", "jcode")
+#: TUI 存在的标记（不同 agent 不同）：jcode 有「已登录的 TUI」与「首启 onboarding」两态，
+#: 都可作为"TUI 渲染出来了"的判据；claude 用 "Claude Code"。
+_JCODE_MARKS = ("jcode · client", "server:", "Welcome to jcode onboarding", "Log in to get started")
+_DEFAULT_MARKS = "|".join(_JCODE_MARKS if AGENT == "jcode" else ("Claude Code",))
+TUIMARKS = tuple(x for x in os.environ.get("HUB_PROBE_TUIMARKS", _DEFAULT_MARKS).split("|") if x)
 RES = []
 MADE = []
 
@@ -102,7 +107,7 @@ def main():
         for _ in range(40):
             time.sleep(0.5)
             d = ev(cdp, DUMP) or {}
-            if "jcode · client" in (d.get("text") or "") or "server:" in (d.get("text") or ""):
+            if any(mk in (d.get("text") or "") for mk in TUIMARKS):
                 break
         d = ev(cdp, DUMP) or {}
         text = d.get("text") or ""
@@ -111,9 +116,9 @@ def main():
             print("     | " + ln)
 
         chk("E4 仍在主屏（备用屏永不出现）", d.get("type") == "normal", "type=%s" % d.get("type"))
-        chk("E1 页面里真有 jcode TUI", ("jcode · client" in text) or ("server:" in text))
+        chk("E1 页面里真有 %s 的 TUI" % AGENT, any(mk in text for mk in TUIMARKS))
         chk("E2 hub 头部不在屏上（无 终端 / 提示：点「新会话」残影）",
-            ("JCode 终端" not in text) and ("提示：点「新会话」" not in text))
+            ("提示：点「新会话」" not in text))
         chk("E3 jcode 的 Connecting to server... 不在屏上",
             "Connecting to server..." not in text)
 
@@ -135,11 +140,11 @@ def main():
             for ln in [x for x in t2.split("\n") if x.strip()]:
                 print("     | " + ln)
             chk("E5 芯片重连后仍在主屏", d2.get("type") == "normal", "type=%s" % d2.get("type"))
-            chk("E6 芯片重连后 TUI 仍在", ("jcode · client" in t2) or ("server:" in t2),
+            chk("E6 芯片重连后 TUI 仍在", any(mk in t2 for mk in TUIMARKS),
                 "reconnect=%s" % rec)
             chk("E7 芯片重连**不回放残影**（无 Connecting / 无 hub 头部）",
                 ("Connecting to server..." not in t2)
-                and ("JCode 终端" not in t2) and ("提示：点「新会话」" not in t2))
+                and ("提示：点「新会话」" not in t2))
         else:
             chk("E5-E7 取到会话 id（否则芯片路径测不了）", False)
         return finish(cdp, proc)
