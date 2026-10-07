@@ -37,7 +37,7 @@ v0.13.83 为了治 codex 的「终端滚不动」，在解析层把 DECSET 的 `
   实测 jcode 一次会话只发 1 次（喂输入 + 59 对同步块重画后仍 1 次），
   codex 不发、claude/opencode 开机各一次 ⇒ 现实里不会命中。
 
-### 三、取证（真 chromium + 本仓 vendor xterm）
+### 三、取证（真 chromium + 本仓 vendor xterm + 真 hub 影子的 ring 原始字节）
 
 喂 jcode v0.91.0 **真首帧 2895B**（bytes 级抓取，非手抄）：
 
@@ -47,17 +47,36 @@ v0.13.83 为了治 codex 的「终端滚不动」，在解析层把 DECSET 的 `
 | 同步 `term.clear()`（改后） | 空白 → TUI 完好 | 正确 |
 | `term.write('\x1b[2J')`（反例） | 整屏空白、TUI 全丢 | 证明"必须同步" |
 
+**稳态自愈这一点必须说清（否则会误判本修复无用）**：jcode 在**客户端下发 resize 之后**
+会自己发一次 `\x1b[2J` 整屏重画（实测：全量 ring 3824B 里 `2J` ×1）⇒ **修复前的稳态也是
+干净的**。所以端到端跑完两秒再看，改前改后都正常 —— 报障的「乱码」是
+**客户端 resize 之前的那个窗口**：服务端先 `send_bytes(ring)` 回放一段
+（本轮实测 **245B**，含 `Connecting to server...` + `?1049h`），此时 `?1049h` 被吞且不清，
+残留文字就停在屏上，直到 resize round-trip 后 jcode 的 `2J` 把它抹掉。慢链路（手机/Tailscale）
+上这个窗口肉眼可见。
+
 ### 四、闸门
 
 - `tests/test_term_altclear.py`（L0 静态 5 例）：拦截集合完整、任一参数命中、
   **同步** `term.clear()` 在且未被写成异步、根因注释含报障日期与症状、分片与
   `static/hub.js` 产物逐字一致。剥注释后再判，防"删真调用只留注释"假绿。
-- `tests/verify_term_altclear.py`（真浏览器 3 项）：A1 仍在主屏 / A2 旧画面已清 /
-  A3 TUI 未误伤；`HUB_ALT_CLEAR_DISABLE=1` 红向自证 A2 立刻转红。
+- `tests/verify_term_altclear.py`（真浏览器 3 项）**红绿判据**：喂**真实 245B 回放前缀**
+  （从真 hub 影子的 ring 抓的原始字节，非手抄）+ TUI 首帧；A1 仍在主屏 / A2 旧画面已清 /
+  A3 TUI 未误伤；`HUB_ALT_CLEAR_DISABLE=1` 红向自证 A2 立刻转红（实得屏首 3 行残影）。
+- `tests/verify_term_altclear_live.py`（真 hub 页面 + 真 jcode + 真 WS，7 项）：
+  **稳态 / 不回归**闸门 —— 它**不能**区分修复前后（jcode 的 `2J` 会自愈稳态），
+  守的是"真进程路径没被搞坏"。文件头已写清这一定位，避免后人把它当红绿判据。
 - 既有 `tests/verify_term_altscreen.py` 16/16 仍 PASS（吞 1049/1047/47、放行
   2004/1003 的精确点名未变）。
 
-### 五、生效面
+### 五、实测踩坑（写给下一个人）
+
+- 影子实例**必须从没有 `.env` 的目录起**：主 checkout 的 `.env` 是覆盖模式加载，
+  会把 `TERM_TOKEN` 覆盖成生产值 ⇒ 探针 token 对不上、满屏 401。
+- `pty.fork()` 默认 winsize **0×0** ⇒ TUI 高度 0、一个字节都不画。抓 jcode 首帧前
+  必须 `TIOCSWINSZ`；hub 里也要等客户端 `resize claim` 之后才有 TUI 帧。
+
+### 六、生效面
 
 纯**静态前端**（`static/hub/03-agents-cards.js` + 重建 `static/hub.js` + 缓存提手
 `templates/index.html`）。下次页面加载即生效，**不需要重启服务**。`src/main.py::VERSION`

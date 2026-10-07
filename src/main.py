@@ -93,14 +93,20 @@ VERSION = "0.13.91"   # 吞备用屏时同步清屏（jcode 启动嵌入式终�
 #      直接操作缓冲、同步生效，同帧其后的 TUI 字节照常落在干净画布上。
 #      (b) 判据从「只看 p[0]」改为「任一参数命中」：DECSET 允许合并（`?1049;1003h`），
 #      只认 p[0] 时 `?1003;1049h` 会漏吞 ⇒ 照旧进备用屏。
-#   ③ **取证与闸门**（真 chromium + 本仓 vendor xterm，喂 jcode v0.91.0 真首帧 2895B）：
+#   ③ **取证与闸门**（真 chromium + 本仓 vendor xterm + 真 hub 影子 ring 原始字节）：
 #     吞而不清 ⇒ 第 0~2 行残影（`jcode · 终端` / `Connecting to server...`）+ TUI 正常；
 #     吞 + 同步 term.clear() ⇒ 屏面干净、TUI 完好。
+#     ⚠️ 稳态会自愈：jcode 在客户端 resize 后会自己发一次 `\x1b[2J` 整屏重画（全量 ring
+#     3824B 里 2J ×1）⇒ 改前稳态也干净 —— 报障的「乱码」是**客户端 resize 之前**那段
+#     真实回放（实测 245B，含 `Connecting to server...` + `?1049h`）停留的窗口。
 #   ④ **已知差异（如实登记）**：重复 `?1049h` 本实现会重清，xterm 内建不重清；
 #   实测 jcode 一次会话只发 1 次（喂输入 + 59 对同步块重画后仍 1 次），codex 走
 #   --no-alt-screen 不发、claude/opencode 开机各一次 ⇒ 现实里不会命中。
 #   闸门：`tests/test_term_altclear.py`（5 例静态契约，含分片/产物一致）+
-#   `tests/verify_term_altclear.py`（真浏览器 3 项，含 `HUB_ALT_CLEAR_DISABLE=1` 红向自证）。
+#   `tests/verify_term_altclear.py`（喂真实 245B 前缀，3 项真渲染，
+#   `HUB_ALT_CLEAR_DISABLE=1` 红向自证）+
+#   `tests/verify_term_altclear_live.py`（真 hub+真 jcode 稳态/不回归 7 项；其文件头写清
+#   它不能区分修复前后，别当红绿判据）。
 #   本批为**纯静态前端**（static/hub/03-agents-cards.js + 重建 static/hub.js），
 #   下次页面加载即生效，不需要重启服务。
 

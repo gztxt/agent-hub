@@ -44,14 +44,35 @@ CHROME = (os.environ.get("HUB_CHROME") or shutil.which("chromium")
 HEADER = ("\\x1b[90mjcode \\u00b7 \\u7ec8\\u7aef\\x1b[0m\\r\\n"
           "\\x1b[90m\\u63d0\\u793a\\uff1a\\u70b9\\u300c\\u65b0\\u4f1a\\u8bdd\\u300d\\u62c9\\u8d77 "
           "jcode \\u7684\\u539f\\u751f\\u7ec8\\u7aef\\x1b[0m\\r\\n")
-#: jcode v0.91.0 首帧的形状（真字节 2895B，此处取关键结构）：
-#: 连接提示 + `?1049h` 进入 + 绝对定位的 TUI 首帧（含 CJK 逐列定位，防止宽字符误判）。
-FRAME = ("Connecting to server...\\r\\n"
-         "\\x1b[?1049h"
-         "\\x1b[6;2H\\x1b[1mjcode\\x1b[22m \\u00b7 client"
-         "\\x1b[7;2Hserver: Camp"
-         "\\x1b[18;2H/fs/1000/ftp/\\xe6\\x8a\\x80\\x1b[18;17H\\xe6\\x9c\\xaf"
-         "\\x1b[18;19H\\xe6\\x96\\x87\\x1b[18;21H\\xe6\\xa1\\xa3")
+
+#: **真实回放前缀**（245B，从真 hub 影子实例的 ring 里抓的原始字节，非手抄）：
+#: 这是客户端下发 resize 之前、服务端 `send_bytes(ring)` 回放出去的那一段 ——
+#: `OSC11 查询 + DA1 查询 + "Connecting to server..." + ?1049h + 一串 DECSET/同步块`。
+#: 用户报障的「乱码」就发生在这个窗口（jcode 要等客户端 resize 后才会发 `\x1b[2J` 整屏重画）。
+#: 抓法：POST /api/term/sessions → WS 连上后先收首帧（= ring），取到第一个 `\x1b[2J` 之前的部分。
+REAL_PREFIX_HEX = (
+    "1b5d31313b3f071b5b63436f6e6e656374696e6720746f207365727665722e2e2e0d0a1b5b3f31303439"
+    "681b5b3e37751b5b3f32303034681b5b3f31303034681b5b3f31303030681b5b3f31303032681b5b3f31"
+    "303033681b5b3f31303135681b5b3f31303036681b5d303b6a636f6465071b5b3f32303236681b5b3339"
+    "6d1b5b34396d1b5b35396d1b5b306d1b5b3f32356c1b5b3f323032366c1b5b3f32303236681b5b33396d"
+    "1b5b34396d1b5b35396d1b5b306d1b5b3f32356c1b5b3f323032366c1b5b3f32303236681b5b33396d1b"
+    "5b34396d1b5b35396d1b5b306d1b5b3f32356c1b5b3f323032366c1b5b3f3230323668")
+#: 真实前缀之后 jcode 画的 TUI 首帧形状（取关键结构：绝对定位 + CJK 逐列，防宽字符误判）。
+#: 真机上这段在客户端 resize 之后到达，本探针把它接在同一帧里，A3 才有东西可断言。
+TUI_TAIL = ("\\x1b[6;2H\\x1b[1mjcode\\x1b[22m \\u00b7 client"
+            "\\x1b[7;2Hserver: Camp"
+            "\\x1b[18;2H/fs/1000/ftp/\\xe6\\x8a\\x80\\x1b[18;17H\\xe6\\x9c\\xaf"
+            "\\x1b[18;19H\\xe6\\x96\\x87\\x1b[18;21H\\xe6\\xa1\\xa3")
+
+
+def _js_escape(raw: bytes) -> str:
+    """把原始字节转成可嵌进 JS 双引号字符串的 \\xNN 转义。"""
+    return "".join("\\x%02x" % b for b in raw)
+
+
+#: 喂给页面的一整帧 = 真实回放前缀 + TUI 首帧。`?1049h` 在真实前缀里，
+#: 修复前「吞而不清」⇒ "Connecting to server..." 与头部留在屏上；修复后同步清屏。
+FRAME = _js_escape(bytes.fromhex(REAL_PREFIX_HEX)) + TUI_TAIL
 
 
 def extract_src():
