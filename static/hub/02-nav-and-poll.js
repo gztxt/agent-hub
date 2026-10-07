@@ -280,8 +280,51 @@ function termNotice(s) { if (term) term.write('\r\n\x1b[90m' + s + '\x1b[0m'); }
    （Cb=35 即"无按键按下时的移动"，正是 1003 模式的产物。）
    对策：只认「实时输出」里的鼠标开关指令，回放帧一律不算；未开启时鼠标上报不发给 pty。
    正在跑的 TUI 会自己重新发 \x1b[?1003h（连上时我们已发过 resize，它会重画）→ 届时照常放行。 */
-let termMouseLive = false;
+ let termMouseLive = false;
 const TERM_MOUSE_MODES = new Set(['9', '1000', '1001', '1002', '1003', '1005', '1006', '1007', '1015', '1016']);
+/* ── 鼠标模式分层（v0.13.84）──────────────────────────────────────────────
+   termMouseLive 过去一身二职：既表「app 声明要鼠标」又被 v0.13.81 看门狗
+   在 wheel/mousedown 瞬间置 false。对线性主屏一族（codex/cursor/shell：轮子
+   归 scrollback）这是对的治疗；对全屏重画一族（claude/opencode）它把两条滚动
+   路径同时掐死：它们的历史不在 scrollback（每帧全屏绝对定位重画，主屏 buffer
+   只有一屏高、viewportY 恒 0 —— 真 PTY 实测），「向上翻看」只能把滚轮 SGR
+   上报喂回 pty 由 app 自滚（实测：wheel-up ×12 能把 claude 翻回问句、
+   opencode 钳在顶）。
+   分层后：
+     - termMouseWant = app 在**实时帧**里声明着的模式全集（DECSET h 加、l 删）
+       —— app 的真实意图，只有实时帧与回放信任路径能改写；
+     - termMouseLive = want 非空 —— termSend 上报转发口径，看门狗不再碰它；
+     - xterm 的跟踪态才由 mousedown 摘（拖选/复制归浏览器），mouseup 立即回装。 */
+const termMouseWant = new Set();
+function termMouseWantReset() { termMouseWant.clear(); termMouseLive = false; }
+/* want 缓存（v0.13.84）：per-sid 记「该会话的 TUI 声明过哪些鼠标模式」。
+   为什么必须有它：opencode 开机只断言一次、resize/打字都不重发（真 PTY 实测
+   /tmp/mouse_probe3~7），而 ring 只留最近 64KB —— 会话跑久之后整页刷新，
+   回放尾巴里已经没有那份 DECSET，客户端无从接住 ⇒ 滚轮又回不到 app。
+   可信度：非 shell 画像里 TUI 就是 pty 进程本体，pty 死 ⇒ 会话死 ⇒ ws 收 4410，
+   本表同步清条目 —— 不存在「bash 里 vim 被 SIGKILL」那种残留窗口（shell 画像
+   也不写本表，v0.8.1 的乱码教训原样保留）。 */
+const TERM_WANT_KEY = 'hub.term.mousewant';
+function termWantCachePut(sid, modes) {
+  if (!sid) return;
+  let m = {};
+  try { m = JSON.parse(lsGet(TERM_WANT_KEY, '{}') || '{}'); } catch (e) { m = {}; }
+  if (modes && modes.length) m[sid] = modes; else delete m[sid];
+  const ks = Object.keys(m);
+  for (let i = 0; i < ks.length - 48; i++) delete m[ks[i]];
+  lsSet(TERM_WANT_KEY, JSON.stringify(m));
+}
+function termWantCacheGet(sid) {
+  try { return JSON.parse(lsGet(TERM_WANT_KEY, '{}') || '{}')[sid] || []; } catch (e) { return []; }
+}
+/* 把 app 声明的模式装回 xterm 解析器。⚠️ term.write 是**显示数据流**（pty→画面方向），
+   不是发给 pty —— app 从没感知被摘过，它内部的鼠标状态一直是开的（实测 claude
+   只在重画时重新断言、opencode 开机断言一次就再不重发；不靠回装的话，一次拖选
+   之后 opencode 的滚轮永远回不到 app 手里）。want 为空则什么都不做。 */
+function termMouseArm() {
+  if (!term || !termMouseWant.size) return;
+  try { term.write('\x1b[?' + Array.from(termMouseWant).join(';') + 'h'); } catch (e) {}
+}
 
 /* ── 粘贴闸门（bracketed paste, DECSET 2004）────────────────────────────────
    痛点（方案 P1-3，属**正确性**问题不是锦上添花）：多行脚本粘进终端时，readline 把
@@ -386,11 +429,22 @@ function termScanMouseMode(text) {
   let m;
   TERM_DECSET_RE.lastIndex = 0;
   while ((m = TERM_DECSET_RE.exec(text))) {
-    if (m[1].split(';').some(n => TERM_MOUSE_MODES.has(n))) termMouseLive = (m[2] === 'h');
+    /* v0.13.84 分层：逐模式记账（h 加 l 删），live 由 want 派生。
+       旧实现一条 `termMouseLive = (m[2]==='h')` 会被同帧里后到的非鼠标 DECSET
+       无视、也被看门狗改写 —— app 意图和本端临时态必须分家，见文件上方分层注释。 */
+    for (const n of m[1].split(';')) {
+      if (!TERM_MOUSE_MODES.has(n)) continue;
+      if (m[2] === 'h') termMouseWant.add(n); else termMouseWant.delete(n);
+    }
     /* 2004 与鼠标同批扫描：不同 Set 是因为语义不同（一个是上报开关，一个是粘贴模式开关），
        混进 TERM_MOUSE_MODES 会让「鼠标开关」的判定多认一个不属于它的模式。 */
     if (m[1].split(';').indexOf('2004') >= 0) termBracketed = (m[2] === 'h');
   }
+  termMouseLive = termMouseWant.size > 0;
+  /* 非 shell 画像才落缓存：shell 里 TUI 的开关是「bash 存活期间的过客态」，
+     缓存它 = 给 v0.8.1 乱码开回放后门。 */
+  if (termSid && termSidAgent && termSidAgent !== 'shell')
+    termWantCachePut(termSid, Array.from(termMouseWant));
 }
 
 /* 输入不许静默丢弃：现在的做法是「socket 没开就把 keystroke 吃掉」，用户对着冻屏打字

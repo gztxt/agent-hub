@@ -1,3 +1,43 @@
+## v0.13.84 — 鼠标模式分层：claude/opencode 嵌入式终端「向上翻看」根治（滚轮上报归应用内滚动）
+
+> 2026-10-07，用户续报（v0.13.83 批后）：其他 agent 的嵌入式终端都正常了，
+> **claude 与 opencode 还是不行** —— 不能向上翻内容、输入框点不进。同一套终端，
+> 为什么行为不一致？真 PTY 流分析（/tmp/mouse_probe3~7，原始流 /tmp/dump_*.bin）+
+> CDP 红基线（tests/verify_term_mouse_apps.py 实测 A1 转发 0 条 / A2 翻不到头）定性。
+
+① **机制：agent 的终端契约分两族，旧策略只适配其中一族**。
+   codex/cursor/shell 是「主屏线性输出、不开鼠标」（实测 codex 的 DECSET 清单里
+   压根没有 1000/1002/1003/1006）——历史就在 xterm scrollback 里，v0.13.81 的
+   wheel 复位对它正是正解。claude/opencode 是「备用屏 + 全屏绝对定位重画 +
+   鼠标归我管」：开机即 `?1000;1002;1003;1006h`；?1049h 被 v0.13.83 吞掉后它们
+   被钉在主屏，主屏 buffer 只有一屏高（viewportY 恒 0）——**scrollback 里没有
+   可读历史**；「向上翻看」只剩一条路：滚轮 SGR 上报喂回 pty 由 app 自滚
+   （实测 wheel-up×12 能把 claude 翻回问句原文、opencode 钳在顶部）。
+   而看门狗把每次 wheel 当复位事件：`activeProtocol` 切 NONE（上报不生成）+
+   `termMouseLive=false`（闸门停转发）⇒ 两条滚动路径同时掐死。
+
+② **分层修法**：意图与临时态分家。`termMouseWant` 按实时帧 DECSET 逐模式记账
+   （h 加 l 删），`termMouseLive` 由 want 派生 —— 看门狗复位**不再改 live**，
+   只动 xterm 解析态。wheel 分层：live ⇒ 放行上报（应用内翻历史）；!live ⇒
+   维持 v0.13.81 自愈 + 原生 scrollback。mousedown 复位保留（拖选复制、点击
+   不被 TUI 抢焦点 = 用户裁定原样），mouseup 绑 window 立即 `termMouseArm()`
+   回装 —— 实测 claude 重画会重新断言、**opencode 只开机断言一次**（resize/
+   打字都不重发），漏装一次它的滚轮就永久回不来，不能赌 app 行为。
+
+③ **重连与结束**：非 shell 画像里 TUI 就是 pty 本体（pty 死 ⇒ 会话死 ⇒ ws 收
+   4410），回放尾巴/首帧里的鼠标声明就是现势 ⇒ 扫 want 并回装；ring 被增量帧
+   挤掉时从 per-sid 的 localStorage 缓存（`hub.term.mousewant`）接住。shell 画像
+   维持 v0.8.1 口径不信任回放（「bash 里 vim 被 SIGKILL 后跟踪态焊死」的乱码面
+   靠这条挡住）。4404/4410 收口时 want 与缓存同步清零 ⇒ wheel 立刻回原生
+   scrollback，防「死轮」。
+
+④ **新增 L2 闸门** `tests/verify_term_mouse_apps.py`：真 claude/opencode 会话
+   判 A1 轮上报转发数 ≥18、A2 屏上出现 transcript 开头、A3 viewportY 不动
+   （滚动在 app 内）、B1 拖选复制不回退、C1 shell 线性对照零转发、D1 kill 后
+   自愈。v0.13.83 上跑 = 3/10（A 组全红）；修复后全绿。踩坑留痕：`chatPick`
+   不对齐会被轮询 termDetach（假红成「服务端杀会话」）；`termWs.send` 载荷是
+   JSON 串，判上报要先 parse 再比对（直接 indexOf ESC 永不命中）。
+
 ## v0.13.83 — 终端恒在主屏（吞 ?1049h）+ 输入控件去鼠标 + cursor 历史会话接入
 
 > 2026-10-07，用户报障（PT-20261006-01 续）。三条同一批裁定。

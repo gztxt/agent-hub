@@ -504,17 +504,19 @@ function ensureTerm() {
    实测数据（probe_final_watchdog.py，1003 跟踪态下）：
      首滚一格 viewportY 50→40（恢复滚动）｜首拖选 sel=12 选中文本（恢复复制）
      纯点击 mode any→none（点击回到浏览器，不再被 TUI 抢焦点）
-   设计约束（改这几行前先读）：
-     - 只在 mouseTrackingMode !== 'none' 时动手：正常态零开销、不碰任何行为。
-     - mousedown 也复位：拖选第一帧（mousedown）就把协议切回 NONE，
-       xterm 自带选择才能在这帧启动（实测只挂 wheel 时 sel 选不中）。
-       代价：跟踪态下的纯点击也会回到浏览器行为 —— 这正是用户要的「点终端
-       不再被 TUI 抢焦点」；TUI 的鼠标交互需要它自己重新发开启序列，它仍在
-       DRAW 循环里时会即刻重新开起来。
-     - termMouseLive 同步置 false：与 hub 的鼠标上报闸门口径一致，
-       否则 termSend 还会把 SGR 上报当有效数据发给 pty。
-     - 只绑一次（dataset 标记），#termEl 是整页生命周期同一个节点。 */
-let termMouseResetBound = false;
+    设计约束（改这几行前先读）：
+      - 只在 mouseTrackingMode !== 'none' 时动手：正常态零开销、不碰任何行为。
+      - mousedown 也复位：拖选第一帧（mousedown）就把协议切回 NONE，
+        xterm 自带选择才能在这帧启动（实测只挂 wheel 时 sel 选不中）。
+        代价：跟踪态下的纯点击也会回到浏览器行为 —— 这正是用户要的「点终端
+        不再被 TUI 抢焦点」。
+      - ⚠️ v0.13.84 起本复位**不再动 termMouseLive**：那是 app 的意图（want 表
+        派生），本端临时摘合装由 mouseup 的 termMouseArm() 负责。旧口径
+        「termMouseLive 同步置 false」会把 claude/opencode 这类全屏 TUI 的
+        应用内滚动永久掐死（它们的历史不在 scrollback，只有轮子上报喂回 pty
+        这一条路 —— 真 PTY 实测与 tests/verify_term_mouse_apps.py 红基线）。
+      - 只绑一次（dataset 标记），#termEl 是整页生命周期同一个节点。 */
+ let termMouseResetBound = false;
 function termMouseResetNow() {
   /* 同步切协议：让当次 wheel/mousedown 事件立刻回到浏览器默认路径 */
   try {
@@ -523,9 +525,16 @@ function termMouseResetNow() {
       term._core.coreMouseService.activeProtocol = 'NONE';
   } catch (e) { /* 内部结构升级就退回纯异步复位，不抛 */ }
   if (term && term.modes.mouseTrackingMode !== 'none') {
-    termMouseLive = false;              // 与上报闸门口径对齐
-    try { term.write(TERM_MOUSE_OFF); } catch (e) {}   // 异步补：让对端也退出
+    try { term.write(TERM_MOUSE_OFF); } catch (e) {}   // 只清本端解析态（见 termMouseArm 注释）
   }
+}
+/* wheel 分层入口（v0.13.84）：
+   - app 声明要鼠标（live）⇒ 什么都不做：让 xterm 生成本格滚轮上报，
+     termSend 闸门放行 ⇒ 上报进 pty ⇒ 全屏 TUI 应用内翻历史（用户判据「向上翻看内容」）；
+   - 未声明（shell/codex/线性族）⇒ 维持 v0.13.81 自愈复位，当次事件走原生 scrollback。 */
+function termWheelNow() {
+  if (termMouseLive) return;
+  termMouseResetNow();
 }
 function termMouseResetBind() {
   const el = term && term.element;
@@ -533,8 +542,17 @@ function termMouseResetBind() {
   el.dataset.mouseResetBound = '1';
   /* capture 阶段 + passive：抢在 xterm 任何内部处理器之前，且不吞事件。
      mousedown 走捕获是为了纯点击也能复位（用户诉求「不抢焦点」）。 */
-  el.addEventListener('wheel', termMouseResetNow, { capture: true, passive: true });
+  el.addEventListener('wheel', termWheelNow, { capture: true, passive: true });
   el.addEventListener('mousedown', termMouseResetNow, { capture: true });
+  /* 松手即回装 app 声明的跟踪态：拖选/点击归浏览器的窗口只到 mouseup 为止，
+     下一次 wheel 立刻回到「喂给 app」的分层上。绑在 window：选区常越出终端盒，
+     element 上的 mouseup 会漏装（实测漏装后 wheel 回不来，只有等 app 重画重新断言
+     —— claude 会、opencode 不会，不能赌 app 行为）。
+     ⚠️ 必须 bubble + 下一个宏任务：窗口 capture 会抢在 xterm 自己的 mouseup
+     （document/element bubble）之前把跟踪态装回去，xterm 的 mouseup 一看
+     「鼠标归 app」就把刚建立的选区清了（v0.13.84 第一版实测 B1 双红）。
+     bubble 在事件流最后，setTimeout(0) 再让出一步，选区落定后装回才安全。 */
+  window.addEventListener('mouseup', function () { setTimeout(termMouseArm, 0); });
 }
 
 /* ── 备用屏永久关闭（v0.13.83）──────────────────────────────────────────────
@@ -831,7 +849,7 @@ function termConnect(sid, agent, opts) {
      不手动改 class 的话 .cur 会停在旧芯片上（实测缺陷：点 first 后 cur 仍在 second）。 */
   const row = $('termSessList');
   if (row) row.querySelectorAll('.sess-item').forEach(x => x.classList.toggle('cur', x.dataset.sid === sid));
-  termMouseLive = false;   // 新连接：鼠标开关从零判定，别继承上一会话的状态
+   termMouseWantReset();   // 新连接：鼠标意图从零判定（v0.13.84 连 want 表一起清），别继承上一会话
   termBracketed = false;   // 粘贴模式同理：新会话的 2004 要等它自己实时发来才算数
   termHealPending = false; // 上一条会话攒下的补画请求作废，新连接的回放自己会再挂
   if (!o.reconnect) termToastClear();   // 用户主动接的线：收掉「正在重连」提示；自动重连则留到 hb 往返成功才结案
@@ -866,12 +884,27 @@ function termConnect(sid, agent, opts) {
     if (replayFrame) {
       replayFrame = false;
       termWriteReplay(raw);   // 回放走闸门：历史里的终端查询不许替它作答
-      /* 复位本端解析态：只清**鼠标模式**（回放里那些过期开关不算数）。
-         v0.13.83 起备用屏不再需要在这里复位 —— `?1049h` 已在解析层被
-         termAltScreenBlock() 吞掉，终端从进来的那一刻起就恒在主屏，
-         没有「换会话时把上一会话拖进去的备用屏踢出来」这件事了。
-         于是 keepScreen 与否不再影响本行，两个分支合并成一条。 */
-      term.write(TERM_MOUSE_OFF);
+      /* 回放帧的鼠标态分两类（v0.13.84）：
+         - 非 shell 画像：TUI 本身**就是 pty 进程**，会话活着 ⇔ TUI 活着
+           （死了这条线立刻 4410 收口），ring 尾巴里那份鼠标声明就是现势。
+           opencode 开机只断言一次、永不重发（真 PTY 实测）—— 重连时若不从这里
+           接住，它的应用内滚动永远回不来；顺带这也治了「新会话无回放、首帧
+           被当 replayFrame 跳过扫描」的盲区（claude 红基线里 rep=0 有它一半）。
+           want 表照扫，xterm 态按 want 回装；
+         - shell 画像维持 v0.8.1 口径：历史里的过期开关不算数
+           （bash 里跑完 vim 被 SIGKILL 没发 DECRST，回放会把跟踪态焊死在屏上），
+           清掉即可，用户随后开 TUI 由实时帧正常接管。 */
+      if (termSidAgent && termSidAgent !== 'shell') {
+        termScanMouseMode(termDecodeFrame(raw));
+        /* ring 尾巴已被增量帧挤掉时（长会话刷新），从 per-sid want 缓存接住。 */
+        if (!termMouseWant.size) {
+          termWantCacheGet(sid).forEach(n => termMouseWant.add(n));
+          termMouseLive = termMouseWant.size > 0;
+        }
+        termMouseArm();
+      } else {
+        term.write(TERM_MOUSE_OFF);
+      }
       termHealBlank();   // 回放可能只是 64KB 尾巴里的半屏，见函数注释
       return;
     }
@@ -889,6 +922,12 @@ function termConnect(sid, agent, opts) {
     termHbStop();               // 本线心跳随本线收尸；重连成功后由新 socket 重新起一条
     const code = ev.code;
     if (code === 4404 || code === 4410) {   // 已退出/不存在 → 明确提示并刷新列表，绝不重连
+      /* 会话已死 ⇒ app 的鼠标意图同归零（pty 本体就是 TUI，这条 close 即死讯，
+         SIGKILL 也没有「bash 还活着」的残留窗口）：清 want + 缓存。
+         没有这步，之后在同一页里 wheel 会因 live 卡在 true 而被当上报喂给空气——
+         「死轮」，比报障原文更难看。 */
+      termWantCachePut(termSid, null);
+      termMouseWantReset();
       termNotice('[该会话已结束或不存在——点行1 芯片重连，或按「新会话」]');
       termToast('终端会话已结束，请重新打开', 'err');
       termDetach(); termRefreshList();

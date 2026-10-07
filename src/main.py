@@ -79,7 +79,38 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.83"   # 终端恒在主屏（吞 ?1049h）+ 输入控件去鼠标 + cursor 历史会话接入
+VERSION = "0.13.84"   # 鼠标模式分层：全屏 TUI（claude/opencode）的滚轮上报归应用内滚动
+#   根因（2026-10-07 续报；取证：真 PTY 流分析 /tmp/mouse_probe3~7 + CDP 红基线
+#   tests/verify_term_mouse_apps.py 实测 A1 rep=0/A2 翻不到头）：
+#   v0.13.81/82/83 的「看门狗复位 + 吞 1049」对**主屏线性输出、不开鼠标**的 agent
+#   （codex/cursor/shell）成立 —— 历史在 scrollback 里，把 wheel 还给原生滚动就是正解。
+#   但 claude/opencode 的终端契约是「备用屏 + 全屏绝对定位重画 + 鼠标归我管」：
+#   ① 开机即 DECSET ?1000;1002;1003;1006h；实测 claude 重画时重新断言、opencode
+#      只断言一次（resize/打字都不重发）；
+#   ② ?1049h 被吞后它们被钉在主屏，主屏 buffer 只有一屏高（viewportY 恒 0）——
+#      scrollback 里**没有**可读历史；「向上翻看」只剩一条路：滚轮 SGR 上报喂回
+#      pty 由 app 自滚（实测 wheel-up×12 claude 翻回问句、opencode 钳在顶）；
+#   ③ 看门狗把每次 wheel 当复位事件：activeProtocol 切 NONE（上报压根不生成）+
+#      termMouseLive=false（闸门停转发）⇒ 两条滚动路径同时掐死。
+#   这就是「同一套嵌入式终端，别的都好了、就这俩还不行」的全部机制。
+#   修复（分层；实现与现场注释见 02-nav-and-poll.js/03-agents-cards.js 的 v0.13.84 段）：
+#   ① 意图与临时态分家：termMouseWant 按实时帧 DECSET 逐模式记账（h 加 l 删），
+#      termMouseLive 由 want 派生；看门狗复位**不再改 live**，只动 xterm 解析态。
+#   ② wheel 分层：live ⇒ 不复位，当格上报进 pty（应用内翻历史）；!live ⇒ 维持
+#      v0.13.81 自愈 + 原生 scrollback。
+#   ③ mousedown 复位保留（拖选复制、点击不被 TUI 抢焦点 = 用户裁定原样），
+#      mouseup 绑在 window 上立即 termMouseArm() 回装（选区常越出终端盒，
+#      element 级 mouseup 会漏装；opencode 不重发，漏装=滚轮永久回不来）。
+#   ④ 重连信任：非 shell 画像里 TUI 就是 pty 本体（pty 死⇒会话死⇒4410），
+#      回放尾巴/首帧的鼠标声明即现势 ⇒ 扫 want 并回装；ring 被增量帧挤掉时
+#      从 per-sid 的 localStorage 缓存接住。shell 画像维持 v0.8.1 口径：
+#      回放不算数（挡住「bash 里 vim 被 SIGKILL 后跟踪态焊死」的乱码面）。
+#   ⑤ 会话结束（4404/4410）：want 与缓存同步清零 ⇒ wheel 立刻回原生 scrollback，
+#      防「死轮」。
+# ⚠️ 已知边界：TUI 用键位自行关鼠标但不发 DECRST 的 app —— want 会滞留，
+#   回装的多余上报只会被 app 忽略（pty 本体判据挡着），无乱码面，接受。
+
+# ── 以下为 v0.13.83 的根因（本版摘要：终端恒在主屏（吞 ?1049h）+ 输入控件去鼠标 + cursor 历史会话接入），保留供追溯，非本版条目 ──
 #   根因与修复（三条，2026-10-07 用户裁定）：
 #   ① **备用屏从根上禁止**：v0.13.82 是「换会话那帧补写退出序列 + 手点逃生按钮」，
 #      用户裁定改为嵌入式终端**只用主屏** —— 在解析层把 DECSET 的 1049/1047/47 注册成

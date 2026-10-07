@@ -146,8 +146,13 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #   方向相反 —— 所以 0.13.82 的 TERM_ALT_OFF 在代码里已不存在，只留在注释与 CHANGELOG。
         "0.13.83": ("termAltScreenBlock", "pointer-events", "cursor_json",
                     "#termFindInput", "hasConversation"),
+        # 0.13.84：同一套嵌入式终端「别的 agent 好了、claude/opencode 还不行」。机制分层：
+        #   全屏 TUI 的历史不在 scrollback（主屏一屏高、viewportY 恒 0），向上翻只能把
+        #   滚轮 SGR 上报喂回 pty 由 app 自滚。want（app 意图）与 xterm 临时态分家、
+        #   wheel 分层、mouseup 回装、非 shell 回放信任 + per-sid 缓存、4410 清零防死轮。
+        "0.13.84": ("termMouseWant", "termMouseArm", "4410", "死轮", "应用内滚动"),
     }
-    CURRENT_VERSION = "0.13.83"
+    CURRENT_VERSION = "0.13.84"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
