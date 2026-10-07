@@ -149,11 +149,125 @@ class TestTermTouchAuthUrlGates(unittest.TestCase):
 
 
     def test_d2_frontend_consumes_authurl_before_writing(self):
-        """前端必须在 term.write 之前拦下 auth_url，否则 JSON 原文会出现在画面上。"""
+        """前端必须在 term.write 之前拦下链接帧，否则 JSON 原文会出现在画面上。
+
+        v0.13.87：帧处理从 `termAuthUrl(...)` 改成 `termLinkAnno(...)`（两路分文案），
+        锚点随之更新 —— 判据没变：**拦在写画面之前**。"""
         js = (REPO / "static" / "hub" / "03-agents-cards.js").read_text(encoding="utf-8")
         i_auth = js.index("auth_url")
+        i_handler = js.index("termLinkAnno(", i_auth)
         i_write = js.index("term.write(raw)", i_auth)
-        assert i_auth < i_write, "auth_url 处理在 term.write 之后 ⇒ 来不及拦截"
+        assert i_handler < i_write, "链接帧处理在 term.write 之后 ⇒ 来不及拦截"
+
+
+    # ── ──── E 组：v0.13.87 双通道（用户报障「总是提示登录链接」的回归闸门）
+
+    def test_e1_plain_doc_url_is_not_reported_as_login(self):
+        """★ 本批主判据：普通文档/仓库链接**不许**走登录通道。
+
+        取证形态就是用户报障时 pty 里真实存在的两行（2026-10-07）：
+        agent 印一条参考链接，旧实现一律弹「检测到登录链接」。"""
+        for line in ("See https://github.com/openai/codex for details",
+                     "docs: https://code.claude.com/docs/en/model-config"):
+            assert term._scan_login_urls(line) == [], f"文档链接被当成登录链接播了：{line}"
+
+    def test_e2_real_login_prompt_is_still_reported(self):
+        """真登录提示必须照旧播 —— 闸门收紧不能把正当功能一起收掉。
+
+        文案逐字取自本机实测（claude setup-token v2.1.292，含断行）。"""
+        buf = ("Browser didn't open? Use the url below to sign in (c to copy)\n"
+               "\nhttps://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a\n")
+        got = term._scan_login_urls(buf)
+        assert any("claude.com/cai/oauth/authorize" in u for u in got),             f"真登录 URL 没播：{got}"
+
+    def test_e3_page_channel_reports_link_without_calling_it_login(self):
+        """页面通道：文档链接仍要能被点开（用户真正要的那个需求），但走 page_url。"""
+        line = "参考 https://code.claude.com/docs/en/model-config 已确认"
+        assert term._scan_page_urls(line) == ["https://code.claude.com/docs/en/model-config"]
+        assert term._scan_login_urls(line) == [], "页面链接串到了登录通道"
+
+    def test_e4_page_channel_needs_prose_on_the_same_line(self):
+        """裸 URL 行（成片机器输出）不许刷弹窗：同行没有正文词就不播。"""
+        assert term._scan_page_urls("https://github.com/openai/codex") == []
+        assert term._scan_page_urls("  https://a.example.com/x/y/z  ") == []
+
+    def test_e5_cues_are_phrases_not_bare_words(self):
+        """★ 线索词**只能是短语**：裸单词会命中普通文档句（本次误报的同款成因）。
+
+        判据是可机读的形状约束（必须带空格/连字符/冒号分隔），不是「我记得别写裸词」——
+        否则后来人为了"多认几种提示"很容易把 `auth` 加回去，误报就整批回来。
+        """
+        for c in term.DEFAULT_AUTH_CUES:
+            assert any(ch in c for ch in " -:"), f"线索表混进了裸单词：{c!r}"
+        # 反向验证：裸单词当线索时**确实**会误报 ⇒ 证明这条形状约束是必要的
+        assert term.url_has_auth_cue("the auth module lives here",
+                                     cues=["auth"]) is True
+        assert term.url_has_auth_cue("the auth module lives here") is False
+
+    def test_e7_cue_window_does_not_reach_earlier_doc_links(self):
+        """★ 线索词的判定范围必须**限定在 URL 邻近**，不能是整个滚动窗口。
+
+        实测踩到（v0.13.87 第一版，影子实例真跑）：真登录提示出现后，屏上**先前的**
+        文档链接会被追认成"登录"——连播 3 条误报。根因是拿 16KB 滚动窗口整体比对，
+        于是任何"远处"的线索都能回头污染旧 URL。"""
+        buf = ("See https://github.com/openai/codex for details\n"
+               + "filler\n" * 40
+               + "Use the url below to sign in\n"
+                 "https://claude.com/cai/oauth/authorize?code=true&client_id=abc123\n")
+        got = term._scan_login_urls(buf)
+        assert any("oauth/authorize" in u for u in got), f"真登录没播：{got}"
+        assert not any("github.com/openai/codex" in u for u in got), \
+            f"40 行开外的文档链接被追认成登录（判定窗口太大）：{got}"
+
+    def test_e9_cue_direction_is_respected(self):
+        """★ 线索词自带方向：**上一行**的 URL 不许被**下一行**的登录话术追认。
+
+        影子实例实测（v0.13.87 第二轮）：`echo "gateway http://127.0.0.1:3456/v1 is up"`
+        的输出在上一行，紧接着是 printf 出来的 "Use the url below to sign in"
+        —— 那条**本机网关地址**被判成了登录链接。线索说的是"URL 在下面"，
+        它就不该认自己**上方**的 URL。这是可证伪的判据，故钉成用例。"""
+        buf = ("gateway http://127.0.0.1:3456/v1 is up\n"
+               "Use the url below to sign in\n"
+               "https://claude.com/cai/oauth/authorize?code=true&client_id=abc123\n")
+        got = term._scan_login_urls(buf)
+        assert not any("127.0.0.1:3456" in u for u in got), \
+            f"上方的本机地址被下方线索追认成登录：{got}"
+        assert any("oauth/authorize" in u for u in got), f"真登录没播：{got}"
+
+    def test_e11_auth_channel_wins_over_page_channel(self):
+        """同一条 URL 命中登录路就不在页面路重复播（否则屏上留两行、弹两次）。
+
+        判据读**代码结构**而非注释：泵里必须先把 auth 结果传进 page 的过滤。"""
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        seg = src[src.index("async def _scan_auth_urls"):src.index("# 回放最近输出")]
+        assert "auth_urls = _scan_login_urls(" in seg, "登录路结果没被单独取出"
+        assert "if u not in auth_urls" in seg, "页面路没被登录路去重 ⇒ 同一 URL 会播两次"
+
+
+    def test_e10_post_direction_cue_still_works(self):
+        """方向分表不能把「URL 在前、话术在后」那类真提示误杀（press enter to open）。"""
+        buf = ("https://cli.example.com/device?code=ABCD-1234\n"
+               "Press Enter to open the browser and continue\n")
+        got = term._scan_login_urls(buf)
+        assert any("cli.example.com/device" in u for u in got), f"后置线索被误杀：{got}"
+
+    def test_e8_shell_prompt_is_not_glued_onto_url(self):
+        """折行续接不许把 shell 提示符粘进 URL 尾巴。
+
+        实测踩到（影子实例真跑）：`user@host:/path$` 的字符恰好全在 URL 续接字符
+        集里，被当成上一行的续接 ⇒ 生成 `...abc123gztxt@zzst:/tmp$` 这种 404 链接。"""
+        buf = ("https://cli.example.com/oauth/authorize?code=true&client_id=abc123\n"
+               "gztxt@zzst:/tmp$ \n")
+        assert term._join_wrapped_urls(buf) == [], \
+            f"提示符被粘进了 URL：{term._join_wrapped_urls(buf)}"
+
+    def test_e6_backend_emits_distinct_types(self):
+        """服务端必须发两种 type，且页面路 auto 恒 False（普通链接不许自动弹浏览器）。"""
+        src = (REPO / "src" / "term.py").read_text(encoding="utf-8")
+        seg = src[src.index("async def _scan_auth_urls"):src.index("# 回放最近输出")]
+        assert '"auth_url" if ch == "auth" else "page_url"' in seg, "两种 type 没分开发"
+        assert 'auto = ch == "auth" and' in seg, "页面路没被钉成 auto=False"
+        assert "send_text" in seg and "put_nowait" not in seg, "带外通道纪律被破坏"
 
 
     def test_d3_authurl_sent_per_viewer(self):

@@ -22,12 +22,13 @@ import termios
 import time
 import uuid
 import fcntl
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+import db
 import modelcfg
 import profiles
 import sessions_store
@@ -54,11 +55,57 @@ _WRITE_RETRY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR})
 _REAP_EOF_CONFIRM = 3
 
 # ── auth_url 旁路（P2/P3，v0.13.64）────────────────────────────────────────
+# v0.13.87 双通道改造（用户 2026-10-07 报障「嵌入式终端总是提示登录链接」）：
+# 原来只有一条通道，判据是「pty 输出里出现 http(s) URL」⇒ 凡是 agent 印一条文档/
+# 仓库地址（`See https://github.com/openai/codex`、`https://code.claude.com/docs/...`）
+# 就弹「检测到登录链接，点此打开 ↗」—— 纯误报，它根本不是登录链接。
+# 现拆成两条，判据各归各：
+#   ① 登录通道 `_scan_login_urls` —— URL **必须**配上同一扇输出里的登录线索词
+#      （见 DEFAULT_AUTH_CUES）才播。线索是**准入条件**而非加分项：宁可漏一次登录
+#      提示（画面里 URL 仍可复制，只是少了可点按钮），也不能再把文档链接叫登录。
+#      用户口径（2026-10-07）：本机所有终端都**不需要登录**（凭据在 env/配置文件里，
+#      各 agent 自读），故①的收益本来就极小、误报代价却极大。
+#   ② 页面通道 `_scan_page_urls` —— 无线索词，但 URL 与一句人话同处一行时播
+#      `page_url`（文案必须走正文归一化，**不许**再叫「登录」）。这不丢用户真正要的
+#      「agent 贴了链接让我打开」。
+# 线索表留运维口子（DB `auth_url_cues` / 环境变量，逗号分隔）。
 # 为什么要在**服务端**做：URL 出现在 pty 输出字节流里，而前端拿到的是「已经过
 # 一轮 JSON/WS 封装」的数据；更关键的是要看到未渲染的原始行，才能把被终端宽度
 # 折断的 URL 拼回来（见 _scan_urls 的跨行拼接）。
 URL_SCAN_MAX = 16384      # 扫描窗口上限（16KB）。够覆盖一屏多行，不会无界增长
 URL_MIN_LEN = 20          # 短于此不像真的登录 URL（避免把 http://x 这类噪声弹出去）
+#: 登录线索词（**准入条件**），分**方向**两类。取证来源：本机实测的真实 OAuth 提示
+#: （`claude setup-token` v2.1.292）原文 —— "Browser didn't open? Use the url
+#: below to sign in (c to copy)"；其余取自各 CLI 的 device-flow / OAuth 惯用文案。
+#:
+#: ★ 形状要求：**不许出现"光秃秃的单词"**（`auth` / `login` / `oauth` / `signin` /
+#: `authenticate` 这类）。理由可证：这类词在技术文档与代码讨论里随处可见
+#: （"the auth module"、"authenticate with the API"），一旦入表就等于把误报装回去。
+#: 故一律要求带分隔（空格/连字符/冒号）的**短语**。
+#: `tests/test_term_touch_authurl.py::test_e5` 把这条钉成可断言判据。
+#:
+#: ★★ 方向（v0.13.87 第二轮实测逼出来的）：线索词**自己就说明了 URL 在它的哪一侧**
+#: —— "use the url **below**" 说的是"URL 在下面"。第一版不分方向、只看邻近窗口，
+#: 于是影子实例里出现了可证伪的误报：`echo ... gateway http://127.0.0.1:3456/v1`
+#: 的输出（URL 在**上**），被**下一行**那句 "Use the url below to sign in" 追认成登录。
+#: 分方向后这个形状天然不成立 —— 前置线索不认它上方的 URL。
+#: 故：PRE 表 = 线索必须在 URL **之前**（含同行）；POST 表 = 线索必须在 URL **之后**。
+AUTH_CUES_PRE: List[str] = [
+    "use the url below", "use this url", "sign in", "sign-in",
+    "log in", "log in at", "login at", "log-in at",
+    "please authenticate", "authenticate at", "to authenticate",
+    "please authorize", "authorize access", "device code", "device auth",
+    "verification code", "enter the code", "copy the code", "open this url",
+]
+#: 跟在 URL **之后**的线索（"打开上面这条"的语气）。
+AUTH_CUES_POST: List[str] = [
+    "press enter to open", "continue in your browser", "open_url:",
+]
+#: 兼容旧名字：`url_has_auth_cue` 未指定方向时按 PRE 表判（这是绝大多数提示的形状）。
+DEFAULT_AUTH_CUES: List[str] = AUTH_CUES_PRE
+#: 页面通道的正文判据：URL 必须与一句**讲人话**的行内文本同处一行。
+#: 只认 ≥3 个字母/汉字的词 ⇒ "-> / --" 之类的符号行不会被当成人话。
+_PAGE_TEXT_RE = re.compile(r"[A-Za-z\u4e00-\u9fff]{3,}")
 # ANSI/VT 转义序列：CSI（含私有参数 ?>）、OSC（到 BEL 或 ST）、单字符 ESC 序列。
 # OSC 尤其要紧 —— 很多 CLI 用 OSC 把超链接写进输出（OSC 8 ; url ; text ST），
 # 不剥掉就会把 "8;;https://..." 当成 URL 弹出去。
@@ -104,28 +151,159 @@ def _normalize_url(raw: str) -> Optional[str]:
     return u
 
 
-def _scan_urls(buf: str) -> List[str]:
-    """从（已剥 ANSI 的）输出窗口里提取候选 URL，含**跨行拼接**（纯函数）。
+#: 登录线索的判定窗口（URL 所在行**之前/之后**各看几行）。
+#: ★ 两层收紧都是 v0.13.87 实测逼出来的：
+#:   ① 第一版把线索词与**整个 16KB 滚动窗口**比 ⇒ 真登录提示出现后，屏上**先前的**
+#:      文档链接被追认为"登录"（影子实例实测连播 3 条误报）。真提示的线索就在 URL
+#:      邻近几行（claude setup-token 实测：上一段 2 行内），故窗口收到 ±10/3 行。
+#:   ② 只收窗口还不够 —— 线索词自带方向（"use the url below" = URL 在下面），
+#:      不分方向时"上一行的普通地址 + 下一行的登录话术"这个形状照样误报。
+#:      故最终判据是 `auth_cue_for()` 的方向表（见 AUTH_CUES_PRE/POST）。
+AUTH_CUE_BACK_LINES = 10
+AUTH_CUE_FWD_LINES = 3
 
-    为什么必须处理跨行：终端按列宽硬折，一个长 URL 会被劈成两行显示，
-    正则逐行匹配只能拿到半截（"https://auth.example.com/verify?code=abc123"
-    会被截成 ".../verify?code=abc123" 恰好或干脆缺尾巴）⇒ 半截 URL 打不开。
-    做法：行内匹配到开头后，若后续行**整行都是合法 URL 字符**，就续接到上一行。
+#: 折行拼接的**反例排除**：shell 提示符行（`user@host:/path$`）的字符恰好全在
+#: URL 续接字符集里，会被误当成上一行 URL 的续接（实测把提示符粘进 URL 尾巴，
+#: 生成一个 404 链接）。这不是本批新增的缺陷，但本批重写该函数时有责任把它钉住。
+_PROMPT_LINE_RE = re.compile(r"^[\w.\-]+@[\w.\-]+:.*[$#%>]$")
+
+
+def _url_lines(buf: str) -> "List[Tuple[int, str, str]]":
+    """逐行产出 `(行号, URL, 该行原文)`（纯函数）。
+
+    保留**行号与整行原文**是 v0.13.87 的关键：登录线索词与正文判据都必须在
+    「URL 邻近几行」这个范围内判定，只拿到裸 URL 就判不了 —— 原来只看「整个滚动
+    窗口里有没有 URL」，与上下文无关，这正是误报的成因。
     """
-    out: List[str] = []
-    lines = buf.split("\n")
-    for i, line in enumerate(lines):
+    out: List[Tuple[int, str, str]] = []
+    for idx, line in enumerate(buf.split("\n")):
         for m in _URL_RE.finditer(line):
-            out.append(m.group(0))
-    # 跨行续接：把「上一行 URL 的残段 + 下一整行合法字符行」拼成一条候选。
+            out.append((idx, m.group(0), line))
+    return out
+
+
+def _join_wrapped_urls(buf: str) -> "List[Tuple[int, str]]":
+    """跨行拼接：终端按列宽硬折，长 URL 会被劈成两行（返回 `(行号, 候选)`）。
+
+    正则逐行匹配只能拿到半截 ⇒ 半截 URL 打不开。做法：行内匹配到开头后，
+    若后续行**整行都是合法 URL 字符**，就续接到上一行。提示符形状的行排除（见
+    `_PROMPT_LINE_RE`）。
+    """
+    out: List[Tuple[int, str]] = []
+    lines = buf.split("\n")
     for i in range(len(lines) - 1):
         head, nxt = lines[i].strip(), lines[i + 1].strip()
         if not head or not nxt:
             continue
         if not _URL_RE.search(head):
             continue
-        if nxt and all(ch in _URL_CONT_CHARS for ch in nxt) and not nxt.startswith("http"):
-            out.append(head + nxt)
+        if nxt.startswith("http"):
+            continue
+        if not all(ch in _URL_CONT_CHARS for ch in nxt):
+            continue
+        if _PROMPT_LINE_RE.match(nxt):        # 提示符不是 URL 的续接
+            continue
+        out.append((i, head + nxt))
+    return out
+
+
+def _cue_window(lines: List[str], idx: int) -> str:
+    """取 `idx` 附近 `AUTH_CUE_BACK_LINES/FWD_LINES` 行的文本（登录线索判定范围）。"""
+    lo = max(0, idx - AUTH_CUE_BACK_LINES)
+    hi = min(len(lines), idx + AUTH_CUE_FWD_LINES + 1)
+    return "\n".join(lines[lo:hi]).lower()
+
+
+def url_has_auth_cue(window: str, **kw) -> bool:
+    """该窗口里有没有登录线索词（纯函数，保留给诊断/测试；播报判据见下）。
+
+    方向不在这里判 —— 走 `auth_cue_for()`。本函数是「窗口里有没有任意线索」的
+    粗判，用于排障时回答"这扇输出到底像不像在催登录"。
+    """
+    if "cues" in kw:
+        cues = kw["cues"] or AUTH_CUES_PRE
+        return any(k in window for k in cues)
+    return any(k in window for k in AUTH_CUES_PRE + AUTH_CUES_POST)
+
+
+def auth_cue_for(lines: List[str], idx: int, **kw) -> str:
+    """返回**命中**的线索词（空串 = 没命中）。方向敏感，这是登录通道的真闸门。
+
+    方向规则（v0.13.87 第二轮实测）：
+      · PRE 表 —— 线索必须在 URL **之前**（含同行）：`lines[max(0,idx-BACK):idx]`
+      · POST 表 —— 线索必须在 URL **之后**：`lines[idx+1 : idx+1+FWD]`
+    为什么非要分方向：线索词自己就说明了 URL 在哪一侧，"use the url below" 说的是
+    "URL 在下面"。不分方向时，影子实例实测出现：`gateway http://127.0.0.1:3456/v1`
+    这条**在上一行**的普通地址，被**下一行**那句 "Use the url below to sign in"
+    追认成登录链接（可证伪的误报）。
+    """
+    cues_pre = kw.get("cues_pre") or AUTH_CUES_PRE
+    cues_post = kw.get("cues_post") or AUTH_CUES_POST
+    back = "\n".join(lines[max(0, idx - AUTH_CUE_BACK_LINES):idx]).lower()
+    fwd = "\n".join(lines[idx + 1:idx + 1 + AUTH_CUE_FWD_LINES]).lower()
+    for k in cues_pre:
+        if k in back:
+            return k
+    for k in cues_post:
+        if k in fwd:
+            return k
+    return ""
+
+
+def _scan_login_urls(buf: str, **kw) -> List[str]:
+    """登录通道：URL 邻近**方向正确**的窗口里必须有线索词才认（v0.13.87）。
+
+    返回**已归一化**的 URL 列表（跨行拼回来的那条也在内），调用方直接播。
+    同行线索算 PRE（URL 与线索同处一行时，两种语气都说得通）。
+    """
+    lines = buf.split("\n")
+    cands: List[Tuple[int, str]] = [(i, u) for i, u, _l in _url_lines(buf)]
+    cands += _join_wrapped_urls(buf)
+    out: List[str] = []
+    for idx, raw in cands:
+        u = _normalize_url(raw)
+        if not u or u in out:
+            continue
+        if not auth_cue_for(lines, idx, **kw):
+            continue
+        out.append(u)
+    return out
+
+
+def _scan_page_urls(buf: str) -> List[str]:
+    """页面通道：URL 与一句**人话**同处一行 ⇒ 这是「用户想让你打开的页面」，不是登录。
+
+    判据刻意与登录通道完全不同（v0.13.87）：无线索词要求，但要同行有 ≥3 字的正文词。
+    这样既覆盖 `See https://github.com/openai/codex for details`（agent 给的参考页），
+    又不会把「一整屏机器输出里的裸 URL」刷成弹窗 —— 后者的行里没有正文词。
+    """
+    out: List[str] = []
+    for _idx, raw, line in _url_lines(buf):
+        body = _URL_RE.sub("", line)
+        if not _PAGE_TEXT_RE.search(body):
+            continue
+        u = _normalize_url(raw)
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
+def _scan_urls(buf: str) -> List[str]:
+    """所有候选 URL（登录 + 页面两条通道的并集，归一化后去重）。
+
+    v0.13.87 起**仅供诊断/单测**，不再直接决定播报 —— 播报判据在
+    `_scan_login_urls`（线索词准入）与 `_scan_page_urls`（正文词准入）里。
+    保留本函数是因为「pty 里到底出现了哪些 URL」是排障时要看的第一手证据。
+    """
+    out: List[str] = []
+    for _idx, raw, _line in _url_lines(buf):
+        u = _normalize_url(raw)
+        if u and u not in out:
+            out.append(u)
+    for _idx, raw in _join_wrapped_urls(buf):
+        u = _normalize_url(raw)
+        if u and u not in out:
+            out.append(u)
     return out
 
 
@@ -174,6 +352,34 @@ def _check_term_token(provided: str, source: str) -> None:
     if not provided or not hmac.compare_digest(provided, TERM_TOKEN):
         print(f"[term] 拒绝：token 校验失败（{source}）")
         raise HTTPException(status_code=401, detail="term token required or invalid")
+
+
+def _ensure_settings_table() -> None:
+    """登录线索词存 DB 的键值表（与 ghsettings._ensure_table 同形）。"""
+    db.execute("CREATE TABLE IF NOT EXISTS term_settings ("
+               "key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
+
+
+def auth_cues() -> List[str]:
+    """当前生效的登录线索词：DB `auth_url_cues` → 环境变量 `AUTH_URL_CUES` → 默认表。
+
+    留这个口子的理由：线索表是**行为闸门**（登录提示准不准全靠它），换文案/加语言时
+    不该逼人改代码重启。读取顺序与 ghsettings 的 DB → env → 默认同口径。
+    任一步读坏都回落到默认表 —— 线索读不到时**不能**把闸门放开（宁漏勿误报）。
+    """
+    raw = ""
+    try:
+        _ensure_settings_table()
+        rows = db.query("SELECT value FROM term_settings WHERE key=?", ("auth_url_cues",))
+        raw = str(rows[0]["value"]) if rows else ""
+    except Exception:  # noqa: BLE001  表没建好只影响自定义线索，不许拖垮终端
+        raw = ""
+    if not raw:
+        raw = os.getenv("AUTH_URL_CUES", "")
+    cues = [c.strip().lower() for c in raw.split(",") if c.strip()]
+    # 运维口子给了就整表替换（PRE 语义）；没给则用内置的**方向**两张表（见
+    # AUTH_CUES_PRE/POST）—— 调用方据此决定要不要传 kw。
+    return cues or list(AUTH_CUES_PRE)
 
 
 def child_env() -> Dict[str, str]:
@@ -231,10 +437,12 @@ class Session:
         self.exit_status = None  # waitpid 原始 status；解出人话见 describe_exit()
         self.hub_killed = False  # True = 这次是 hub 自己动的手（点 × / TTL / 服务退出）
         self.resume_of = ""     # v0.13.0：非空 = 由某条磁盘历史续聊而来
-        # v0.13.64 auth_url 旁路（P2/P3）：扫 pty 输出里的登录 URL，带外发给前端开浏览器。
+        # v0.13.64 auth_url 旁路（P2/P3）：扫 pty 输出里的链接，带外发给前端开浏览器。
         # 手机上跑 `claude setup-token` 原本只能肉眼抄 URL。
-        # url_buf = 只存**剥过 ANSI** 的文本滚动窗口（URL 可能被折行，见 _scan_urls）；
-        # announced = 已播过的 URL，**会话级**共享（换端重连不重播，同端也不刷屏）。
+        # url_buf = 只存**剥过 ANSI** 的文本滚动窗口（URL 可能被折行，见 _join_wrapped_urls）；
+        # announced = 已播过的**键**，**会话级**共享（换端重连不重播，同端也不刷屏）。
+        # v0.13.87：键带通道前缀 —— 同一条 URL 在登录/页面两条通道下语义不同
+        # （文案与点击行为都不同），只按 URL 去重会让后到的那条被静默吞掉。
         self.url_buf = ""
         self.announced_urls: set = set()
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
@@ -844,24 +1052,48 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
     # 关键约束：旁路帧走 send_text 独立通道，**绝不能** put 进 vq —— 那条队列是
     # 输出字节流，混进 JSON 会让 xterm 把 {"type":...} 当字符画到屏幕上。
     async def _scan_auth_urls(data: bytes) -> None:
+        """扫本轮 PTY 输出：登录链接与页面链接**分两路**播（v0.13.87）。
+
+        为什么要分两路（用户 2026-10-07 报障）：原来凡是见到 http(s) URL 就发
+        `auth_url`，前端文案写死「检测到登录链接」⇒ agent 印一条文档地址就弹登录提示。
+        现在：
+          · 登录路：`_scan_login_urls` 必须命中登录线索词（见 DEFAULT_AUTH_CUES），
+            才发 `auth_url` + 原来的 auto 判定（真登录提示仍会被自动打开）；
+          · 页面路：`_scan_page_urls` 命中「URL + 同行人话」就发 `page_url`，
+            auto 恒为 False —— 普通页面链接绝不该替用户自动弹浏览器。
+        两条路都**只走 send_text 带外通道**，绝不 put 进 vq（那会被 xterm 当正文画出来）。
+        """
         try:
-            sess.url_buf = (sess.url_buf + strip_ansi(
-                data.decode("utf-8", errors="replace")))[-URL_SCAN_MAX:]
-            for raw in _scan_urls(sess.url_buf):
-                u = _normalize_url(raw)
-                if not u or u in sess.announced_urls:
-                    continue
-                sess.announced_urls.add(u)
-                # auto 只对「明确在催你点浏览器」的场景开；默认给按钮。
-                # 自动开在手机上必被浏览器拦（无用户手势），反而让人以为功能坏了。
-                low = sess.url_buf.lower()
-                auto = any(k in low for k in ("open this url", "press enter to open",
-                                              "continue in your browser", "open_url:"))
-                try:
-                    await ws.send_text(json.dumps(
-                        {"type": "auth_url", "url": u, "auto": bool(auto)}))
-                except Exception:  # noqa: BLE001
-                    return    # WS 已断，别再扫了
+            chunk = strip_ansi(data.decode("utf-8", errors="replace"))
+            sess.url_buf = (sess.url_buf + chunk)[-URL_SCAN_MAX:]
+            # 线索表可由 DB/env 覆盖；覆盖时**整表替换 PRE/POST 两张**（运维口子
+            # 只需要"加一种文案"这一档能力，分两张表反而给不出可读的 diff）。
+            cues = auth_cues()
+            kw = {"cues_pre": cues, "cues_post": []} if cues != AUTH_CUES_PRE else {}
+            auth_urls = _scan_login_urls(sess.url_buf, **kw)
+            # **登录路优先**：同一条 URL 命中了登录就不在页面路重复播 ——
+            # 否则同一串 URL 会在屏上留两行（`[登录链接] …` + `[链接] …`）并弹两次。
+            # 两条通道的语义是「更具体的那条胜出」，不是"两个都要说"。
+            page_urls = [u for u in _scan_page_urls(sess.url_buf) if u not in auth_urls]
+            for ch, urls in (("auth", auth_urls), ("page", page_urls)):
+                for u in urls:
+                    key = ch + "|" + u
+                    if key in sess.announced_urls:
+                        continue
+                    sess.announced_urls.add(key)
+                    # auto 只对「明确在催你点浏览器」的场景开；默认给按钮。
+                    # 自动开在手机上必被浏览器拦（无用户手势），反而让人以为功能坏了。
+                    # v0.13.87：auto 只可能出现在登录路 —— 页面链接永远只给按钮。
+                    auto = ch == "auth" and any(
+                        k in sess.url_buf.lower() for k in
+                        ("press enter to open", "open this url",
+                         "continue in your browser", "open_url:"))
+                    try:
+                        await ws.send_text(json.dumps(
+                            {"type": "auth_url" if ch == "auth" else "page_url",
+                             "url": u, "auto": bool(auto)}))
+                    except Exception:  # noqa: BLE001
+                        return    # WS 已断，别再扫了
         except Exception:  # noqa: BLE001
             return          # 旁路功能绝不能拖垮终端主链路
 

@@ -79,7 +79,7 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.86"   # 模型设置选项值精确化：值前缀 + 原生清单（用户准则「插入要精确」）
+VERSION = "0.13.87"   # 终端链接带外通知：登录/页面分两路，登录提示不再误报
 #   根因（2026-10-07 续报；用户准则「模型选择按原生+插入，不破坏原生模型，插入要精确」）：
 #   ① v0.13.85 的写手对 opencode 要求 `ccr/` 前缀（官方 Models 页：格式即 provider/model；
 #      本机 `opencode models ccr` 逐行 `ccr/…`），但前端下拉把 /api/models 的**裸 ID**

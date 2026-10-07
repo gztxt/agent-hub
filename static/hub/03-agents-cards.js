@@ -162,26 +162,39 @@ function termConnecting(on, ws) {
 let termHealPending = false;
 function termHealBlank() { termHealPending = true; setTimeout(termHealNow, 250); }
 
-/* ── v0.13.64 auth_url 旁路消费（P2）──────────────────────────────────────
-   场景：手机上跑 `claude setup-token` / 任何 OAuth 登录，登录 URL 只出现在
-   pty 输出里。窄屏上那串 URL 要靠肉眼抄 —— 又长又断行，抄错一个字符就白跑。
+/* ── 终端链接带外通道：登录(auth_url) / 页面(page_url) 两路（v0.13.87）──────
+   场景（v0.13.64 原意）：手机上跑 `claude setup-token` / 任何 OAuth 登录，登录 URL
+   只出现在 pty 输出里。窄屏上那串 URL 要靠肉眼抄 —— 又长又断行，抄错一个字符就白跑。
    这里把 URL 提成**可点按钮**：一眼可按，按完直接开浏览器。
-   为什么默认不自动开：现代浏览器只允许「用户手势内」window.open，程序性调用
-   会被拦成弹窗 ⇒ 用户看到的是"点了没反应"，比不给按钮更糟。
-   服务端 auto=true（输出里明说 "press enter to open" 之类）才自动开。 */
-function termAuthUrl(url, auto) {
+
+   ★ v0.13.87 改了两件事（用户报障「嵌入式终端总是提示登录链接，实际所有终端我都
+     不需要登录」）：
+     ① **文案不许再一律叫「登录」**。旧实现只有一条通道、文案写死「检测到登录链接」，
+        于是 agent 印一条文档/仓库地址（`See https://github.com/openai/codex`）也弹
+        「检测到登录链接」——纯误报。现在两路各说各话：真相来源是服务端的 `type`
+        字段，前端**不猜**（猜 = 第二份会漂的真相）。连画在终端里的那行标记也跟着分：
+        登录路 `[登录链接]`，页面路 `[链接]`。同理不再把 URL 写死成洋红/紫色（那颜色
+        本身就是「登录」的暗示），统一次要色。
+     ② 两条通道各自去重（服务端按 `通道|URL` 分键），故这里不需要额外状态。
+   为什么默认不自动开：现代浏览器只允许「用户手势内」window.open，程序性调用会被拦成
+   弹窗 ⇒ 用户看到的是"点了没反应"，比不给按钮更糟。服务端只在**登录路**且输出里
+   明说 "press enter to open" 之类时才给 auto=true；页面路恒为 false —— 普通链接
+   绝不该替用户自动弹浏览器。 */
+function termLinkAnno(kind, url, auto) {
   const safe = String(url || '');
   if (!/^https?:\/\//i.test(safe)) return;     // 双保险：只放行 http/https
+  const isAuth = kind === 'auth';
   /* 画面上也留一行可复制的纯文本：按钮被拦、或用户想手动拷时仍有出路。
-     刻意用 OSC 8 之外的方式（普通可见文本）—— 它要"看得见"，不是隐藏超链接。 */
-  const note = '\r\n\x1b[95m[登录链接] ' + safe + '\x1b[0m\r\n';
+     刻意用 OSC 8 之外的方式（普通可见文本）—— 它要"看得见"，不是隐藏超链接。
+     用 [90m（次要色）而非旧版的 [95m（洋红）：颜色不该暗示"这是登录"。 */
+  const note = '\r\n\x1b[90m[' + (isAuth ? '登录链接' : '链接') + '] ' + safe + '\x1b[0m\r\n';
   try { if (term) term.write(note); } catch (e) {}
   const open = () => { try { window.open(safe, '_blank', 'noopener'); } catch (e) { toast('请手动复制上面的链接', 'err'); } };
-  /* toast() 的签名是 (msg, cls)，**没有** onClick 参数（01-core-boot.js:157）——
+  /* toast() 的签名是 (msg, cls)，**没有** onClick 参数（01-core-boot.js:283）——
      早先这里多传了个 open 当第三参，函数会静默忽略 ⇒ 按钮点不动。这里显式
      把 toast 节点改成可点，而不是给 toast() 硬加参数（那会波及其余 40+ 调用方）。 */
   try {
-    const el = toast('检测到登录链接，点此打开 ↗', 'info');
+    const el = toast(isAuth ? '检测到登录链接，点此打开 ↗' : '检测到链接，点此打开 ↗', 'info');
     if (el) {
       el.style.cursor = 'pointer';
       el.style.textDecoration = 'underline';
@@ -191,6 +204,9 @@ function termAuthUrl(url, auto) {
   } catch (e) { open(); }
   if (auto) open();
 }
+/* 兼容别名：v0.13.64 的旧名。仓内已无调用方（帧处理改走 termLinkAnno），
+   保留它是给「端侧仍缓存着旧 hub.js 片段」留一条不断链的路。 */
+function termAuthUrl(url, auto) { termLinkAnno('auth', url, auto); }
 /* 数「视口内」的空行 —— 必须从 viewportY 起算，不能从缓冲区第 0 行起算。
    buffer.active.getLine(0) 是**绝对坐标**，即 scrollback 的最老一行；
    一旦屏上有历史（输出超过一屏、或用户滚动过），0..rows-1 读到的是早滚出屏幕的旧行，
@@ -876,8 +892,10 @@ function termConnect(sid, agent, opts) {
     if (typeof raw === 'string' && raw.charCodeAt(0) === 123 /* { */) {
       let m = null;
       try { m = JSON.parse(raw); } catch (e) { m = null; }
-      if (m && m.type === 'auth_url' && typeof m.url === 'string') {
-        termAuthUrl(m.url, !!m.auto);
+      /* v0.13.87：两种带外链接帧。type 是**服务端**给的真相 —— 前端只做映射，
+         绝不自己按 URL 形状猜「这像不像登录」（v0.13.64 的误报就是这么来的）。 */
+      if (m && (m.type === 'auth_url' || m.type === 'page_url') && typeof m.url === 'string') {
+        termLinkAnno(m.type === 'auth_url' ? 'auth' : 'page', m.url, !!m.auto);
         return;
       }
     }
