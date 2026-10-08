@@ -161,6 +161,57 @@ class TestResumeArgv(unittest.TestCase):
             ss.resume_argv("pi", "01a0c91d-eb84-7130-9767-479821ef336c", CWD)
 
 
+class TestCursorTitleSource(unittest.TestCase):
+    """v0.13.96：cursor 标题取哪一源（L0 hermetic —— 只用 tempfile + mock，不读真盘）。
+
+    事故（2026-10-08 实测）：`_t_cursor` 与 `_title_of_session` 都写「meta.title 优先」，
+    而本机 99 条 meta 里 5 条有 title、**无一例外全是 Cursor 服务端生成的英文**
+    （`Cursor Startup Garbled Characters` / `Top Image Bar Sticky Issue` / `Initial Greeting` …），
+    对应会话的用户原话却是中文（`cursor启动会带入乱码字符`）⇒ 侧栏历史里那几条**整排显示英文**。
+    meta.title 来自服务端会话列表、离线读不到也不可控，不能当主口径（D2：问题原文优先）。
+
+    放在 L0 而不是 TestRealStores：判据是「同一个函数在两种源下各给什么」，
+    与本机仓库形态无关 —— 放进 L1 会让干净机器上这条闸门静默跳过，等于没闸门。"""
+
+    def test_cursor_title_prefers_user_text_over_english_meta_title(self):
+        import tempfile
+        from unittest import mock
+
+        sid = "11111111-2222-4333-8444-555555555555"
+        with tempfile.TemporaryDirectory() as td:
+            # 转录：首句用户提问（中文）。行形状 = cursor 实测的 role 键 + message.content
+            tr = Path(td) / "tr" / f"{sid}.jsonl"
+            tr.parent.mkdir(parents=True)
+            tr.write_text(json.dumps({"role": "user", "message": {"content": [
+                {"type": "text", "text": "<user_query>\ncursor启动会带入乱码字符\n</user_query>"}]}},
+                ensure_ascii=False) + "\n", encoding="utf-8")
+            transcripts = {sid: tr}
+            en_meta = {"title": "Cursor Startup Garbled Characters"}      # 服务端英文标题
+
+            # 正对照：两条源都在 ⇒ 取中文原文（**修复前正是这条会红**）
+            self.assertEqual(ss._cursor_title(sid, en_meta, transcripts), "cursor启动会带入乱码字符",
+                             "有中文原文时必须用原文，不得被服务端英文标题盖掉（D2）")
+            # 负对照：转录缺失 ⇒ 回落 meta.title（否则标题开天窗）
+            self.assertEqual(ss._cursor_title(sid, en_meta, {}), "Cursor Startup Garbled Characters",
+                             "转录不在时必须回落 meta.title")
+            # 负对照：两源皆空 ⇒ 空串（「未命名会话」由调用方兜底，此处不编造）
+            self.assertEqual(ss._cursor_title(sid, {"title": ""}, {}), "")
+            # 本例管的是「优先哪一源」，不是「把英文翻成中文」：英文原文照原样透传
+            tr.write_text(json.dumps({"role": "user", "message": {"content": [
+                {"type": "text", "text": "hello in english"}]}}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            self.assertEqual(ss._cursor_title(sid, en_meta, transcripts), "hello in english")
+
+    def test_cursor_title_falls_back_when_transcripts_absent(self):
+        """不传 transcripts 字典时走按 sid 通配那条路；仓库根不存在时不得抛异常。"""
+        from unittest import mock
+        with mock.patch.object(ss, "CURSOR_PROJECTS", Path("/nonexistent-cursor-projects")):
+            self.assertEqual(
+                ss._cursor_title("11111111-2222-4333-8444-555555555555",
+                                 {"title": "Server Side Title"}),
+                "Server Side Title")
+
+
 @tiers.host_only              # 断言本机六家仓库的真实形态 ⇒ 换机不可判定（L1）
 class TestRealStores(unittest.TestCase):
     """把 spec §2 取证矩阵的数字当断言：磁盘形态变了就 FAIL，这正是我们要的信号。"""

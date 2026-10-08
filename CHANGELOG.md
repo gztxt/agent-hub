@@ -1,3 +1,47 @@
+## v0.13.96 — cursor 历史标题改回用户问题原文（中文）：meta.title 是服务端英文摘要，只能兜底
+
+> 触发：用户报「cursor 历史会话记录使用英文」。
+> 根因不是编码、不是 locale，而是**取错了源**：`~/.cursor/chats/<md5(cwd)>/<sid>/meta.json`
+> 有个 `title` 字段，本机 99 条里 5 条有值，**无一例外全是 Cursor 服务端生成的英文**
+> （`Cursor Startup Garbled Characters` / `Top Image Bar Sticky Issue` / `Initial Greeting` …），
+> 而这些会话的用户原话是中文（`cursor启动会带入乱码字符`）。
+> 旧代码把 `meta.title` 当**主口径**、转录里的首句用户提问只当兜底 ⇒ 凡是服务端生成过标题的那几条，
+> 侧栏历史**整排显示英文**。
+
+### 一、改动
+
+| 位置 | 改动 |
+|---|---|
+| `src/sessions_store.py` 新增 `_cursor_title()` | **唯一**判据函数：转录首句用户提问优先，`meta.title` 兜底（D2：问题原文优先） |
+| `_t_cursor()` | 改调 `_cursor_title()`，不再自己写一遍优先级 |
+| `_title_of_session()` 的 cursor 分支 | 同上（原来是 `glob` 单查，与列表侧各写一份字面量） |
+
+**为什么必须收成一个函数**：列表侧与续聊侧各写一份优先级，历史上已因此走过两次弯路
+（`_codex_real_user_sql` 的 09-30 事故、`hasConversation` 两处口径漂移）。
+本仓的通用教训是「同一判据只准存在一份」——这次直接按该教训设计，不留第二次漂移的余地。
+
+### 二、实测证据
+
+- 修复前 `list_history("cursor", …)` 12 条里 4 条英文；修复后 **0 条**，全部中文原文。
+- 列表侧 vs `title_for()` 侧 **12/12 逐条相同**（mismatch=0）。
+- 新增闸门 `TestCursorTitleSource` **2 例**（L0 hermetic，tempfile + mock，不读真盘）：
+  正对照＝有中文原文时不被英文标题盖掉（**这条在修复前实测转红**，
+  `AssertionError: 'Cursor Startup Garbled Characters' != 'cursor启动会带入乱码字符'`）；
+  负对照＝转录缺失时回落 `meta.title`、两源皆空时返回空串（不编造标题）、
+  英文原文照原样透传（本例管的是「优先哪一源」，不是「把英文翻成中文」）。
+- 全量：L0 `1448 tests OK (skipped=64)`、L0+L1 `1448 tests OK`，收集器对账 1448=1448。
+- 真机HTTP：`GET /api/term/history/cursor` 修复后仍返英文 ⇒ **未重启，代码未生效**，
+  重启后复验才算结项（本机恢复＝中间态）。
+
+### 三、遗留（不在本版范围，按军规未顺手改）
+
+`scripts/orchestration-check.sh` 的 **C11 对 `技术文档` 仓报 FAIL**：
+canary 记录的最高提交 `a4dd1782` 不再是 HEAD 的祖先。已取证为**陈旧基线、非仓库损坏** ——
+2026-10-08 16:43 做过一次 `git filter-repo` 清凭据（判例 95），
+`.git/filter-repo/commit-map` 里 `a4dd1782 → 9babd7d`，而 `9babd7d` **是**当前 HEAD 的祖先。
+canary 文件写于 09-30（改写之前），没跟着更新。修它要动仓外 `/vol1/backups/git-canary/`，
+按「发现既存问题 → 停手报请」上交。
+
 ## v0.13.95 — 改名收尾：清 3 处运行时旧名残留 + 「产物/提手」闸门
 
 > 触发：用户要求「验证线上服务和接口健康」，八层巡检里把 `static/hub.js` 拉下来

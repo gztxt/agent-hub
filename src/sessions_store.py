@@ -500,6 +500,31 @@ def _cursor_first_user(p: Path) -> str:
     return ""
 
 
+def _cursor_title(sid: str, meta: dict, transcripts: Optional[Dict[str, Path]] = None) -> str:
+    """cursor 的标题 = **用户问题原文优先**，`meta.title` 只当兜底（D2，同 hermes/codex/opencode）。
+
+    ⚠️ 2026-10-08 实测根因：本机 99 条 meta 里 5 条有 `title`，**无一例外全是 Cursor
+    服务端生成的英文**（`Cursor Startup Garbled Characters` / `Top Image Bar Sticky
+    Issue` / `Initial Greeting` …），而同一批会话的用户原话是中文
+    （`cursor启动会带入乱码字符` / `美容仪器项目产品详情页 顶部图片栏没有固定悬浮`）。
+    旧代码 title 优先 ⇒ 侧栏历史里凡是服务端生成了标题的那几条**整排显示英文**。
+    `meta.title` 来自服务端会话列表、离线读不到也不受我们控制，**不能当主口径**。
+
+    列表侧（`_t_cursor`）与续聊侧（`_title_of_session`）**必须共用本函数**：
+    这两处各写一份字面量必然漂移，是本仓「列得出必须点得动」教训的同构版
+    （见 `_codex_real_user_sql` 注释：09-30 就是两处口径不一致走的弯路）。
+
+    `transcripts` 由列表侧一次性建好传进来（全局扫一遍比逐条 glob 便宜）；
+    单查时留空走按 sid 通配。"""
+    f = transcripts.get(sid) if transcripts is not None else \
+        next(iter(CURSOR_PROJECTS.glob(f"*/agent-transcripts/{sid}/{sid}.jsonl")), None)
+    if f:
+        t = _cursor_first_user(f)
+        if t:
+            return t
+    return (meta.get("title") or "").strip()
+
+
 def _cursor_meta(sid: str) -> Optional[dict]:
     """按会话 id 定位它的 meta.json（跳目录口径下 id 全局唯一，实测各桶不撞名）。"""
     if not UUID_RE.match(sid or ""):
@@ -539,9 +564,8 @@ def _t_cursor(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
 
        ① `~/.cursor/chats/<md5(cwd)>/<agentId>/meta.json`
           有 cwd、有 updatedAtMs（**毫秒**）、有 hasConversation；**没有正文**。
-          title 字段只有极少数条目有（本机 3/61），且是 Cursor **服务端**生成的
-          （用户自己 `--resume` 的选择器里显示的就是它，来源是服务端会话列表，
-          离线读不到）⇒ 标题不能指望它，必须回落。
+          title 字段只有极少数条目有，且实测（2026-10-08，本机 5/99）**全是服务端生成的英文**
+          ⇒ 不能当主口径，标题一律走 `_cursor_title()`（问题原文优先、它兜底）。
        ② `~/.cursor/projects/<slug>/agent-transcripts/<agentId>/<agentId>.jsonl`
           第一行就是用户原话，包在 `<user_query>` 里。
 
@@ -582,11 +606,7 @@ def _t_cursor(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
     for sid, m in metas:
         if time.time() - t0 > HARD_BUDGET_S:
             return items, "扫描超时，仅显示已读到的条目"
-        t = (m.get("title") or "").strip()
-        if not t:
-            f = transcripts.get(sid)
-            if f:
-                t = _cursor_first_user(f)
+        t = _cursor_title(sid, m, transcripts)
         items.append({"agent": "cursor", "id": sid,
                       "title": mask_title(t) or "未命名会话",
                       "ts": int(m.get("updatedAtMs") or 0) // 1000,   # 实测毫秒（同 opencode）
@@ -955,15 +975,9 @@ def _title_of_session(agent: str, sid: Optional[str], cwd: Optional[str] = None)
         p = next((d.get("lastPrompt", "") for d in objs if d.get("type") == "last-prompt"), "")
         return mask_title(p or _first_user_text(objs))
     if agent == "cursor":
-        # 与 _t_cursor 同口径：meta 的 title（Cursor 服务端生成的，罕见）优先，
-        # 否则回落到转录里的首句用户提问。绝不回落成 id 前缀（D2）。
-        m = _cursor_meta(sid) or {}
-        t = (m.get("title") or "").strip()
-        if not t:
-            f = next(iter(CURSOR_PROJECTS.glob(f"*/agent-transcripts/{sid}/{sid}.jsonl")), None)
-            if f:
-                t = _cursor_first_user(f)
-        return mask_title(t)
+        # 与 _t_cursor 共用 _cursor_title（问题原文优先、meta.title 兜底）——理由见该函数注释。
+        # 绝不回落成 id 前缀（D2）。
+        return mask_title(_cursor_title(sid, _cursor_meta(sid) or {}))
     return ""
 
 

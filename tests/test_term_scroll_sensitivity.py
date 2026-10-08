@@ -201,8 +201,13 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # v0.13.95 改名收尾：清 3 处运行时旧名残留 + 加「产物/提手」闸门。
         # 关键词取「为什么这类漏改抓不到」那两点。
         "0.13.95": ("降级文案", "?v=", "md5", "无消费方"),
+        # v0.13.96 cursor 历史标题显示英文：关键词取「取错了源」那三点——
+        #   ① meta.title 是**服务端生成的英文**（不是编码/locale 问题，搜「编码」会跑偏）；
+        #   ② 唯一判据函数 `_cursor_title`（列表侧与 title_for 侧共用一份优先级）；
+        #   ③ D2「问题原文优先」——原文优先、LLM/服务端标题当兜底。
+        "0.13.96": ("服务端", "_cursor_title", "原文优先", "兜底"),
     }
-    CURRENT_VERSION = "0.13.95"
+    CURRENT_VERSION = "0.13.96"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
