@@ -76,10 +76,27 @@ import modelcfg as modelcfg_mod     # 各 Agent 默认模型统一设置（v0.13
 import ghsettings as ghsettings_mod  # GitHub 地址/key/落点（v0.13.42：设置→GitHub 子菜单）
 import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志子菜单，journald + 操作事件聚合）
 
-print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
+print(f"[agenthub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.94"   # unit 改名 agent-hub.service → agenthub.service（与仓名/远端一次改齐）
+VERSION = "0.13.95"   # 改名收尾：清掉 3 处运行时的旧名残留 + 3 例「产物与提手」闸门
+#   v0.13.94 改了仓名/远端/systemd 单元，但**前端与 /health 的展示层还写着旧名** ——
+#   靠一次八层健康巡检才发现（判据：把 hub.js 拉下来 grep 旧单元名，命中 1 处）。
+#   三处都是「无消费方 / 不报错」类型，所以没有任何自动机制会提醒：
+#     ① static/hub/05-chat-and-history.js:330 的降级文案「后端未更新：需重启 X 后生效」
+#        —— 这条**在用户排障时给指令**，写旧名等于教用户去重启一个已停用的单元
+#        （restart 它既起不来、Restart=always 又会在 journald 里刷重试）；
+#     ② src/main.py /health 的 "service" 字段（纯展示，但它是运维第一手看到的标识）；
+#     ③ src/main.py 启动横幅 `[Agent Hub]`。
+#   为什么这次能一次改对：v0.13.94 已把「三份真值互相比对」固化成
+#   TestUnitNameConsistency，本版再加 3 例把**前端源码 / 构建产物 / ?v= 提手**纳入比对：
+#     - test_frontend_user_visible_text_names_current_unit：源码不得含旧单元名；
+#     - test_built_bundle_is_in_sync_with_sources：产物不得含旧名，且 `?v=` 必须等于
+#       产物 md5 前 8 位（手改产物不跑 build 脚本会被这条抓住）；
+#     - test_health_service_field_uses_current_name：/health 的 service 字段。
+#   红向自证三种漏改形态（源码退旧名 / 产物残留 / 提手脱钩）全部转红，复位转绿。
+#   刻意**不改**的三类旧名：注释里的历史叙事与判例原文、下载文件名
+#   （agent-hub-sessions.json 等，改会破坏既有用户习惯）、MCP server 名（外部契约）。
 #   2026-10-08 用户指令：「重启 agent-hub.service 但是为什么名字还是agent-hub 已经更新名字
 #   为agenthub」→「改名并同步更新」。10-08 仓名（目录）与远端已改齐，AGENTS.md 当时明写
 #   「服务名不变」⇒ unit 名是**刻意留下的**，本版补上。
@@ -548,7 +565,7 @@ async def health():
     except Exception as e:  # noqa: BLE001
         db_ok = False
         print(f"[health] db 自检失败：{type(e).__name__}: {str(e)[:120]}", flush=True)
-    out = {"status": "ok", "service": "agent-hub", "version": VERSION, "port": config.port,
+    out = {"status": "ok", "service": "agenthub", "version": VERSION, "port": config.port,
            "db_ok": db_ok,
            "term_sessions": term_mod.alive_count(),
            "term_idle_max_s": term_mod.idle_max_s()}

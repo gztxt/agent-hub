@@ -4838,8 +4838,10 @@ function histLoad(aid) {
     .then(d => { HIST[aid] = { items: d.items || [], note: d.note || '', home: d.cwd || '', loading: false, err: '' }; })
     .catch(e => { const m = String((e && e.message) || e);
       // 新前端 + 未重启的旧后端＝路由不存在（FastAPI 回 Not Found）。说人话，别抛生涩 404。
+      // ⚠️ 单元名 2026-10-08 起是 agenthub.service；写旧名的后果是教用户去重启一个
+      // 已停用的单元（restart 它既起不来又会在 journald 里刷重试），等于给错药方。
       HIST[aid] = { items: [], note: '', loading: false,
-                    err: /not\s*found|404/i.test(m) ? '后端未更新：需重启 agent-hub.service 后生效' : m }; })
+                    err: /not\s*found|404/i.test(m) ? '后端未更新：需重启 agenthub.service 后生效' : m }; })
     .then(() => renderNav());                            // 无 finally 依赖：老 Safari 也走得到
 }
 

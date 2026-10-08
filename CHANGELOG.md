@@ -1,3 +1,56 @@
+## v0.13.95 — 改名收尾：清 3 处运行时旧名残留 + 「产物/提手」闸门
+
+> 触发：用户要求「验证线上服务和接口健康」，八层巡检里把 `static/hub.js` 拉下来
+> grep 旧单元名，命中 1 处 ⇒ 发现 v0.13.94 漏了展示层。
+> 三处都是**无消费方 / 不报错**类型，所以没有任何自动机制会提醒。
+
+### 一、三处漏改（都不报错，靠巡检才能发现）
+
+| 位置 | 内容 | 漏改症状 |
+|---|---|---|
+| `static/hub/05-chat-and-history.js:330` | 降级文案「后端未更新：需重启 **agent-hub.service** 后生效」 | **在用户排障时给指令** —— 教用户去重启一个已停用的单元（restart 它既起不来，`Restart=always` 又在 journald 里刷重试） |
+| `src/main.py:551` | `/health` 的 `"service": "agent-hub"` | 运维第一手看到的标识是旧名；该字段**无消费方**，故极易漏 |
+| `src/main.py:79` | 启动横幅 `[Agent Hub]` | 同上，纯展示 |
+
+### 二、新增 3 例闸门（`TestUnitNameConsistency` 8→11 例）
+
+v0.13.94 已把「代码常量 / 仓内副本 / 真实 systemd 单元」三份真值固化成断言；
+本版把**前端源码 / 构建产物 / `?v=` 提手**也纳入：
+
+| 用例 | 判据 | 抓什么 |
+|---|---|---|
+| `test_frontend_user_visible_text_names_current_unit` | 源码不含 `agent-hub.service`，且含「重启 `agenthub.service` 后生效」 | 用户可见文案 |
+| `test_built_bundle_is_in_sync_with_sources` | `static/hub.js` 不含旧名 **且** `index.html` 的 `?v=` == 产物 md5 前 8 位 | 「改了源码忘重建」与「手改产物没跑 build」 |
+| `test_health_service_field_uses_current_name` | `/health` 的 `service` 字段 | 无消费方字段的改名 |
+
+**红向自证三种漏改形态**（各打一次，全部转红，复位转绿）：
+
+1. 源码退回旧名（不重建）→ `test_frontend_user_visible_text_names_current_unit` FAIL
+2. 产物残留旧名（模拟忘重建）→ `test_built_bundle_is_in_sync_with_sources` FAIL
+3. 提手改成 `deadbeef`（模拟手改产物）→ 同上 FAIL
+
+第 3 条是新增价值：`?v=` 脱钩本来只会表现为「端侧拿到缓存旧版」，
+属 AGENTS 4.3 记的那类「静态快照骗人」故障，现在有断言了。
+
+### 三、刻意不改的三类旧名
+
+- **注释里的历史叙事与判例原文** —— 那是取证记录，改了就失真；
+- **下载文件名**（`agent-hub-sessions.json`、`agent-hub-<kind>-<时间戳>.<ext>`）——
+  改会破坏既有用户习惯与已产出的文件；
+- **`MCPServer("agent-hub")`** —— 对外契约，改名要连带改所有 MCP 客户端。
+
+### 四、闸门
+
+- L0 hermetic **1373 例 0 跳过 0 失败**（收集器对账 1437=1437）；L1 host 64 例 0 失败
+- `static/hub.js` 重建：6781 行，md5 `7f2ed136` → **`1b4fb42e`**，`?v=` 提手同步
+
+### 五、本次健康巡检的附带发现（既存，未修）
+
+- `QoderWake.service` **failed**（`Start request repeated too quickly`，restart counter 到 5
+  后放弃），失败时间 **09:04**，早于本次全部改动 ⇒ 与改名无关，按白名单制只报不修。
+- hub 报 `stopped` 但单元实为 `active` 的两个：`Xvfb`、`workbuddy-daemon`
+  ⇒ 是 hub 侧探测口径问题（不是服务故障），同样只报不修。
+
 ## v0.13.94 — unit 改名 `agent-hub.service` → `agenthub.service`
 
 > 2026-10-08 用户指令：「重启 agent-hub.service 但是为什么名字还是 agent-hub 已经更新名字为agenthub」→「改名并同步更新」。

@@ -346,6 +346,42 @@ class TestUnitNameConsistency(unittest.TestCase):
     def test_default_unit_is_current_name(self):
         self.assertEqual(hublog.DEFAULT_UNIT, self.UNIT)
 
+    def test_frontend_user_visible_text_names_current_unit(self):
+        """前端**用户可见**的降级文案必须写新单元名。
+
+        为什么单独一条：源文件与构建产物各存一份，同一处文案要改两遍
+        （`static/hub/*.js` 与 `static/hub.js`）⇒ 极易只改一处。
+        而这条文案的特殊性是它**在用户排障时给指令** —— 写旧名等于教用户去
+        重启一个已停用的单元（restart 它既起不来、又在 journald 里刷重试）。
+        """
+        src = (_REPO / "static" / "hub" / "05-chat-and-history.js").read_text(encoding="utf-8")
+        self.assertNotIn(self.OLD_UNIT, src,
+                         "前端源码仍写旧单元名 ⇒ 用户看到的是「去重启一个已停用的单元」")
+        self.assertIn("重启 %s 后生效" % self.UNIT, src,
+                      "降级文案应指向现役单元 %s" % self.UNIT)
+
+    def test_built_bundle_is_in_sync_with_sources(self):
+        """构建产物不得残留旧名 —— 这是「只改源码忘重建」的唯一可观测判据。
+
+        v0.13.94 改名时前端那处漏改正是「改了仓名/远端/unit，唯独没重建 hub.js」，
+        靠人眼 review 产物 6781 行是不可能发现的，所以固化成断言。
+        """
+        import hashlib
+        built = (_REPO / "static" / "hub.js").read_text(encoding="utf-8", errors="ignore")
+        self.assertNotIn(self.OLD_UNIT, built,
+                         "static/hub.js 仍含旧单元名 ⇒ 忘了跑 scripts/build_hubjs.sh")
+        # 提手必须等于产物内容的 md5 前 8 位，否则端侧拿到的是缓存旧版
+        digest = hashlib.md5(built.encode("utf-8", "ignore")).hexdigest()[:8]
+        html = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("hub.js?v=%s" % digest, html,
+                      "index.html 的 ?v= 提手与产物实际 md5 %s 不符 ⇒ 端侧会拿缓存旧版" % digest)
+
+    def test_health_service_field_uses_current_name(self):
+        """/health 的 `service` 字段。它无消费方（纯展示），但**是**运维第一手看到的标识。"""
+        src = (_REPO / "src" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('"service": "agenthub"', src,
+                      "/health 的 service 字段仍是旧名（它无消费方，容易漏改）")
+
     def test_deploy_copy_named_after_unit(self):
         d = _REPO / "deploy"
         self.assertTrue((d / self.UNIT).is_file(),

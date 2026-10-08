@@ -198,8 +198,11 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # v0.13.94 unit 改名：关键词取「静默失效」那两处 —— journalctl 对不存在的单元
         # 返空且退出码 0（所以漏改不报错，只是日志页空白）；EXCLUDE 是前缀匹配。
         "0.13.94": ("DEFAULT_UNIT", "EXCLUDE_PATTERNS", "静默", "前缀"),
+        # v0.13.95 改名收尾：清 3 处运行时旧名残留 + 加「产物/提手」闸门。
+        # 关键词取「为什么这类漏改抓不到」那两点。
+        "0.13.95": ("降级文案", "?v=", "md5", "无消费方"),
     }
-    CURRENT_VERSION = "0.13.94"
+    CURRENT_VERSION = "0.13.95"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
