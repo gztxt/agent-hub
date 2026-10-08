@@ -229,6 +229,16 @@
         /* 「在跑 N · 会话 M」两个数之间的分隔符（v0.13.90）：不抢眼，
            但要在极窄宽度下也能被省略掉而不吃掉两端的数字。 */
         .hstats .hbusy-sep { opacity: .5; margin: 0 2px; }
+        /* 顶栏 GitHub 仓库地址（2026-10-08 用户要求「添加 github 地址」）。
+           为什么放顶栏而不是页脚：底部状态栏本批已按用户裁定删除，而仓库地址是
+           「这东西从哪来、怎么参与」的唯一入口，属常驻身份信息。
+           窄屏策略与 .brand-word 一致（只留图标、文字由 title/aria 提供），
+           断点仍只在既有窄屏 media query 内定义一处（AGENTS.md §4.1③）。 */
+        .gh-link { display: inline-flex; align-items: center; gap: 5px; flex: none;
+                   color: var(--text-2); text-decoration: none; border-radius: 6px;
+                   padding: 2px 6px; }
+        .gh-link:hover { color: var(--text-1); background: var(--sel-bg-hover); }
+        .gh-link svg.i { width: var(--ico-sm); height: var(--ico-sm); }
         /* 顶部健康指示：改用与侧栏 s-badge 同一套「方块 + 明度」语言，全站状态图形只此一族 */
         .hdot { display: inline-block; width: 9px; height: 9px; flex: none; }
         .hdot.g { background: var(--st-running); animation: pulse 2s infinite; }
@@ -691,7 +701,9 @@
         #toast div.err { border-color: var(--danger-border); color: var(--danger-text); }
         #toast div.ok { border-color: var(--text-2); color: var(--text-1); }
 
-        .footer { text-align: center; padding: 12px; color: var(--muted); font-size: var(--fs-sm); background: var(--bg); border-top: 1px solid var(--border); }
+        /* .footer 已于 2026-10-08 删除（用户裁定，见挂载点处注释）：宽屏这条与
+           窄屏那两条（.footer + .foot-long 的 display:none）一并摘掉。
+           窄屏 320/390px 上它占 73px（09-20 实测），删后那部分高度回补给主区。 */
 
         /* .chip 只保留自身样式：dot / b / .kindtag / .btn 四条子规则零引用（首页 4 个 chip 内部
            只有 svg + 纯文本），状态指示早已迁到 .s-badge，属残留死代码。
@@ -864,6 +876,10 @@
             .hstats > span { white-space: nowrap; flex: 0 0 auto; }
             /* 收缩压力只由计数文字承担（省略号截断）；字标 / 状态点 / 齿轮一律不收缩 */
             .hstats > #hAgents { flex: 0 1 auto; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+            /* GitHub 地址在窄屏只留图标（与 .brand-word 同一档位策略）：
+               完整地址仍在 title / aria-label 里，抄地址的需求靠悬停与新窗口两条路满足。 */
+            .gh-link { padding: 2px 4px; }
+            .gh-link .gh-txt { display: none; }
             /* 齿轮已移入左侧菜单栏，顶部不再需要 #btnSettings 的任何规则 */
             /* 窄屏：手风琴退化为「图标条 + 浮层抽屉」，复用既有 .collapsed 机制
                收起 = 52px 图标条（仍在文档流内，不遮挡 header）；展开 = 覆盖式抽屉，点遮罩收起 */
@@ -996,8 +1012,8 @@
             .mem-item > p:empty { display: none; }
             .mem-item > p { margin: 0; }
             #chatPane .composer input { height: 38px; }
-            .footer { padding: 5px 10px; font-size: var(--fs-xs); }
-            .footer .foot-long { display: none; }  /* 窄屏只留版本号 + 时间，Apache-2.0 鸣谢在宽屏/README 保留 */
+            /* 原先这里有 .footer / .footer .foot-long 两条窄屏规则，
+               随底部状态栏一并删除（2026-10-08 用户裁定，见宽屏那条的注释）。 */
             .mem-grid { grid-template-columns: minmax(0, 1fr) !important; }
             .panel { padding: 12px; }
             .toolbar input:not([type=checkbox]) { min-width: 140px; }   /* v0.13.35：同样排除勾选框 */
@@ -1145,6 +1161,10 @@
         <symbol id="i-radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="m12 12 7-7"/></symbol>
         <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V12h6v10"/></symbol>
         <symbol id="i-panel-collapse" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
+        <!-- GitHub 标记（顶栏仓库地址外链用，2026-10-08）。取自 GitHub Octicons 的
+             mark-github（MIT，与本仓 Apache-2.0 兼容），16 网格故 viewBox 写 0 0 16 16。
+             实心图形 ⇒ 消费侧必须带 class="i fill"（svg.i 默认 fill:none 会把它画成空框）。 -->
+        <symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
         <symbol id="i-panel-expand" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m13 9 3 3-3 3"/></symbol>
         <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
         <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
@@ -1158,6 +1178,16 @@
     <div class="header">
         <h1 class="brand" title="Agent Hub"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h1>
         <div class="hstats">
+            <!-- 仓库地址：origin = https://github.com/gztxt/agenthub.git（2026-10-08 仓改名
+                 agent-hub→agenthub 时同步改的远端名），全站唯一的可见入口。
+                 写完整 https 而非省略号：地址要能被人抄走；窄屏由 CSS 隐藏文字留图标。
+                 ⚠ 放在本组**最左**（不是最右）是刻意的：窄屏 .hstats 是
+                 `flex-wrap:nowrap + overflow:hidden`，宽度不够时被裁掉的是**最右**那一项
+                 （v0.13.74 已为此挨过一次投诉：状态字被视口右缘直接切断）。
+                 仓库地址是常驻身份项、不该当截断的 sacrificial item，状态文字才是。 -->
+            <a class="gh-link" href="https://github.com/gztxt/agenthub" target="_blank" rel="noopener noreferrer"
+               title="源码仓库 · github.com/gztxt/agenthub" aria-label="打开源码仓库 github.com/gztxt/agenthub（新窗口）">
+                <svg class="i fill" aria-hidden="true"><use href="#i-github"/></svg><span class="gh-txt">gztxt/agenthub</span></a>
             <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
             <span id="hStale"></span>
             <span id="hAgents">Agents: -</span>
@@ -2267,7 +2297,16 @@
         </div>
     </div>
 
-    <div class="footer">Agent Hub v{{ version }}<span class="foot-long"> · 融合 Agent_Manager (Apache-2.0) 设计理念</span> · <span id="ftTime"></span></div>
+    <!-- 2026-10-08（用户裁定）：底部状态栏 `.footer`（版本号 + Apache-2.0 鸣谢 + 时钟）
+         **整块删除**——它常年只占 30~70px 却把主区挤矮，且窄屏那条 .foot-long
+         本来就被 display:none 隐藏，等于大部分屏看不到鸣谢内容。
+         三处连带一起摘（漏一处就是一条每1000ms 打到 null 上的死调用）：
+           ① 本挂载点；② 两条 CSS（宽屏 .footer + 窄屏 .footer/.foot-long）；
+           ③ 写端 static/hub/06-manager-tasks.js 的 tick()（它只服务 #ftTime）与
+              它的 setInterval(tick,1000)（tick 整体删，函数无其他消费者）。
+         ⚠ Apache-2.0 的来源声明**没有丢**：README.md 首段有完整声明（含上游
+         Zafer-Liu/Agent_Manager v0.3.0、改了什么、评估报告路径），删的只是
+         页面上那一行重复的短鸣谢。 -->
     <!-- 2026-10-05 无障碍：toast 是全站唯一的错误/成功通知通道（134 处调用），
          此前**全站 0 处** aria-live / role="status" ⇒ 屏幕阅读器用户完全听不到
          「加载失败」「已保存」这类关键提示。
@@ -2392,6 +2431,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=7bf18541"></script>
+    <script src="/static/hub.js?v=afc858ac"></script>
 </body>
 </html>
