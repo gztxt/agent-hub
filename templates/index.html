@@ -229,8 +229,12 @@
         /* 「在跑 N · 会话 M」两个数之间的分隔符（v0.13.90）：不抢眼，
            但要在极窄宽度下也能被省略掉而不吃掉两端的数字。 */
         .hstats .hbusy-sep { opacity: .5; margin: 0 2px; }
-        /* 顶部健康指示：改用与侧栏 s-badge 同一套「方块 + 明度」语言，全站状态图形只此一族 */
+        /* 顶部状态点：改用与侧栏 s-badge 同一套「方块 + 明度」语言，全站状态图形只此一族 */
         .hdot { display: inline-block; width: 9px; height: 9px; flex: none; }
+        /* .g / .y 两档 2026-10-08 起无引用：健康灯圆点（#hHealth + 「Hub 在岗」整块）
+           已按用户裁定删除，setHealthDot 同步摘掉 ⇒ 这两档不再有消费者。
+           按 88fbbbd 的先例**保留规则不删**（CSS 死规则零功能危害，而窄屏/主题改版时
+           恢复一个状态点只需加回类名）；.hdot 基类与 .r/.b 仍在用（异常 / 在跑）。 */
         .hdot.g { background: var(--st-running); animation: pulse 2s infinite; }
         .hdot.y { background: var(--st-installed); }
         .hdot.r { background: var(--st-error); }
@@ -862,8 +866,9 @@
             .hstats { gap: 6px; font-size: var(--fs-xs); flex-wrap: nowrap; margin-left: auto; min-width: 0;
                       overflow: hidden; }
             .hstats > span { white-space: nowrap; flex: 0 0 auto; }
-            /* 收缩压力只由计数文字承担（省略号截断）；字标 / 状态点 / 齿轮一律不收缩 */
-            .hstats > #hAgents { flex: 0 1 auto; min-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+            /* 2026-10-08：#hAgents 已从顶栏摘除，原先给它单独开的 ellipsis 窗口
+               （min-width:60px + text-overflow）随之删除——挂载点没了，规则是死规则。
+               收缩压力改由下面 v0.13.74 那条「.hstats > span 全体可省略」承担。 */
             /* 齿轮已移入左侧菜单栏，顶部不再需要 #btnSettings 的任何规则 */
             /* 窄屏：手风琴退化为「图标条 + 浮层抽屉」，复用既有 .collapsed 机制
                收起 = 52px 图标条（仍在文档流内，不遮挡 header）；展开 = 覆盖式抽屉，点遮罩收起 */
@@ -943,7 +948,9 @@
                下面只调**排布密度与截断**，不砍功能、不改宽屏。 */
             /* ① 顶栏截断：给状态区一个可省略的窗口。原先只给 #hAgents 做了 ellipsis，
                而「Hub 在岗」是 `flex:0 0 auto` 的 nowrap，撑不下时直接溢出被裁 ⇒
-               改成：状态区整体可收缩、内部各自 nowrap + ellipsis、字标与齿轮不收缩。 */
+               改成：状态区整体可收缩、内部各自 nowrap + ellipsis、字标与齿轮不收缩。
+               2026-10-08：#hAgents 与「Hub 在岗」两块挂载点都已摘除，这条现在直接
+               兜住仅剩的三块（需重启 / 在跑·会话 / 异常），机制不变。 */
             .hstats { flex: 1 1 auto; min-width: 0; overflow: hidden; }
             .hstats > span { flex: 0 1 auto; min-width: 0; overflow: hidden;
                              text-overflow: ellipsis; white-space: nowrap; }
@@ -1158,9 +1165,7 @@
     <div class="header">
         <h1 class="brand" title="Agent Hub"><svg class="brand-glyph" aria-hidden="true"><use href="#i-hubmark"/></svg><span class="brand-word"><span class="bw-a">Agent</span><span class="bw-b">Hub</span></span></h1>
         <div class="hstats">
-            <span><span class="hdot g" id="hHealth" title="健康状态检测中…"></span><span class="hstat-lbl">Hub 在岗</span></span>
             <span id="hStale"></span>
-            <span id="hAgents">Agents: -</span>
             <!-- P2-B：在跑的 Agent（活着的终端会话）。v0.13.90 起文案为
                  「在跑 N · 会话 M」（N=有活会话的 Agent 数，M=活会话总条数），
                  数据源换成免 token 的只读聚合端点 /api/term/activity。 -->
@@ -2392,6 +2397,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=7bf18541"></script>
+    <script src="/static/hub.js?v=afeb5f46"></script>
 </body>
 </html>

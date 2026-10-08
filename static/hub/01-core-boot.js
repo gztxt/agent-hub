@@ -529,20 +529,19 @@ async function loadAgents() {
     agentFailStreak = 0;
     renderHomeStats();
     renderNav();   // v0.7.1：Agent / 基础设施的唯一入口是左侧手风琴，随数据刷新
-    const ag = AGENTS.filter(a => a.kind === 'agent');
-    /* v0.10.2：「在线」换成「可用」——装了 ≠ 能用（fcc-* 入口壳、qoder 额度耗尽都是实例）。
-       假卡已在服务端被 vitals 拦掉，这里的分母已经是真 Agent 数。
-       2026-10-08（用户裁定）：顶栏只留总数，「（可用 N · 未实测 N · 待检 N）」明细**删除**——
-       顶栏宽度紧张且窄屏会被 ellipsis 截断，明细改由左侧手风琴的卡片徽章承载。
-       口径未变：分母仍是真 Agent 数，明细判据（attested / usable）仍在服务端与卡片上。 */
-    $('hAgents').textContent = 'Agents: ' + ag.length;
+    /* 2026-10-08（用户裁定，两次）：顶栏的「Agents: N（可用 N · 未实测 N · 待检 N）」
+       整块摘除——先删括号明细（顶栏宽度紧张、窄屏被 ellipsis 截断），
+       后删整块（明细在左侧手风琴的卡片徽章上已有，顶栏不必复述）。
+       本函数原来那三个 filter 与 `const ag` 一并删除，现在只负责异常块。
+       口径未变：异常仍由 countBadAgents 单点判定（test_health_verdict_single_source 钉住）。 */
     const errs = countBadAgents(AGENTS);
     $('hErrors').innerHTML = errs ? '<span class="hdot r" title="启动异常的 Agent（vitals 实测结论）">异常 ' + errs + '</span>' : '';
   } catch (e) {
-    // 服务重启窗口容忍瞬时失败；连续 ≥2 次才亮红灯（避免误报）
+    // 服务重启窗口容忍瞬时失败；连续 ≥2 次才报（避免误报）。
+    // 2026-10-08：原先这里的 setHealthDot('r', …) 随健康灯一起摘掉了——
+    // 那是 Hub 不可达在顶栏唯一的灯色提示，兜底就是下面这条 toast。
     agentFailStreak++;
     if (agentFailStreak === 2) {
-      setHealthDot('r', 'agent 列表连续拉取失败：' + e.message);
       toast('Hub 数据连续 ' + agentFailStreak + ' 次拉取失败：' + e.message, 'err');
     }
   }
@@ -570,27 +569,24 @@ function renderHomeStats() {
   if (errCard && errCard.parentElement) errCard.parentElement.classList.toggle('alert', errs > 0);
 }
 
-/* ── T5 真实健康灯：定时拉 /health 驱动头部灯色（ok=绿 不可达=红 其它=黄）── */
-function setHealthDot(cls, title) {
-  const d = $('hHealth');
-  if (!d) return;
-  d.className = 'hdot ' + cls;
-  if (title) d.title = title;
-}
+/* ── T5：定时拉 /health，驱动顶栏「需重启」标签 ──
+ * 2026-10-08（用户裁定）：顶栏的健康灯圆点 + 「Hub 在岗」文字**整块删除** ⇒
+ * `setHealthDot` 连同它在 pollHealth 里的两处调用（success 的 g/y、catch 的 r）
+ * 一并摘掉——留着一个 target 恒为 null 的写端，就是 P1-18 注释里点名的死调用。
+ * pollHealth 本身**保留**：它现在的唯一职责是兑 needs_restart（需重启报警，用户同裁定保留）。
+ * ⚠ 代价（已知并接受）：Hub 整体不可达时顶栏不再有灯色提示，只剩 loadAgents 的 toast。 */
 async function pollHealth() {
-  /* 2026-10-05：页面隐藏时早退（15s 一次的健康灯在后台标签里白跑）。
+  /* 2026-10-05：页面隐藏时早退（15s 一次的健康轮询在后台标签里白跑）。
    * 守卫放函数体内，不动 06:340 的 setInterval 注册。 */
   if (document.hidden) return;
   try {
     const d = await api('/health');
-    setHealthDot(d && d.status === 'ok' ? 'g' : 'y', 'status=' + ((d && d.status) || '?'));
-    // P1-19：把 code_stale / needs_restart 兑到顶栏。纯 additive —— 圆点颜色仍只看
-    // status（代码没重启不等于服务坏了，这是 /health 自己的设计意图，别在这里改口径）。
+    // P1-19：把 needs_restart 兑到顶栏。
+    // 字段名以 src/selfattest.py 的 snapshot() 为准：needs_restart 才是本体，
+    // code_stale 只是兼容别名，且「不可判定」时被压成 False —— 那种情况
+    // 另有 code_stale_reason 说明，所以只在明确为 true 时才提示。
     const staleEl = $('hStale');
     if (staleEl) {
-      // 字段名以 src/selfattest.py 的 snapshot() 为准：needs_restart 才是本体，
-      // code_stale 只是兼容别名，且「不可判定」时被压成 False —— 那种情况
-      // 另有 code_stale_reason 说明，所以只在明确为 true 时才提示。
       const needRestart = d && d.needs_restart === true;
       if (needRestart) {
         staleEl.innerHTML = '<span class="stale-tag" title="' +
@@ -601,7 +597,11 @@ async function pollHealth() {
         staleEl.innerHTML = '';
       }
     }
-  } catch (e) { setHealthDot('r', 'Hub 不可达：' + e.message); }
+  } catch (e) {
+    /* 灯色提示已随「Hub 在岗」删除，这里**不再弹 toast**——pollHealth 每 15s 一次，
+     * Hub 真不可达时会连着弹十几条，比没提示更糟。Hub 不可达的兜底提示由
+     * loadAgents 的 toast 承担（30s 一次、连续 ≥2 次才报，见其 catch 分支）。 */
+  }
 }
 
 
