@@ -21,7 +21,7 @@ vitals_loop（那会烧 CLI 探活资源）、不占任何生产端口（只绑 
 ~/.pi/agent/sessions、~/.grok、~/.hermes、WorkBuddy、工作区文件、技术文档归档）。
 本脚本**只读**：全部走 GET，不触发任何写端点。
 
-用法：cd /fs/1000/ftp/技术文档/agent-hub && venv/bin/python tests/probe_memfeed_inject.py
+用法：cd /fs/1000/ftp/技术文档/agenthub && venv/bin/python tests/probe_memfeed_inject.py
 （2026-10-02：项目根已从 /home/gztxt/agent-hub 迁到本路径，旧用法会直接 cd 失败。）
 """
 import json

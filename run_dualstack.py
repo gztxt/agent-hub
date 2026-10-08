@@ -23,7 +23,7 @@ import socket
 
 import uvicorn
 
-ENV_FILE = "/fs/1000/ftp/技术文档/agent-hub/.env"
+ENV_FILE = "/fs/1000/ftp/技术文档/agenthub/.env"
 BACKLOG = 2048  # 与 uvicorn 默认一致，避免突发连接被截断
 
 

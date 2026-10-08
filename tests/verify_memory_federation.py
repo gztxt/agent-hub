@@ -21,7 +21,7 @@
 不占任何端口（TestClient 走 in-process ASGI）、db 指向临时空库
 ⇒ 任何命中都只能来自 TDAI，本地便签无法冒充成功。**生产 agents.db 全程不碰。**
 
-用法：cd /fs/1000/ftp/技术文档/agent-hub && venv/bin/python tests/verify_memory_federation.py
+用法：cd /fs/1000/ftp/技术文档/agenthub && venv/bin/python tests/verify_memory_federation.py
 退出码 0 = 全绿；非 0 = 有 FAIL。
 """
 import json

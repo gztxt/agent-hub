@@ -13,7 +13,7 @@ timeout，而之后每轮 L2 sweep 都从 _rt 复原 ⇒ 卡片由「可用」�
   C 无旧凭据 + 本轮超时  → 如实 timeout（不得有无条件护短）
   D discovery 视角      → attested 必须为 True（绿标不被摘）
 
-用法：cd /fs/1000/ftp/技术文档/agent-hub && python3 tests/verify_rt_attestation_keeps.py
+用法：cd /fs/1000/ftp/技术文档/agenthub && python3 tests/verify_rt_attestation_keeps.py
 退出码 0 = 全绿；非 0 = 有 FAIL。
 """
 import os

@@ -6,7 +6,7 @@
 用法: venv/bin/python tests/verify_memcenter_render.py
 """
 import json, sys, time
-sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agenthub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
 PORT = 9409

@@ -17,7 +17,7 @@ verify_memory_federation.py 头注的 TDAI 404 教训）⇒ 本闸门对本机**
 db 指向临时空库、**全程不打网络**（TDAI 不在 sources 里，claude-mem/sqlite 与 rg 都是本机文件）。
 生产 agents.db / claude-mem.db / 各 sessions 目录全程只读（mode=ro / rg 只读）。
 
-用法：cd /fs/1000/ftp/技术文档/agent-hub && venv/bin/python tests/verify_memfed_federation.py
+用法：cd /fs/1000/ftp/技术文档/agenthub && venv/bin/python tests/verify_memfed_federation.py
 退出码 0 = 全绿；非 0 = 有 FAIL。
 """
 import os

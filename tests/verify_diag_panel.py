@@ -16,7 +16,7 @@ CDP 纪律（本轮踩过的真坑）：`Fetch` 域是**按 session 启用**的�
 用**同一个连接**发出；另开一条 CDP 去 enable 再拿旧连接去应答 ⇒ "Fetch domain is not enabled"。
 """
 import json, re, sys, tempfile, time
-sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agenthub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
 BASE, PORT = "http://127.0.0.1:3102", int(sys.argv[1]) if len(sys.argv) > 1 else 9392

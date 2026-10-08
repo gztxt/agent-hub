@@ -34,7 +34,7 @@ BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:3102"
 TOKEN = os.getenv("HUB_PROBE_TERM_TOKEN", "probe-term-token")
 CDP_PORT = int(os.getenv("HUB_PROBE_CDP_PORT", "9397"))
 W, H = 1280, 800
-TARGET_PROJECT = "/fs/1000/ftp/技术文档/agent-hub"      # 用户示例场景的项目
+TARGET_PROJECT = "/fs/1000/ftp/技术文档/agenthub"      # 用户示例场景的项目
 AGENT = "codex"                                # 用户示例场景的 agent
 res, spawned_sessions = [], []
 

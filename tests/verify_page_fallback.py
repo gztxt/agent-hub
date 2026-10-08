@@ -9,7 +9,7 @@
 这正好是"同一份代码、两个地址、一个正常一个异常"的唯一免猜解释，逐名验。
 """
 import json, sys, time
-sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agenthub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
 BASE, PORT = "http://127.0.0.1:3102", int(sys.argv[1]) if len(sys.argv) > 1 else 9381

@@ -29,10 +29,10 @@ import subprocess
 import sys
 import tempfile
 import time
-sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agenthub/tests")
 from _cdp_min import CDP, launch_chrome, page_target     # noqa: E402
 
-ROOT = "/fs/1000/ftp/技术文档/agent-hub"
+ROOT = "/fs/1000/ftp/技术文档/agenthub"
 BASE, PORT = "http://127.0.0.1:3102", int(sys.argv[1]) if len(sys.argv) > 1 else 9405
 RED_SHA = "8067801"          # 最后一个仍带 TDZ 的 hub.js（md5 0e6e0613）
 PHONE_KEYS = {"hub.term.token": "SEED-TOKEN-FOR-ACCIDENT-PATH", "hub.hist": "claude",

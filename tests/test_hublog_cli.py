@@ -47,7 +47,9 @@ class TestEnvParsing(unittest.TestCase):
         """~/bin/hublog 是软链接：仓库根必须按 realpath 算，否则读到 home/.env。"""
         repo = os.path.dirname(os.path.dirname(os.path.realpath(_SCRIPT)))
         self.assertTrue(os.path.isdir(repo), repo)
-        self.assertIn("agent-hub", os.path.basename(repo),
+        # 2026-10-08 目录改名 agent-hub → agenthub：这里断言的是「realpath 落在真仓库根」，
+        # 不是旧目录名本身，故按白名单认两个仓根别名，realpath 判据不动。
+        self.assertIn(os.path.basename(repo), ("agenthub", "agent-hub"),
                       "软链接要用 realpath 解析，不能停在链接那一侧")
         self.assertIn("realpath", open(_SCRIPT, encoding="utf-8").read().lower())
 

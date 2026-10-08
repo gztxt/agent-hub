@@ -16,7 +16,7 @@
 import json
 import sys
 import time
-sys.path.insert(0, "/fs/1000/ftp/技术文档/agent-hub/tests")
+sys.path.insert(0, "/fs/1000/ftp/技术文档/agenthub/tests")
 from _cdp_min import CDP, launch_chrome, page_target
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9407
