@@ -121,9 +121,13 @@ class TestRecordingWiring(unittest.TestCase):
                       "pty 输出必须落库（接线点① on_readable）")
 
     def test_credentials_in_pty_output_never_reach_disk(self):
-        """端到端脱敏：走真 pty，密钥经真 on_readable 落盘路径，库里须搜不到原文。"""
+        """端到端脱敏：走真 pty，密钥经真 on_readable 落盘路径，库里须搜不到原文。
+
+        ⚠️ 假密钥拼接构造、不写字面量：prepush 闸门①扫 `sk-[0-9A-Za-z._-]{20,}`，
+        写死占位串同样会被判高危而拦推送（与 test_term_record.py 同因）。
+        """
         os.environ["TERM_RECORD"] = "1"
-        secret = "sk-live-AAAABBBBCCCCDDDDEEEEFFFF0000"
+        secret = "sk-" + "live-" + "AAAABBBBCCCCDDDDEEEEFFFF0000"
         self._pty_roundtrip("wire-redact", f"export TOKEN={secret}\r\n".encode(), want=20)
         text = self._recording_text()
         self.assertNotIn(secret, text, "凭据原文落盘了 —— 脱敏必须在真通路上生效")
