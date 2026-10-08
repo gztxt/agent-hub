@@ -45,6 +45,31 @@ IDLE_TTL_S = int(os.getenv("TERM_IDLE_TTL", "2700"))
 MAX_SESSIONS = 8
 # 回收心跳间隔（P0-4）：早先 _reap() 只寄生在 list_sessions() 上，前端一关就没人回收
 REAP_INTERVAL_S = float(os.getenv("TERM_REAP_INTERVAL", "60"))
+# ── 子进程零输出即死的快速通道（PT-20260929-02 补做，2026-10-08）──
+# 缺口的确切形状：探活机制**已在**（`poll_exited` 用 waitpid(WNOHANG) 独立探活、
+# `_reap()` 遍历全部 `_sessions`、`reap_loop` 是 startup 里 spawn 的后台任务），
+# 唯一的洞是**节律**：REAP_INTERVAL_S=60 意味着子进程零输出即死后最长 60 秒
+# 才被发现。这60 秒里前端是永久空白：
+#   · PTY master 只产生 POLLHUP、不产生 EPOLLIN ⇒ asyncio `add_reader` 回调不触发
+#     ⇒ `on_readable` 不跑 ⇒ 没人置 alive=False；
+#   · `pump()` 的 `timeout=2.0` 分支只判 `if not sess.alive: break`，而 alive 只由
+#     `_cleanup()` 置 ⇒ 也不 break ⇒ 一直等；
+#   · `GET /api/term/sessions` 里该 sid 的 exit_reason 为空。
+# 也就是 09-30 报障「hermes 秒死、on_readable 一次不进、前端永久空白」的现象。
+#
+# 为什么不能靠「给add_reader 也监听 HUP」：POLLHUP 在 fd 层与「对端刚写完最后
+# 一个字节」的瞬时态同签名，一次就收会把正常收尾误判成死亡（_REAP_EOF_CONFIRM
+# 正是为这个才要 3 次确认）。而 waitpid(WNOHANG) 是**无歧义**的探针 —— 只是需要
+# 有人定期调它。
+#
+# 所以修法不是重写 reap，而是给「唯一无事件可监听」这条路径加一条快车道：
+# 每 2s 跑一次**只做探活不做 TTL 判定**的轻量扫描。分工：
+#   fast_reap_loop（2s）  —— 只答「进程还在不在」，死了立刻 _drop
+#   reap_loop（60s）      —— TTL / 无生命迹象判定、配额释放、_dying 兜底
+# 两者都走`poll_exited()`，幂等（exit_status 首次记录优先），并发跑不冲突。
+#
+# 设 0 即完全关闭快速通道（退回 v0.13.94 行为，只变慢不变错，留作逃生口）。
+_FAST_REAP_INTERVAL_S = float(os.getenv("TERM_FAST_REAP_INTERVAL", "2.0"))
 # P0-3：PTY 写背压时的让出时长。5ms 与 coalescer 窗口同量级——短到用户无感，
 # 长到足以让事件循环去处理别的 IO（否则忙等反而更糟）。
 _WRITE_BACKPRESSURE_S = 0.005
@@ -446,7 +471,26 @@ class Session:
                 env = child_env()
                 os.chdir(cwd)
                 os.execvpe(cmd[0], cmd, env)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # PT-20260929-02 补做（此项从未进 master）：原实现 `os._exit(127)`
+                # 把死因**完全吞掉**——父进程只看到「PTY 零字节 + 干净关闭」，
+                # 与「CLI 自己启动即退」在 fd 层同签名，于是无法区分「exec 失败」
+                # 和「CLI 崩了」，排障时是个哑谜。现在双写：
+                #   ① stdout（journald 可 grep）——服务侧留证据
+                #   ② PTY（用户可见）——终端里直接看到「无法启动 X」
+                # 成本只在失败路径（正常启动零开销）。
+                try:
+                    import traceback
+                    print("[term] 子进程 exec 失败 cmd=%r cwd=%r: %s"
+                          % (cmd[0], cwd, traceback.format_exc()), flush=True)
+                except Exception:  # noqa: BLE001
+                    print("[term] 子进程 exec 失败 cmd=%r（traceback 也拿不到）"
+                          % (cmd[0],), flush=True)
+                try:
+                    os.write(2, ("\r\n[hub: 无法启动 %s —— %s]\r\n"
+                                 % (cmd[0], exc)).encode())
+                except OSError:
+                    pass
                 os._exit(127)
         self.alive = True
         self.created = time.time()
@@ -1062,6 +1106,60 @@ async def reap_loop():
             raise
         except Exception as e:  # noqa: BLE001
             print(f"[term] reap_loop 异常（下轮重试）：{type(e).__name__}: {e}", flush=True)
+
+
+def _fast_reap_enabled() -> bool:
+    """快速通道是否启用（间隔 > 0）。设 TERM_FAST_REAP_INTERVAL=0 即关闭。"""
+    return _FAST_REAP_INTERVAL_S > 0
+
+
+def _reap_fast() -> None:
+    """只做一件事：发现「零输出即死」的子进程并立刻收尸（PT-20260929-02）。
+
+    **刻意只探活、不做 TTL 判定**。分工理由：
+    - TTL 判据（无生命迹象 + 无人观看）误伤代价高 —— 误收一个正在跑任务的会话，
+      用户会丢现场。而`poll_exited()` 是无歧义的：waitpid 明确说进程没了。
+    - 所以快车道只做无歧义的那部分；判定「活着但该不该收」留给 60s 的 `_reap()`。
+
+    与 `_reap()` 的关系：两者都调`poll_exited()`，而它幂等
+    （`exit_status is not None` 即早退），并发跑不会互相污染。
+    `_drop()` 亦幂等。唯一需要防的是「同一轮里两者都判死」——
+    `_sessions.pop(s.id, None)` 与 `_drop` 内的 `pop` 都走默认 None，天然容忍。
+    """
+    for s in list(_sessions.values()):
+        if not s.alive:
+            _drop(s)
+            continue
+        probe = getattr(s, "poll_exited", None)
+        # getattr 兜底同`_reap()`：轻量 stub 只暴露 id/alive/last_io/kill/_cleanup，
+        # 契约不该由实现细节决定。
+        if callable(probe) and probe():
+            _drop(s)
+
+
+async def fast_reap_loop() -> None:
+    """子进程即时感知快车道（每 2s）。启动见 `src/main.py` 的 `_spawn`。
+
+    单轮异常不许打死循环 —— 与 `reap_loop` 同一条纪律：后台任务静默死掉
+    就等于把缺口原样放回去，而且更难发现（没有报错、没有日志）。
+    """
+    if not _fast_reap_enabled():
+        print("[term] 子进程即时感知快车道已关闭"
+              "（TERM_FAST_REAP_INTERVAL<=0）⇒ 零输出即死最长需等 %.0fs"
+              % REAP_INTERVAL_S, flush=True)
+        return
+    print("[term] 子进程即时感知快车道已启用：每 %.1fs 探活一次"
+          "（常规 reap %.0fs）" % (_FAST_REAP_INTERVAL_S, REAP_INTERVAL_S),
+          flush=True)
+    while True:
+        await asyncio.sleep(_FAST_REAP_INTERVAL_S)
+        try:
+            _reap_fast()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[term] fast_reap_loop 异常（下轮重试）：{type(e).__name__}: {e}",
+                  flush=True)
 
 
 def _reap_dying() -> None:

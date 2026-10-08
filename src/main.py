@@ -1211,6 +1211,10 @@ async def startup():
     _spawn(prov_loop())   # 代码溯源（工作区脏度）刷新
     # P0-4：终端会话回收必须有独立心跳，不能寄生在前端轮询上
     _spawn(term_mod.reap_loop())
+    # PT-20260929-02 补做：零输出即死的子进程没有任何 IO 事件可监听，
+    # 只能靠定期 waitpid 探活发现。缺这条快车道，reap_loop 的 60s 间隔
+    # 就是「前端空白最长 60 秒」的同义词。
+    _spawn(term_mod.fast_reap_loop())
     mcpgw_mod.ensure_schema()
     cronjobs_mod.ensure_schema()
     cronjobs_mod.set_context(
