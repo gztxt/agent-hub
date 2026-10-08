@@ -79,7 +79,19 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.92"   # 嵌入式终端「选不中/复制不动」根治 + 右键菜单（canvas 图片菜单退场）
+VERSION = "0.13.93"   # codebuddy 接入历史会话（第九家：侧栏菜单点开有历史下拉、可续聊）
+#   前八家（grok/claude/qoder/jcode/hermes/codex/opencode/cursor）都在 src/sessions_store.py
+#   的 SESSION_STORES 里登记了「盘上仓库 → 条目 → resume argv」三段映射；codebuddy 之前
+#   **只在菜单里**（profiles 有终端入口），点开没有历史下拉 —— 与 v0.13.83 修 cursor 前同款。
+#   三处与 claude 不同、逐条实测钉死（详见 sessions_store._t_codebuddy 的注释）：
+#     ① 行判据是 `type=='message' and role=='user'`（不是 claude 的 `type=='user'`），
+#        content 块类型是 `input_text`/`output_text` ⇒ 不能复用 `_first_user_text`；
+#     ② 桶名是 `compressPath(realpath(cwd))`（`/ \ :`→`-`、合并连续`-`）而不是 slug；
+#     ③ `--resume <id>` **按起 pty 的工作目录定位会话**（dist 里 findExistingSession 调
+#        sessionManager.get 不传 cwd ⇒ 只剩当前进程 cwd 那个桶）⇒ 与 cursor 同构，
+#        必须自带「桶名对得上才列」的可续判据，否则点了必然 SessionNotFound。
+
+# ── 以下为 v0.13.92 的根因（保留供追溯，非本版条目）──
 #   根因（2026-10-08 用户报障：「agent-hub 嵌入式终端 页面文字无法选择 复制，
 #   按右键显示是图片」）——两个症状一个源头：终端是 WebGL 渲染器画在 <canvas> 上的。
 #   ① **选区在松手瞬间被自己清掉（真缺陷，探针红绿可分）**：

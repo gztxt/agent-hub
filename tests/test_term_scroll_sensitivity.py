@@ -193,8 +193,10 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         # ② 右键菜单的唯一入口/出口（浮层纪律，AGENTS 4.2）；
         # ③ 用户原话「图片另存为」——它记着"为什么必须自己出菜单"。
         "0.13.92": ("SelectionService.disable", "回装", "termCtxOpen", "图片另存为"),
+        # v0.13.93 codebuddy 接入历史会话：三处与 claude 不同的形状 + 可续判据。
+        "0.13.93": ("role=='user'", "compressPath", "桶名", "SessionNotFound"),
     }
-    CURRENT_VERSION = "0.13.92"
+    CURRENT_VERSION = "0.13.93"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

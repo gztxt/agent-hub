@@ -1,3 +1,89 @@
+## v0.13.93 — codebuddy 接入历史会话（第九家）
+
+> 2026-10-08 用户指令：「codebuddy code 也要添加会话历史记录」。
+> 症状：侧栏点开 **CodeBuddy Code** 那一行没有历史下拉 —— 与 v0.13.83 修 cursor 之前的症状同款。
+
+### 一、根因（不是 bug，是「没登记」）
+
+历史下拉由两条**必须同集合**的白名单共同决定（漏一边的表现就是「菜单里有这张卡、点开没有下拉」）：
+
+- 后端 `src/sessions_store.py` 的 `SESSION_STORES`：盘上仓库 → 条目 → resume argv 三段映射；
+- 前端 `static/hub/05-chat-and-history.js` 的 `TERM_HIST_AGENTS`：不发历史请求的卡片直接被门闩挡掉。
+
+codebuddy 两边都没有。它在 `profiles.py` 里明明有终端入口（`CODEBUDDY_CLI` 绝对路径），
+只是从未被登记进会话仓库适配层。
+
+### 二、盘上形态（2026-10-08 实测 73 个 jsonl / 5 个桶）
+
+```
+~/.codebuddy/projects/<桶>/<sid>.jsonl        # 会话本体（一文件一会话）
+~/.codebuddy/projects/<桶>/<sid>/            # 同名目录：tool-results / subagents / file-history
+```
+
+与 claude/qoder 同为「jsonl 一文件一会话」，但**三处都不同**，逐条钉死：
+
+| | claude / qoder | codebuddy |
+|---|---|---|
+| 用户行判据 | `type=='user'` | **`type=='message' and role=='user'`** |
+| content 块 | `{"type":"text","text":…}` | **`input_text`/`output_text`** |
+| 目录桶名 | slug（非字母数字→`-`） | **`compressPath(realpath(cwd))`** |
+
+1. **标题抽取不能复用 `_first_user_text()`** —— 它的通用分支要求 `type=='user'`，
+   对 codebuddy 恒返回空（已写成单测断言钉死）。新增 role 版 `_codebuddy_first_user()`，
+   `<user_query>` 拆标签与注入前缀过滤照旧复用。实测 62 个非空会话出标题 60 条，
+   余 2 条全是注入块（`system-reminder` + `<command-name>/model`），落「未命名会话」是正确降级。
+2. **桶名算法**在 dist 里是 `canonicalizeStorePath()`（realpathSync，抛错返回原串）
+   后接 `compressPath()`（`/ \ :`→`-`、去首尾 `-`、合并连续 `-`）。已实现 Python 等价
+   `_compress_path()` 并单测钉死 —— ⚠️ 它**只替换三种分隔符，空格不动**（我一度按
+   「非字母数字全换」写期望值，被单测当场证伪）。
+3. **零字节 jsonl 不列**（本机 11/73）：codebuddy 建会话时先 `writeFile("")` 占位，
+   没发言就退出的会话留下空文件；resume 它得到一条**空会话**。与 opencode 的
+   `exists(message)`、cursor 的 `hasConversation` 同口径。
+
+### 三、可续判据必须自己算（第三次同构教训）
+
+`--resume <id>` **按起 pty 的工作目录定位会话**。dist 里 `findExistingSession()` 调
+`sessionManager.get(id)` **不传第二参数** ⇒ `getPreferredProjectDir(undefined)` 直接落空 ⇒
+只剩 `getSessionFilePath()` = 当前进程 cwd 那个桶。
+
+后果：目录对不上时它抛 `SessionNotFoundError`（`No conversation found with session ID: …`）。
+比 cursor 的「静默开一条新会话」好一点，但一样是「点了历史条目却坏掉」——
+正是 v0.13.62（codex）与 v0.13.83（cursor）各吃过一次的**半边修复**。
+
+所以 `_t_codebuddy` 与 `_exists_on_disk()` 用**同一套**判据：桶名必须等于
+`_cb_effective_bucket()`（记录目录在盘上就用它，否则退回画像目录 —— 对齐 `session_cwd()` 口径）。
+
+⚠️ **sid 会跨桶撞名**（实测 `7a3124d8` 同时存在于主仓桶与 worktree 桶），所以
+`_store_path()` 不能像 claude 那样 `next(iter(glob))` 随便挑一个，取 **mtime 最新**那份，
+与列表口径一致 —— 否则「列出的那条」与「取到的那条」会分叉。
+
+### 四、改动面
+
+- `src/sessions_store.py`：新增 `_compress_path()` / `_cb_bucket_of()` / `_cb_effective_bucket()` /
+  `_codebuddy_first_user()` / `_t_codebuddy()`；`SESSION_STORES` 加 `codebuddy` 条目；
+  `_store_path()` / `_exists_on_disk()` / `session_cwd()` / `_title_of_session()` 各加一段。
+- `static/hub/05-chat-and-history.js`：`TERM_HIST_AGENTS` 加 `'codebuddy'`；重建 `static/hub.js`。
+- `tests/test_sessions_store.py`：集合锁 8→9；新增 5 例（compressPath 等价、role 版抽取、
+  全链、**列得出⇒点得动**、`session_cwd` 与桶名自洽、零字节不列）。
+
+### 五、验收（证据）
+
+- **L0 hermetic** 1364 例 **0 跳过 0 失败**（含新增 3 例纯函数契约）；收集器对账 1426 = 1426。
+- **L1 host** 62 例 0 失败（新增 4 例走本机真实 `~/.codebuddy` 仓库）。
+- **端到端实弹（真起 pty，不是看日志）**：从 `sessions_store.resume_argv()` 取真 argv，
+  `pty.fork()` + `chdir(session_cwd())` + `execv` 真拉起 codebuddy v2.137.1 ——
+  屏上出现该会话的真实历史（「检查agenthub项目是否都正常了」及其后续 11 条），
+  **不是**空会话、也不是 `No conversation found`。
+- **红向对照**：`7a3124d8` 在两个桶各有一份，从**错误**桶目录起 resume 恢复出的是另一条
+  历史（用户消息集合不同、输出 md5 不同）⇒ 桶名判据是承重的，不是装饰。
+
+### 六、遗留
+
+- 本批含后端改动（`sessions_store.py` / `main.py`），**需重启 `agent-hub.service` 才生效**；
+  纯静态那部分（`hub.js` + `?v=` 提手）下次页面加载即生效。
+- 未做：codebuddy 的 `live_titles()`（pid → 会话映射）—— dist 里没有等价于
+  `~/.claude/sessions/<pid>.json` 的登记文件，续聊会话的顶栏标题走 `resume_of` 直查即可。
+
 ## v0.13.92 — 嵌入式终端「选不中/复制不动」根治 + 右键菜单
 
 > 2026-10-08 用户报障：「agent-hub 嵌入式终端 页面文字无法选择 复制，按右键显示是图片」。

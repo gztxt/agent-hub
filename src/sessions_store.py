@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 import sqlite3
@@ -200,6 +201,130 @@ def _t_jsonl_dir(kind: str, projects_dir: Path, cwd: str, limit: int, t0: float,
         if len(items) >= limit:
             break
     return items, ""
+
+
+#: codebuddy（CodeBuddy Code，WorkBuddy 包内捆绑 CLI）的会话仓库。
+#: 布局实测 2026-10-08（73 个 jsonl / 5 个桶）：``~/.codebuddy/projects/<compressPath(cwd)>/<sid>.jsonl``
+#: ＋ 同名目录（放 tool-results / subagents / file-history，**不是**会话本体）。
+#: 桶名算法 = ``canonicalizeStorePath``(realpathSync，失败原样返回) 后
+#: ``compressPath``（`/ \ :`→`-`、去首尾 `-`、合并连续 `-`）—— 与 claude/qoder 的
+#: 「slug」不是一回事，**不可套用**。
+CODEBUDDY_PROJECTS = HOME / ".codebuddy" / "projects"
+
+
+def _compress_path(p: str) -> str:
+    """codebuddy 的桶名算法（PathUtils.compressPath 的 Python 等价，规则逐条对齐 dist 实测源码）。"""
+    s = re.sub(r"[/\\:]", "-", p or "")
+    return re.sub(r"-+", "-", s.strip("-"))
+
+
+def _cb_cli() -> str:
+    """codebuddy CLI 绝对路径。profiles 是终端入口的同一真相源（profiles.py:33 CODEBUDDY_CLI），
+       两处各写一份字面量就会在换包路径时静默走偏（同 codex 09-30 半边修复的教训）。
+       本模块有两种引用形态（`import sessions_store`：src 在 sys.path 上，见 term.py；
+       `from src import sessions_store`：见 tests），两条 import 路径都得试。"""
+    for mod in ("profiles", "src.profiles"):
+        try:
+            m = importlib.import_module(mod)
+        except ImportError:
+            continue
+        return m.CODEBUDDY_CLI
+    raise RuntimeError("codebuddy CLI 路径取不到：profiles 模块两种形态都 import 失败")
+
+
+def _cb_bucket_of(cwd: str) -> str:
+    """一条 codebuddy 会话所在桶名 = compressPath(realpath(cwd))；realpath 失败则按原串算
+       （对齐 dist 的 canonicalizeStorePath：realpathSync 抛错就返回入参本身）。"""
+    if not cwd:
+        return ""
+    try:
+        rp = str(Path(cwd).resolve())
+    except OSError:
+        rp = cwd
+    return _compress_path(rp)
+
+
+def _cb_effective_bucket(rec_cwd: str, fallback: str) -> str:
+    """续聊时**真正会生效**的工作目录 = `session_cwd()` 的口径：记录目录在盘上就用它，
+       否则退回画像目录。桶名必须按这个算，不能按记录目录算 —— 记录目录已删的那一半
+       （本机 73 条里worktree 桶那类）正是这样被挡掉的。"""
+    return _cb_bucket_of(rec_cwd if (rec_cwd and Path(rec_cwd).is_dir()) else fallback)
+
+
+def _codebuddy_first_user(objs: List[dict]) -> str:
+    """codebuddy 版「首句用户提问」——**不能复用** `_first_user_text()`：
+       实测行形状是 ``{"type":"message","role":"user","content":[{"type":"input_text","text":…}]}``
+       （content 里是 `input_text`/`output_text`，不是 claude 的 `text`），
+       而 `_first_user_text` 的通用分支要求 `type=='user'` ⇒ 恒返回空。
+       参照 `_cursor_first_user` 单设一个 role 版；`<user_query>` 拆标签与注入前缀过滤共用。
+       本机实测 62 个非空会话出标题 60 条（另2 条全是注入块，见 `_t_codebuddy` 的说明）。"""
+    for d in objs:
+        if d.get("type") != "message" or d.get("role") != "user":
+            continue
+        if d.get("isSidechain") or d.get("isMeta"):
+            continue
+        s = _text_of(d.get("content"))
+        if not s:
+            continue
+        m = _UQ.search(s)
+        if m:
+            got = m.group(1).strip()
+            if got:
+                return got
+            continue
+        if s.startswith(_INJECT_PREFIX) or s.startswith("<"):
+            continue
+        return s
+    return ""
+
+
+def _t_codebuddy(cwd: str, limit: int, t0: float) -> Tuple[List[dict], str]:
+    """codebuddy 历史会话：``~/.codebuddy/projects/<桶>/<sid>.jsonl``，**跳目录**（用户 09-22 裁定）。
+
+       与 claude/qoder 同为「jsonl 一文件一会话」，但三处形状完全不同，逐条实测钉死：
+       ① **行判据**：``type=='message' and role=='user'``（不是 claude 的 ``type=='user'``）。
+       ② **桶名**：compressPath(realpath(cwd))，不是 slug ⇒ `_store_path` 只能 glob 定位。
+       ③ **零字节文件要挡掉**（本机 11/73）：codebuddy 建会话时先 writeFile("") 占位，
+          没发言就退出的会话留下空文件；resume 它会得到一条**空会话**（deserialize 返回
+          history=[]），与 opencode 的 `exists(message)`、cursor 的 `hasConversation` 同口径。
+
+       **可续判据必须自己算**：dist 里 `findExistingSession()` 调 `sessionManager.get(id)`
+       **不传第二参数** ⇒ `getPreferredProjectDir(undefined)` 直接落空 ⇒ 只剩
+       `getSessionFilePath()` = **当前进程 cwd 那个桶**。也就是说 codebuddy 的 resume 是
+       「按起 pty 的工作目录定位会话」的，跟 cursor 同构（判例见 `_t_cursor` 的注释）。
+       所以这里只列「桶名 == compressPath(该条**将会生效**的工作目录)」的条目
+       （cursor 用 md5(cwd) 做同一件事）：记录目录已删的条目（`session_cwd()` 会退回画像目录）
+       桶名必然对不上 ⇒ 点了也 resume 不到 ⇒ 列得出来就必须点得动（v0.13.62 教训）。
+       """
+    if not CODEBUDDY_PROJECTS.is_dir():
+        return [], "codebuddy 无会话仓库"
+    files = sorted(CODEBUDDY_PROJECTS.glob("*/*.jsonl"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return [], "codebuddy 暂无可续会话（只有目录骨架）"
+    items: List[dict] = []
+    seen: set = set()          # 同一个 sid 会在多个桶各存一份（实测 7a3124d8：主仓 + worktree 桶）
+    for p in files:
+        if time.time() - t0 > HARD_BUDGET_S:
+            return items, "扫描超时，仅显示已读到的条目"
+        if p.stat().st_size == 0:                       # 空占位会话，续了也是空会话
+            continue
+        bucket = p.parent.name
+        objs = _head_lines(p)
+        rec_cwd = _cwd_of_records(objs)
+        if bucket != _cb_effective_bucket(rec_cwd, cwd):
+            continue                                    # 生效目录对不上 ⇒ 点了也 resume 不到
+        sid = p.stem
+        if sid in seen:                                 # 同 id 多桶：留 mtime 最新的那份（列表已倒序）
+            continue
+        seen.add(sid)
+        items.append({"agent": "codebuddy", "id": sid,
+                      "title": mask_title(_codebuddy_first_user(objs)) or "未命名会话",
+                      "ts": int(p.stat().st_mtime), "msgs": None,
+                      "cwd": rec_cwd or cwd})
+        if len(items) >= limit:
+            break
+    return items, ("" if items else "codebuddy 暂无可续会话")
 
 
 def _t_claude(cwd: str, limit: int, t0: float):
@@ -487,6 +612,10 @@ SESSION_STORES: Dict[str, dict] = {
     # runtime（官方 `cursor-agent --help` 原文：`--resume [chatId]  Select a session to resume`）。
     # 用实装名 cursor-agent 而非官网名 cursor —— 后者 which 落空（与 profiles.CLI_ALIASES 同款理由）。
     "cursor":   {"kind": "cursor_json",    "id_re": UUID_RE, "resume": ["cursor-agent", "--resume", "{id}"],     "fn": _t_cursor},
+    # codebuddy：**必须写绝对路径**（同profiles.py 的 CODEBUDDY_CLI 理由）——该 CLI 只在
+    # WorkBuddy 包内、不在 PATH，写 "codebuddy" 会被 term.py 的 which() 判定失败、会话拉不起来。
+    # 这里 import profiles 是安全的：profiles 不 import本模块（反向 term.py 才 import 两者）。
+    "codebuddy": {"kind": "codebuddy_json", "id_re": UUID_RE, "resume": [_cb_cli(), "--resume", "{id}"], "fn": _t_codebuddy},
 }
 
 _CACHE: Dict[tuple, Tuple[float, dict]] = {}
@@ -543,6 +672,14 @@ def _store_path(agent_id: str, sid: str):
         if not UUID_RE.match(sid or ""):
             return None
         return next(iter(CURSOR_CHATS.glob(f"*/{sid}/meta.json")), None)
+    if agent_id == "codebuddy":
+        # ⚠️ 与 claude 同构但**不能**只按 cwd 定位：桶名是 compressPath(realpath(cwd))，
+        # 跳目录口径下 sid 跨桶可能撞名（实测 7a3124d8 同时存在于主仓桶与 worktree 桶）。
+        # 取 mtime 最新的那份，与 _t_codebuddy 列表口径一致 ⇒ 列出的那条就是取到的那条。
+        hits = list(CODEBUDDY_PROJECTS.glob(f"*/{sid}.jsonl"))
+        if not hits:
+            return None
+        return max(hits, key=lambda p: p.stat().st_mtime)
     return None
 
 
@@ -566,6 +703,13 @@ def _exists_on_disk(agent_id: str, sid: str, cwd: str = "") -> bool:
         return bool(_sql_one(OPENCODE_DB,
                              "select 1 from session where id=? and (parent_id is null or parent_id='')"
                              " and time_archived is null", (sid,)))
+    if agent_id == "codebuddy":
+        # 与 _t_codebuddy **同一套**判据（零字节空会话 + 生效目录的桶名对得上），
+        # 否则就是 v0.13.62 的半边修复：列表里能看见、点了必404。
+        f = _store_path("codebuddy", sid)
+        if not f or f.stat().st_size == 0:
+            return False
+        return f.parent.name == _cb_effective_bucket(_cwd_of_records(_head_lines(f, 5)), cwd)
     if agent_id == "cursor":
         # 与 _t_cursor **同一套**判据：hasConversation（有正文）+ _cursor_resumable
         # （桶名与**将要生效**的 cwd 一致 ⇒ 点了真能续上那条）。
@@ -602,6 +746,8 @@ def session_cwd(agent_id: str, sid: str, fallback: str = "") -> str:
         elif agent_id == "opencode":
             r = _sql_one(OPENCODE_DB, "select directory from session where id=?", (sid,))
             c = (r["directory"] or "") if r else ""
+        elif agent_id == "codebuddy" and f:
+            c = _cwd_of_records(_head_lines(f, 5))
         elif agent_id == "cursor":
             m = _cursor_meta(sid) or {}
             c = m.get("cwd") or ""      # 实测有 1 条 cwd 为空 ⇒ 走下面的 fallback
@@ -794,6 +940,13 @@ def _title_of_session(agent: str, sid: Optional[str], cwd: Optional[str] = None)
             return ""
         t = (r["t"] or "") if r else ""
         return mask_title(t if not t.startswith("New session - ") else ((r["u"] if r else "") or t))
+    if agent == "codebuddy":
+        # 与 _t_codebuddy 同口径：_store_path 已按 mtime 取跨桶最新那份（列表同一条），
+        # 标题走 role=='user' 版抽取（_first_user_text 对本形状恒空）。绝不回落成 id 前缀（D2）。
+        f = _store_path("codebuddy", sid)
+        if not f:
+            return ""
+        return mask_title(_codebuddy_first_user(_head_lines(f, 60)))
     if agent == "qoder":
         hit = next(iter((HOME / ".qoder" / "projects").glob(f"*/{sid}.jsonl")), None)
         if not hit:

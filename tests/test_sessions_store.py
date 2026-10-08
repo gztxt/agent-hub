@@ -62,12 +62,13 @@ class TestMask(unittest.TestCase):
 
 class TestTable(unittest.TestCase):
     def test_agent_set(self):
-        """v0.13.83：cursor 接入（原为 7 个，测试名 test_only_seven_agents）。
+        """v0.13.93：codebuddy 接入（原为 8 个，测试名 test_only_seven_agents）。
            加一张卡要同时动后端这张表**与**前端 TERM_HIST_AGENTS —— 漏一边的表现是
            「菜单里有这张卡、点开却没有历史下拉」（cursor 就是这个症状，
            因为前端白名单不含它 ⇒ 根本不发历史请求）。"""
         self.assertEqual(set(ss.SESSION_STORES),
-                         {"grok", "claude", "qoder", "jcode", "hermes", "codex", "opencode", "cursor"})
+                         {"grok", "claude", "qoder", "jcode", "hermes", "codex", "opencode",
+                          "cursor", "codebuddy"})
 
     def test_hist_agents_front_back_same_set(self):
         """hub.js 的 TERM_HIST_AGENTS 与后端 SESSION_STORES 必须同集合——
@@ -95,6 +96,46 @@ class TestTable(unittest.TestCase):
         self.assertTrue(st["cursor"]["id_re"].match("4a0d0eb5-8712-4d5a-bf0d-83215584ce28"))
         self.assertFalse(st["cursor"]["id_re"].match("4a0d0eb587124d5abf0d83215584ce28"))   # 无连字符 ⇒ 拒
         self.assertFalse(st["cursor"]["id_re"].match("4a0d0eb5-8712-4d5a-bf0d-83215584ce28; rm -rf /"))
+        # v0.13.93 codebuddy：73/73 全是标准带连字符 UUID ⇒ 同样复用 UUID_RE。
+        # 同时钉住 resume argv 的**首元素是绝对路径**：该 CLI 只在 WorkBuddy 包内、不在 PATH，
+        # 写 "codebuddy" 会被 term.py 的 which() 判失败、会话拉不起来（profiles.py 同款理由）。
+        self.assertTrue(st["codebuddy"]["id_re"].match("373e4969-47e2-4aa4-bf59-a0ad09279726"))
+        self.assertFalse(st["codebuddy"]["id_re"].match("373e496947e24aa4bf59a0ad09279726"))
+        self.assertEqual(st["codebuddy"]["resume"][1:], ["--resume", "{id}"])
+        self.assertTrue(st["codebuddy"]["resume"][0].startswith("/"),
+                        "codebuddy CLI 必须在 PATH 之外 ⇒ resume argv 必须写绝对路径")
+
+    def test_compress_path_matches_codebuddy_bucket(self):
+        """`_compress_path` 是 dist 里 PathUtils.compressPath 的 Python 等价：
+           `/ \\ :` → `-`、去首尾 `-`、合并连续 `-`。桶名对不上 ⇒ resume 定位不到会话，
+           所以这层等价必须被钉死（改错一位 = 全库条目静默不可续）。"""
+        self.assertEqual(ss._compress_path("/fs/1000/ftp/技术文档"), "fs-1000-ftp-技术文档")
+        self.assertEqual(ss._compress_path("/home/gztxt"), "home-gztxt")
+        self.assertEqual(ss._compress_path("/tmp//a///b/"), "tmp-a-b")
+        self.assertEqual(ss._compress_path("/mnt/vol2/项目 目录"), "mnt-vol2-项目 目录")
+        # ⚠️ 只替换 `/ \ :` 三种分隔符，**空格不动**（实测 dist 源码的正则就是
+        # /[/\\:]/g）。我一度按「非字母数字全换」写期望值，被这一例当场证伪。
+        self.assertEqual(ss._compress_path("C:\\Users\\gztxt\\x"), "C-Users-gztxt-x")
+        self.assertEqual(ss._compress_path(""), "")
+
+    def test_codebuddy_first_user_shape(self):
+        """行形状是 `type=='message' and role=='user'`（**不是** claude 的 `type=='user'`）。
+           这条钉死「为什么不能复用 `_first_user_text`」：喂它 claude 形状能出标题，
+           喂 codebuddy 形状恒空 —— 后者正是必须单设 role 版抽取器的理由。"""
+        cb = [{"type": "message", "role": "user",
+               "content": [{"type": "input_text", "text": "修一下 hub 的历史下拉"}]},
+              {"type": "message", "role": "assistant",
+               "content": [{"type": "output_text", "text": "好"}]}]
+        self.assertEqual(ss._codebuddy_first_user(cb), "修一下 hub 的历史下拉")
+        self.assertEqual(ss._first_user_text(cb), "",
+                         "通用抽取器对 codebuddy 形状恒空（这正是要单设 role 版的原因）")
+        # 注入块要跳过，不能拿 system-reminder / 命令回显当标题
+        self.assertEqual(ss._codebuddy_first_user(
+            [{"type": "message", "role": "user",
+              "content": [{"type": "input_text", "text": "<system-reminder>噪音</system-reminder>"}]},
+             {"type": "message", "role": "user",
+              "content": [{"type": "input_text", "text": "<user_query>真问题</user_query>"}]}]),
+            "真问题")
 
 
 class TestResumeArgv(unittest.TestCase):
@@ -305,6 +346,72 @@ class TestRealStores(unittest.TestCase):
                 self.assertEqual(hashlib.md5(got.encode()).hexdigest(), bucket,
                                  "session_cwd 与 cursor 的桶名不自洽 ⇒ --resume 找不到该会话")
 
+    def test_codebuddy_history_and_resume(self):
+        """v0.13.93 codebuddy 全链：列表 → 标题 → 续聊 argv → 存在性校验。
+           它的行形状用 `role` 键（不是各家的 `type=='user'`），桶名是 compressPath(realpath(cwd))
+           而不是 slug —— 两处都与 claude 不同，故不能靠 claude 的用例间接覆盖。"""
+        items = ss.list_history("codebuddy", CWD, 5)["items"]
+        if not items:
+            self.skipTest("本机 codebuddy 无历史")
+        it = items[0]
+        self.assertRegex(it["id"], r"\A[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
+        self.assertGreater(it["ts"], 0)
+        self.assertNotEqual(it["title"], "未命名会话", "标题应由首句用户提问抽出")
+        self.assertNotEqual(it["title"], it["id"][:8], "标题不许退化成 sid 前缀（D2）")
+        self.assertTrue(ss.title_for("codebuddy", it["id"]), "title_for 必须能按 id 直查")
+        argv = ss.resume_argv("codebuddy", it["id"], CWD)
+        self.assertEqual(argv[1:], ["--resume", it["id"]])
+        self.assertTrue(Path(argv[0]).is_file(), f"resume argv[0] 必须是真实存在的 CLI：{argv[0]!r}")
+
+    @tiers.host_only
+    def test_codebuddy_listed_implies_resumable(self):
+        """**列得出来就必须点得动**（v0.13.62 codex / v0.13.83 cursor 两次教训的第三次同构）。
+
+        codebuddy 的 resume 是**按起 pty 的工作目录定位会话**的：dist 里
+        `findExistingSession()` 调 `sessionManager.get(id)` 不传第二参数 ⇒
+        `getPreferredProjectDir(undefined)` 落空 ⇒ 只剩 `getSessionFilePath()` = 当前 cwd 那个桶。
+        桶名对不上时它抛 `SessionNotFoundError`（"No conversation found with session ID"），
+        比 cursor 的静默开新会话好一点，但一样是「点了就是坏体验」。
+
+        这条把「列表」与「续聊白名单」的一致性变成可断言的量——两处各写一遍必然漂移。"""
+        items = ss.list_history("codebuddy", CWD, 20)["items"]
+        if not items:
+            self.skipTest("本机 codebuddy 无历史")
+        for i in items:
+            with self.subTest(sid=i["id"][:8]):
+                self.assertTrue(ss._exists_on_disk("codebuddy", i["id"], CWD),
+                                "列出来了却过不了续聊白名单 ⇒ 点了必然 resume 不到")
+                ss.resume_argv("codebuddy", i["id"], CWD)      # 形状门 + 实盘门都过
+
+    @tiers.host_only
+    def test_codebuddy_session_cwd_matches_bucket(self):
+        """resume 要落到「能解析到该会话桶」的目录：session_cwd 的值与桶名必须自洽。
+           记录目录还在 ⇒ 用它；已删/为空 ⇒ 退回画像目录（此时只有桶名恰好相符才允许列出）。"""
+        items = ss.list_history("codebuddy", CWD, 20)["items"]
+        if not items:
+            self.skipTest("本机 codebuddy 无历史")
+        for i in items:
+            with self.subTest(sid=i["id"][:8]):
+                got = ss.session_cwd("codebuddy", i["id"], CWD)
+                self.assertTrue(Path(got).is_dir(), f"续聊目录必须真实存在：{got!r}")
+                f = ss._store_path("codebuddy", i["id"])
+                self.assertIsNotNone(f)
+                self.assertEqual(ss._cb_bucket_of(got), f.parent.name,
+                                 "session_cwd 与 codebuddy 的桶名不自洽 ⇒ --resume 找不到该会话")
+
+    @tiers.host_only
+    def test_codebuddy_empty_files_not_listed(self):
+        """零字节 jsonl（建会话时 writeFile("") 占位、没发言就退出）不得进列表：
+           resume 它得到的是一条**空会话**，与 opencode exists(message) / cursor
+           hasConversation 同口径。实测本机 73 个 jsonl 里 11 个是空的。"""
+        empties = [p for p in ss.CODEBUDDY_PROJECTS.glob("*/*.jsonl") if p.stat().st_size == 0]
+        if not empties:
+            self.skipTest("本机暂无零字节 codebuddy 会话文件")
+        listed = {i["id"] for i in ss.list_history("codebuddy", CWD, 20)["items"]}
+        for p in empties:
+            self.assertNotIn(p.stem, listed, f"零字节会话不该被列出：{p.name}")
+            self.assertFalse(ss._exists_on_disk("codebuddy", p.stem, CWD))
+
     def test_missing_dir_degrades_not_raises(self):
         # 跳目录口径（用户 09-22 裁定）之后，"画像目录不存在"不再等于"无历史"：
         # 全局最近条目照给，传入的 cwd 只用于画像目录标注。此例断言的是「不许抛」。
@@ -354,7 +461,7 @@ class TestTitleFor(unittest.TestCase):
     def test_all_six_resolve_by_id(self):
         for agent, cwd in (("grok", CWD), ("claude", CWD), ("jcode", CWD),
                            ("hermes", str(Path.home())), ("codex", CWD), ("qoder", QODER_CWD),
-                           ("cursor", CWD)):
+                           ("cursor", CWD), ("codebuddy", CWD)):
             with self.subTest(agent=agent):
                 items = ss.list_history(agent, cwd, 1)["items"]
                 if not items:
