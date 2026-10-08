@@ -34,6 +34,14 @@ _PATTERNS = [
     re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"sk-[0-9A-Za-z]{16,}"),
+    # 2026-10-08 补：厂商密钥常带**分段前缀**（sk-live- / sk-proj- / sk-ant-…），
+    # 原规则要求 `sk-` 后紧跟 16 位字母数字 ⇒ 这类形态整条漏过。
+    # 它不是录制功能引入的问题：凡走 redact_text 的路径（会话导出、录制落盘）都漏。
+    # ⚠️ 收紧判据（实测踩过的坑）：第一版写 `sk-[0-9A-Za-z]+(-[0-9A-Za-z]+)*` 会误伤
+    # `task-sk-update-config` / `mask-sk-8` / 裸 `sk-live` 这类正常文本——
+    # 「有连字符分段」不等于「是密钥」。改用**总长**作闸门：连字符分段形态要求
+    # 去掉分隔符后仍有 ≥20 位字母数字（真密钥 ≥32 位），短slug 一律放过。
+    re.compile(r"sk-(?=[0-9A-Za-z-]{24,}[0-9A-Za-z]{0,})[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*"),
     re.compile(r"(?i)\b((?:ccr_web_token|api[_-]?key|access[_-]?token|secret|password|passwd)"
                r"\s*[:=]\s*)([A-Za-z0-9_./+-]{16,})"),
     re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9_.\-]{16,})"),

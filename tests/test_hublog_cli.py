@@ -49,8 +49,13 @@ class TestEnvParsing(unittest.TestCase):
         self.assertTrue(os.path.isdir(repo), repo)
         # 2026-10-08 目录改名 agent-hub → agenthub：这里断言的是「realpath 落在真仓库根」，
         # 不是旧目录名本身，故按白名单认两个仓根别名，realpath 判据不动。
-        self.assertIn(os.path.basename(repo), ("agenthub", "agent-hub"),
-                      "软链接要用 realpath 解析，不能停在链接那一侧")
+        # 2026-10-08 补worktree 形态：隔离工作区目录名带 `-wt-<id>` 后缀（如
+        # agenthub-wt-record / agent-hub-wt-01a0ed3a），realpath 会落在 worktree 根而非
+        # 主仓根 ⇒ 原白名单在任何 worktree 里都红。这是断言自身没覆盖形态，不是产品缺陷。
+        base = os.path.basename(repo)
+        stem = base.split("-wt-")[0]
+        self.assertIn(stem, ("agenthub", "agent-hub"),
+                      "软链接要用 realpath 解析，不能停在链接那一侧（当前仓根=%s）" % base)
         self.assertIn("realpath", open(_SCRIPT, encoding="utf-8").read().lower())
 
 
