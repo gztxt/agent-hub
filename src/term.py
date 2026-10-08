@@ -492,6 +492,21 @@ class Session:
                 except OSError:
                     pass
                 os._exit(127)
+        # 关掉从端行规回显（父进程侧；2026-10-08 用户报障「cursor 启动会带入乱码字符」）。
+        # pty.fork() 的从端默认 ECHO 打开，而 Node/Ink 类 CLI（cursor-agent）是**先发终端
+        # 查询、之后才进 raw 模式**：它开机第一帧发 `\x1b]11;?\x07`（问背景色），浏览器
+        # xterm 对**实时帧**里的这个查询自动作答，把 `\x1b]11;rgb:…` 灌回 pty 时正落在
+        # 「ECHO 还开着」的窗口里 ⇒ 被 tty 原样回显成 `^[]11;rgb:1c1c/…^\`，即用户看到的乱码。
+        # 回放查询闸门（前端 termWriteReplay）只作用于连接后**第一帧**，而 cursor 启动慢
+        # （≈0.6s）⇒ 查询落在实时帧，闸门拦不到（jcode/claude 查询在 ring 里，故无此症）。
+        # 只清 ECHO 系标志、不动其它位：交互式 shell（bash/readline）起来时自己重设 termios
+        # 会恢复回显，TUI 应用也各自设 raw ⇒ 两类画像均无回归（本地实测）。
+        try:
+            _attr = termios.tcgetattr(self.fd)
+            _attr[3] &= ~(termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHOCTL)
+            termios.tcsetattr(self.fd, termios.TCSANOW, _attr)
+        except OSError:
+            pass   # 关不掉也不能让建会话失败（最坏退化为「仍可能回显」）
         self.alive = True
         self.created = time.time()
         # 两个时钟刻意分开（v0.13.58 / 档二）：
