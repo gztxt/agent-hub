@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO / "src"))
 sys.path.insert(0, str(_REPO))
 
 import memfed  # noqa: E402
+import memindex  # noqa: E402
 
 
 class _TmpCase(unittest.TestCase):
@@ -297,6 +298,13 @@ class TestSearchFed(_TmpCase):
     def setUp(self):
         super().setUp()
         memfed._CLAUDE_MEM_DB = self.tmp / "nope.db"        # 让 claude_mem 炸
+        # pi/codex/archived 三路走 memindex FTS 投影，**不读 _RG_TARGETS**：
+        # 猴补一个「不存在的索引」让投影降级（fallback=no_index）并 fail-closed 回退 rg，
+        # 下面那条死根才真正生效。否则投影直接命中生产索引，本用例测不到任何东西
+        # （2026-10-08 修正：此前这例一直假绿，真实死根从未被构造出来）。
+        self._saved_dbpath = memindex.default_db_path
+        memindex.default_db_path = lambda: self.tmp / "nope-idx.db"
+        self.addCleanup(self._restore_dbpath)
         dead = self.tmp / "dead"
         memfed._RG_TARGETS["pi_sessions"] = ([str(dead)], "*.jsonl")
         memfed._RG_TARGETS["codex_sessions"] = ([str(dead)], "*.jsonl")
@@ -306,6 +314,9 @@ class TestSearchFed(_TmpCase):
         memfed._RG_TARGETS["workspace_files"] = ([str(live)], "*.md")
         memfed._RG_TARGETS["archived_sessions"] = ([str(live)], None)
 
+    def _restore_dbpath(self):
+        memindex.default_db_path = self._saved_dbpath
+
     def test_one_dead_route_does_not_kill_others(self):
         want = {"claude_mem", "pi_sessions", "codex_sessions",
                 "workspace_files", "archived_sessions"}
@@ -313,6 +324,8 @@ class TestSearchFed(_TmpCase):
         self.assertEqual(len(out), 5)
         self.assertFalse(out["claude_mem"]["ok"])           # db 缺失 → ok=False 有 error
         self.assertFalse(out["pi_sessions"]["ok"])
+        # 投影降级确实发生了，本用例才真的在测「死根」而不是在测生产索引
+        self.assertEqual(out["pi_sessions"].get("proj_fallback"), "no_index")
         # live 根下是 .jsonl：workspace_files(glob *.md) 查不到 → ok=True count=0；
         # archived(无 glob) 查得到 → ok=True count>0。两种「无命中/有命中」都必须 ok。
         self.assertTrue(out["workspace_files"]["ok"])

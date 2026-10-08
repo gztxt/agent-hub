@@ -26,6 +26,7 @@ sys.path.insert(0, str(_REPO))
 import db                     # noqa: E402
 import kb                     # noqa: E402
 import memfed                 # noqa: E402
+import memindex               # noqa: E402
 import memory                 # noqa: E402
 
 from fastapi import FastAPI   # noqa: E402
@@ -52,7 +53,13 @@ class _KbCase(unittest.TestCase):
         _mk_md(self.ws, "agent-knowledge/x.md", "agent-hub 批3 测试文档")
         _mk_md(self.ar, "claude/s1.md", "CCR 修复会话摘录")
         _mk_md(self.ar, "pi/s2.md", "批3 归档测试")
-        # 猴补 memfed 的两个 rg 根（kb 经 _FED_ROUTE_MAP → memfed._RG_TARGETS）
+        # 猴补 memfed 的两个 rg 根（kb 经 _FED_ROUTE_MAP → memfed._RG_TARGETS）。
+        # ⚠️ archived_sessions 走 memindex FTS 投影，**不读 _RG_TARGETS**：
+        # 必须同时把投影索引指向不存在的路径触发 fallback=no_index，投影才会
+        # fail-closed 回退 rg，本类用例才真的在测「根消失」而不是在测生产索引
+        # （2026-10-08 修正：test_missing_root_reports_error_not_silent 此前一直假绿）。
+        self._saved_dbpath = memindex.default_db_path
+        memindex.default_db_path = lambda: self.tmp / "nope-idx.db"
         self._saved_targets = dict(memfed._RG_TARGETS)
         memfed._RG_TARGETS["workspace_files"] = ([str(self.ws)], "*.md")
         memfed._RG_TARGETS["archived_sessions"] = ([str(self.ar)], None)
@@ -67,6 +74,7 @@ class _KbCase(unittest.TestCase):
         return app
 
     def _restore(self):
+        memindex.default_db_path = self._saved_dbpath
         memfed._RG_TARGETS = self._saved_targets
         memory.SOURCE_WHITELIST = self._saved_wl
         shutil.rmtree(self.tmp, ignore_errors=True)
