@@ -32,6 +32,7 @@ import db
 import modelcfg
 import profiles
 import sessions_store
+import term_record
 
 router = APIRouter()
 
@@ -484,6 +485,13 @@ class Session:
         self.url_buf = ""
         self.last_chunk = ""
         self.announced_urls: set = set()
+        # v0.13.59 终端会话录制（PT-20260927-16，2026-10-08 重做接线）：
+        # TERM_RECORD 缺省 0 ⇒ Recorder.__init__ 直接短路，active=False，
+        # 下面三个调用点全是`if _rec.active` 的一次属性读 ⇒ 关闭态零开销、不建表写入。
+        # 刻意挂在 Session 上而不是模块全局：一条会话一条录制，且随会话一起走完生命周期。
+        # Recorder 只吃 pty 字节 / 客户端按键，从签名上够不到 self.child_env()
+        # （env 里有 TERM_TOKEN）—— 断"记初始环境变量"这条路靠签名，不靠自觉。
+        self.recorder = term_record.Recorder(sid, agent_id)
         fcntl.fcntl(self.fd, fcntl.F_SETFL, os.O_NONBLOCK)
 
     def to_dict(self):
@@ -582,6 +590,14 @@ class Session:
                     self.exit_status = st   # 原为 `_st` 直接丢弃 ⇒ 崩溃原因永远上不了屏
             except (ChildProcessError, ProcessLookupError, OSError):
                 break
+        # v0.13.59 录制收尾：落 ended + 跑 7 天保留期清理。
+        # 挂在这里而不是 kill()/某一条退出路径 ⇒ _cleanup 是**全仓唯一**的收口
+        # （正常退出/组灭/reap/TTL 都走它），漏挂一处就等于该路径的录制永远不 close。
+        # close() 内部对未开启的录制是no-op，关闭态零开销。
+        try:
+            self.recorder.close()
+        except Exception:  # noqa: BLE001  旁路功能不许打断会话回收
+            pass
 
 
 _sessions: Dict[str, Session] = {}
@@ -863,6 +879,43 @@ async def agent_history(agent_id: str, request: Request, limit: int = Query(defa
     return dict(sessions_store.list_history(prof["id"], cwd, limit), agent=prof["id"])
 
 
+# ── 终端会话录制（v0.13.59/ PT-20260927-16，2026-10-08 重做接线）────────
+# 鉴权口径与 /api/term/sessions 同级：sid 是**可操作句柄**（能取回整段会话的终端内容），
+# 比列表更敏感，故一律要 TERM_TOKEN，绝不开免token（对照 /api/term/activity 的取舍逻辑：
+# 那个端点只给聚合计数、不含任何句柄，才敢免 token）。
+@router.get("/api/term/recording/{sid}")
+async def term_recording_status(sid: str, request: Request):
+    """本会话录了多少、有没有触顶停录、上限是多少。界面据此明示，不能静默丢帧。"""
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "GET /api/term/recording")
+    sess = _sessions.get(sid)
+    # 活会话报内存真值（含 capped 一等状态）；已退出的从盘上重建（进程重启后 Recorder
+    # 已不在，capped 真值无从恢复 —— 那种情形 term_record.status只给 at_limit 推断值）。
+    if sess is not None:
+        return sess.recorder.to_dict()
+    if not term_record.enabled():
+        raise HTTPException(404, "recording 未启用")
+    return await asyncio.to_thread(term_record.status, sid)
+
+
+@router.get("/api/term/recording/{sid}/frames")
+async def term_recording_frames(sid: str, request: Request,
+                                limit: int = Query(default=2000, ge=1, le=10000)):
+    """回放：按seq 升序返回已脱敏的帧（data 为 base64）。
+
+    ⚠️ 这是**用户键入与 agent 输出的全量文本**出口 —— 即便是脱敏后的，也比会话列表
+    敏感得多，所以与kill 同级鉴权（要 TERM_TOKEN），且绝不接受「免 token 读一帧」。
+    """
+    _check_term_token(request.headers.get("x-term-token", "")
+                      or request.query_params.get("token", ""), "GET /api/term/recording/frames")
+    if not term_record.enabled():
+        raise HTTPException(404, "recording 未启用")
+    rows = await asyncio.to_thread(term_record.frames, sid, limit)
+    return {"session_id": sid, "frames": rows, "count": len(rows),
+            "limits": {"max_session": term_record.max_session_bytes(),
+                       "max_total": term_record.max_total_bytes()}}
+
+
 @router.delete("/api/term/sessions/{sid}")
 async def kill_session(sid: str, request: Request):
     # P1-7：杀掉别的会话 = 服务打断，与“建会话”同级危险（建已经被闸了）。
@@ -1047,6 +1100,12 @@ def _attach_reader(sess: Session):
                 # 两者混成一个时钟才会把正在跑的任务判成空闲（见 __init__ 注释）。
                 sess.last_activity = time.time()
                 sess.ring.extend(data)
+                # v0.13.59 录制：pty→客户端方向。挂在**读出源头**而非 pump/合并器出口——
+                # 那样录到的是「合并器攒过的帧」，而合并器会为省 WS 帧做截断/合并（见
+                # _OutputCoalescer），录下来的就不是真实回放内容了。ring.extend 同一处。
+                # active 为 False（TERM_RECORD 缺省 0）时只是一次属性读，零开销。
+                if sess.recorder.active:
+                    sess.recorder.feed("out", data)
                 if len(sess.ring) > 65536:
                     del sess.ring[:len(sess.ring) - 65536]
                 # 不再「读一块发一块」：交给各自的合并器攒一趟（前沿立刻刷 / 后沿攒 5ms）。
@@ -1305,8 +1364,15 @@ async def term_ws(ws: WebSocket, sid: str, token: str = Query(default="")):
             else:
                 data = msg.get("bytes") or b""
             if data and sess.alive:
+                # v0.13.59 录制：客户端→pty 方向（用户键入）。
+                # 刻意记**解出来的 data**（跨过 JSON 包装与心跳判据之后）——
+                # 记原始 WS 帧会把 {"type":"hb"} 心跳也录进去，回放时满屏JSON。
+                # 位置也在 os.write 之前：写失败（EAGAIN 背压）那批字节最终也可能进 pty，
+                # 但为免「录了却没写进去」的错觉，只录确定写下去的部分 —— 取 write 之后。
                 try:
                     os.write(sess.fd, data)
+                    if sess.recorder.active:
+                        sess.recorder.feed("in", data)
                 except BlockingIOError:
                     # P0-3：BlockingIOError **是** OSError 的子类 ⇒ 旧 `except OSError: break`
                     # 把「PTY 缓冲区瞬时写不进去（EAGAIN，正常的背压）」当成致命错误，
