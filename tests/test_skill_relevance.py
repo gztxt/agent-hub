@@ -223,6 +223,11 @@ class TestJevCircuitAndCache(unittest.TestCase):
         self.assertTrue(jev_client.status()["ok"])
 
     def test_circuit_opens_after_max_consec_fail(self):
+        # 2026-10-08 修：本例原先隐式依赖**外部**环境已有 TYPESAFE_API_KEY 才能走到
+        # 「已熔断」分支（同组其余 4 例都显式设了假 key，只有这例漏了）。
+        # 后果：无 key 的 shell 里 status()["why"] 恒返回「未设置环境变量」那条早退分支，
+        # 断言 `boom` 必假红——而 L0 号称hermetic，正是要消除这种对宿主环境的隐性依赖。
+        os.environ["TYPESAFE_API_KEY"] = "fake-key-for-l0"
         for _ in range(jev_client.MAX_CONSEC_FAIL):
             jev_client._record_failure("boom")
         self.assertTrue(jev_client._S["down"])
