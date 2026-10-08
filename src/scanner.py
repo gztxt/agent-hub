@@ -35,8 +35,11 @@ def _known_ports_units():
 
 BUILTIN_PORTS, KNOWN_UNITS = _known_ports_units()
 # 网关/基础设施家族：由内置项或外部守护管理，不重复登记
+# 2026-10-08：`agent-hub` → `agenthub`（unit 改名同批）。漏改的症状隐蔽 ——
+# EXCLUDE 认不出自家单元 ⇒ 端口扫描把 3102 登记成「外部服务」，
+# 表现为资源页多一条自己家的条目，而不是报错。
 EXCLUDE_PATTERNS = re.compile(
-    r"^(ccr|fcc|opensquilla|agent-hub|xray|tailscale|unattended|user@)", re.I)
+    r"^(ccr|fcc|opensquilla|agenthub|xray|tailscale|unattended|user@)", re.I)
 
 
 def _watchlist():

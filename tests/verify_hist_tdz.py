@@ -141,7 +141,7 @@ drv = c.eval(DRIVE)
 print("  主动驱动事故路径:", drv)
 chk("★主动调 histLoad('claude') 不抛（路径确被执行过）", drv == "DRIVE-OK", str(drv))
 n = subprocess.run(["bash", "-c",
-                    "journalctl --user -u agent-hub.service --since '-3 min' --no-pager -o cat "
+                    "journalctl --user -u agenthub.service --since '-3 min' --no-pager -o cat "
                     "| grep -c 'term/history' || true"], capture_output=True, text=True).stdout.strip()
 chk("服务端确有 /api/term/history 命中（不靠面板自证）", n not in ("", "0"), "近 3 分钟命中=%s" % n)
 

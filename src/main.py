@@ -79,7 +79,30 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[Agent Hub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.93"   # codebuddy 接入历史会话（第九家：侧栏菜单点开有历史下拉、可续聊）
+VERSION = "0.13.94"   # unit 改名 agent-hub.service → agenthub.service（与仓名/远端一次改齐）
+#   2026-10-08 用户指令：「重启 agent-hub.service 但是为什么名字还是agent-hub 已经更新名字
+#   为agenthub」→「改名并同步更新」。10-08 仓名（目录）与远端已改齐，AGENTS.md 当时明写
+#   「服务名不变」⇒ unit 名是**刻意留下的**，本版补上。
+#   本版的要害不是 `mv` 文件，是**漏改不报错**：`journalctl -u <不存在的单元>` 返空且
+#   退出码 0 ⇒ 「代码里的单元名与真实 systemd 单元脱钩」这种故障全程无异常，表现只是
+#   「设置→日志页空白、而 /health 全绿」。本版实测红向对照：新单元近 5min 47 行 vs
+#   旧单元 0 行 —— 拿旧名查就长这样。所以必须同批改的三处（前两处承重）：
+#     ① src/hublog.py 的 DEFAULT_UNIT（`journalctl -u` 的单元名）：漏改＝日志页静默空白；
+#     ② src/scanner.py 的 EXCLUDE_PATTERNS：漏改＝端口扫描把自家 3102 登记成「外部服务」，
+#        资源页多一条自己家的条目；它是**前缀**匹配（影子/备份单元也要排除，勿写死全等）；
+#     ③ ~/bin/agent-hub-watchdog.sh 的看护清单：漏改的症状最隐蔽 —— 脚本照跑、日志照写，
+#        但 `svc_alive agent-hub` 恒 false ⇒ 每 5min 误判掉线并重启旧单元，**真服务无人看护**，
+#        而日志里全是「已恢复」。
+#   另同步 deploy/ 归档副本、scripts/hublog-cli.py 文案、tests/verify_hist_tdz.py 探针命令、
+#   ~/bin/service-health-check.sh 探针标签；**判例与旧会话里的 `journalctl -u agent-hub`
+#   命令一律不改**（那是当时的取证记录，改了就失真）。
+#   新闸门 tests/test_hublog.py::TestUnitNameConsistency（5 例）把「代码常量 / 仓内归档
+#   副本 / 真实 systemd 单元」三份真值互相比对，旧名副本残留判红。
+#   切换手法：本会话跑在旧 unit 自己的 cgroup 里（`codebuddy ← python3` 属
+#   agent-hub.service），而 `KillMode=control-group` ⇒ stop 会连坐杀掉调用者，故走
+#   `systemd-run --user` 的独立 transient unit（work/unit-switch-agenthub.sh）。
+
+# ── 以下为 v0.13.93 的根因（保留供追溯，非本版条目）──
 #   前八家（grok/claude/qoder/jcode/hermes/codex/opencode/cursor）都在 src/sessions_store.py
 #   的 SESSION_STORES 里登记了「盘上仓库 → 条目 → resume argv」三段映射；codebuddy 之前
 #   **只在菜单里**（profiles 有终端入口），点开没有历史下拉 —— 与 v0.13.83 修 cursor 前同款。

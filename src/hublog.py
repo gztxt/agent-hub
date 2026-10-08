@@ -49,14 +49,21 @@ router = APIRouter()
 
 #: 日志单元。手跑 uvicorn（不经过 systemd）时 journald 里没有东西 —— 这时
 #: 端点的 sources 里会把原因讲明白，而不是让用户对着空列表猜。
+#:
+#: 2026-10-08 随 unit 改名 `agent-hub.service` → `agenthub.service`（仓名/远端/unit
+#: 三处一次改齐）。改名的唯一承重耦合点就是这一行：漏改的症状是「设置→日志页
+#: 空白但 /health 正常」，因为 `journalctl -u <不存在的单元>` 静默返空、不报错。
+#: 任何时候动了 systemd unit 名，这行必须同批改；改完用
+#: `journalctl --user -u agenthub.service -n 3` 取证，别只看端点返不返 200。
 UNIT_ENV = "HUB_LOG_UNIT"
-DEFAULT_UNIT = "agent-hub.service"
+DEFAULT_UNIT = "agenthub.service"
 
 _JOURNAL_TIMEOUT_S = 6          # 拉 journald 的硬超时（日志页不许把请求挂住）
 _JOURNAL_MAX_LINES = 3000       # 原始行上限（先拉后滤，过滤前不能只看 limit 条）
 _MSG_MAX_CHARS = 500            # 单行落响应上限（防一条巨长 traceback 撑爆响应）
 
-#: `2026-09-27T16:44:40+0800 zzst agent-hub[423114]: INFO:     192.168.5.99 - "GET /" 200`
+#: `2026-09-27T16:44:40+0800 zzst agenthub[423114]: INFO:     192.168.5.99 - "GET /" 200`
+#: （旧单元名下 SyslogIdentifier 是 `agent-hub`；2026-10-08 起为 `agenthub`）
 _J_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2}T\S+)\s+(?P<host>\S+)\s+"
     r"(?P<tag>[^\[:]+?)(?:\[(?P<pid>\d+)\])?:\s?(?P<msg>.*)$")
@@ -310,7 +317,7 @@ async def hublog_query(request: Request,
             for e in entries)
         return PlainTextResponse(
             body, media_type="text/plain; charset=utf-8",
-            headers={"Content-Disposition": 'attachment; filename="agent-hub.log"'})
+            headers={"Content-Disposition": 'attachment; filename="agenthub.log"'})
 
     return {"entries": entries, "count": len(entries), "stats": stats,
             "sources": sources, "truncated": truncated,

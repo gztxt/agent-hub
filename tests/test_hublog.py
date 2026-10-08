@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import types
@@ -258,7 +259,7 @@ class TestEndpoint(unittest.TestCase):
     def test_text_export_attaches_filename(self):
         os.environ["HUB_PASSCODE"] = PASSCODE
         r = self._call(_Req(_hdr(PASSCODE)), format="text")
-        self.assertIn("agent-hub.log", r.headers.get("content-disposition", ""))
+        self.assertIn("agenthub.log", r.headers.get("content-disposition", ""))
         self.assertIn("boom", r.body.decode("utf-8"))
 
 
@@ -325,6 +326,56 @@ class TestRunlogMerged(unittest.TestCase):
     def test_subjects_enum_returned_for_dropdown(self):
         d = self._call()
         self.assertIn("mem.search", d["subjects"], "前端 subject 下拉靠这份清单填充")
+
+
+class TestUnitNameConsistency(unittest.TestCase):
+    """**unit 改名的一致性闸门**（2026-10-08 `agent-hub.service` → `agenthub.service`）。
+
+    为什么这组用例值钱：`journalctl -u <不存在的单元>` **静默返空、不报错**。
+    所以「代码里的 unit 名与真实 systemd 单元脱钩」这种故障的表现是
+    「设置→日志页空白，而 /health 正常」——没有任何一处会抛错告诉你。
+    本组把三份真值（代码常量 / 仓内归档副本 / 真实 systemd 单元）互相比对，
+    脱钩当场红。
+
+    L0 部分只读仓内文件（deploy/）；L1 部分读真 ~/.config/systemd/user。
+    """
+
+    UNIT = "agenthub.service"
+    OLD_UNIT = "agent-hub.service"
+
+    def test_default_unit_is_current_name(self):
+        self.assertEqual(hublog.DEFAULT_UNIT, self.UNIT)
+
+    def test_deploy_copy_named_after_unit(self):
+        d = _REPO / "deploy"
+        self.assertTrue((d / self.UNIT).is_file(),
+                        "仓内归档副本缺失 deploy/%s" % self.UNIT)
+        self.assertFalse((d / self.OLD_UNIT).exists(),
+                         "旧名副本 deploy/%s 还在 ⇒ 两份真值迟早分叉" % self.OLD_UNIT)
+
+    def test_deploy_copy_identifier_matches_unit(self):
+        text = (_REPO / "deploy" / self.UNIT).read_text(encoding="utf-8")
+        m = re.search(r"^SyslogIdentifier=(\S+)$", text, re.MULTILINE)
+        self.assertTrue(m, "deploy/%s 缺 SyslogIdentifier" % self.UNIT)
+        self.assertEqual(m.group(1), self.UNIT.removesuffix(".service"),
+                         "SyslogIdentifier 与 unit 名不一致 ⇒ journald 里的 tag 对不上")
+
+    def test_scanner_excludes_current_unit(self):
+        import scanner
+        self.assertTrue(scanner.EXCLUDE_PATTERNS.match("agenthub"),
+                        "scanner 的 EXCLUDE 认不出 agenthub ⇒ 端口扫描会把自家 3102 "
+                        "登记成外部服务（症状是资源页多一条自己家的条目，不报错）")
+        # 前缀匹配是**故意的**：`agenthub-backup` / `agenthub-stage` 这类影子单元
+        # 同样该被排除，所以别把正则写死成全等（`^agenthub$` 会让影子实例漏登记）。
+        self.assertTrue(scanner.EXCLUDE_PATTERNS.match("agenthub-backup"),
+                        "影子/备份单元也该被排除 ⇒ EXCLUDE 必须保持前缀语义")
+
+    @tiers.host_only
+    def test_real_systemd_unit_exists(self):
+        """真单元在盘上。新旧任一存在即可，但**两份都在**说明 disable 漏了。"""
+        u = pathlib.Path.home() / ".config" / "systemd" / "user"
+        self.assertTrue((u / self.UNIT).is_file(),
+                        "真单元 ~/.config/systemd/user/%s 不存在" % self.UNIT)
 
 
 class TestFrontendPage(unittest.TestCase):

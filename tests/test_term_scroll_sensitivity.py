@@ -195,8 +195,11 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         "0.13.92": ("SelectionService.disable", "回装", "termCtxOpen", "图片另存为"),
         # v0.13.93 codebuddy 接入历史会话：三处与 claude 不同的形状 + 可续判据。
         "0.13.93": ("role=='user'", "compressPath", "桶名", "SessionNotFound"),
+        # v0.13.94 unit 改名：关键词取「静默失效」那两处 —— journalctl 对不存在的单元
+        # 返空且退出码 0（所以漏改不报错，只是日志页空白）；EXCLUDE 是前缀匹配。
+        "0.13.94": ("DEFAULT_UNIT", "EXCLUDE_PATTERNS", "静默", "前缀"),
     }
-    CURRENT_VERSION = "0.13.93"
+    CURRENT_VERSION = "0.13.94"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

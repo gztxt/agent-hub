@@ -13,7 +13,7 @@ Restart=always
 RestartSec=3
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=agent-hub
+SyslogIdentifier=agenthub
 # 不设 MemoryMax：本服务会 fork jcode/claude/hermes 的 pty 子进程，
 # 上限过低会在用户开嵌入式终端时把整个 hub 一起 OOM 掉（2026-09-07 决策）
 

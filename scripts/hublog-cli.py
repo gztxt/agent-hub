@@ -76,7 +76,7 @@ def _die(code, msg):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="agent-hub 日志直查（只读，与设置→日志页同口径）")
+    ap = argparse.ArgumentParser(description="agenthub 日志直查（只读，与设置→日志页同口径）")
     ap.add_argument("--source", default="all",
                     choices=["all", "journal", "event", "rest", "error"])
     ap.add_argument("--level", default="all", choices=["all", "info", "warn", "error"])
@@ -92,7 +92,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     # realpath 而不是 abspath：~/bin/hublog 是指向本脚本的软链接，abspath 会停在
-    # 链接那一侧 ⇒ 仓库根算成 /home/gztxt，读不到 agent-hub/.env（实跑踩过）。
+    # 链接那一侧 ⇒ 仓库根算成 /home/gztxt，读不到 agenthub/.env（实跑踩过）。
     repo = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     env = _read_env(a.env or os.path.join(repo, ".env"))
     passcode = env.get("HUB_PASSCODE", "")
@@ -113,7 +113,7 @@ def main(argv=None):
              % (a.env or os.path.join(repo, ".env")))
     status, body = _fetch(url, passcode)
     if status == 0:
-        _die(EXIT_NET, "连不上 %s —— %s（服务没起？systemctl --user restart agent-hub.service）"
+        _die(EXIT_NET, "连不上 %s —— %s（服务没起？systemctl --user restart agenthub.service）"
              % (base, body))
     if status in (401, 403):
         _die(EXIT_AUTH, "鉴权被拒（HTTP %d）：口令与服务端 HUB_PASSCODE 不一致" % status)

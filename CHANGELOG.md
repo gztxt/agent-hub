@@ -1,3 +1,61 @@
+## v0.13.94 — unit 改名 `agent-hub.service` → `agenthub.service`
+
+> 2026-10-08 用户指令：「重启 agent-hub.service 但是为什么名字还是 agent-hub 已经更新名字为agenthub」→「改名并同步更新」。
+> 背景：10-08 仓名与远端已全量改齐，但 AGENTS.md 当时明写「服务名不变」⇒ unit 名是**刻意留下的**，
+> 本版把它补上。改名不是 `mv` 一个文件那么简单，见下。
+
+### 一、为什么这条容易漏：漏改不报错，只是静默变空
+
+`journalctl -u <不存在的单元>` **返回空且退出码 0**。所以「代码里的 unit 名与真实 systemd
+单元脱钩」这种故障**没有任何一处会抛错**：表现为「设置→日志页空白，而 /health 全绿」。
+本版实测的红向对照：
+
+| 查的单元 | 近 5 分钟行数 |
+|---|---|
+| `agenthub.service`（新名） | **47** |
+| `agent-hub.service`（旧名） | **0** |
+
+⇒ 若 `hublog.DEFAULT_UNIT` 没跟着改，日志页就会是这 0 行的样子。
+
+### 二、必须同批改的 4 处（前两处承重）
+
+| # | 位置 | 漏改的症状 |
+|---|---|---|
+| 1 | `src/hublog.py` `DEFAULT_UNIT` | 设置→日志页**静默空白**（journald 空 + 无报错） |
+| 2 | `src/scanner.py` `EXCLUDE_PATTERNS` | 端口扫描把自家 3102 登记成「外部服务」，资源页多一条自己家的条目 |
+| 3 | `~/bin/agent-hub-watchdog.sh` 看护清单 | 脚本仍跑、仍写日志，但 `svc_alive agent-hub` 恒 false ⇒ 每 5 分钟误判掉线并重启旧单元，**真服务无人看护**，而日志里全是「已恢复」 |
+| 4 | `deploy/agenthub.service` + `deploy/README.md` | 仓内归档副本与生产分叉（副本的 `ExecStart` 其实 09-29 双栈改造时就已落后，README 已加横幅警告） |
+
+另同步：`scripts/hublog-cli.py` 提示文案与 argparse 描述、`tests/verify_hist_tdz.py` 的探针
+命令、`tests/test_hublog.py` 的下载文件名断言、`~/bin/service-health-check.sh` 的探针标签。
+
+**不改的历史记录**：判例与旧会话里的 `journalctl -u agent-hub` 命令**一律不改** ——
+那是当时的取证记录，改了就失真。
+
+### 三、新增闸门：`TestUnitNameConsistency`（5 例）
+
+把「三份真值必须互相对得上」写成断言：代码常量 / 仓内归档副本 / 真实 systemd 单元。
+其中「旧名副本还在盘上」判红 —— 两份 unit 文件并存是 disable 漏了的信号。
+
+### 四、切换手法（detached）
+
+本会话跑在**旧 unit 自己的 cgroup 里**（实测调用链 `codebuddy ← python3(381240)` 属于
+`agent-hub.service`），而 unit 的 `KillMode=control-group` ⇒ `systemctl --user stop agent-hub`
+会连坐杀掉调用者。故用 `systemd-run --user` 起独立 transient unit 执行切换
+（脚本 `work/unit-switch-agenthub.sh`，日志 `work/unit-switch-20261008_132845.log`）。
+
+顺序本身是判据：`daemon-reload` → `disable` 旧 → `enable --now` 新 → `stop` 旧（此时新单元
+在 `Restart=always` 循环里等 3102，抢到即接管）→ 端到端验收。
+
+### 五、验收证据
+
+- L0 hermetic **1368 例 0 跳过 0 失败**（收集器对账 1431=1431）；L1 host **63 例 0 失败**
+- 切换后：`agenthub.service` active+enabled、`agent-hub.service` inactive+disabled、
+  `MainPID=404146` 与 3102 监听 PID 一致、`/health` version=0.13.94 之前为 0.13.93、`code_stale=False`
+- `/api/hublog` sources 的 label 已读出「服务日志（journald · **agenthub.service**）」、
+  entries 里 `tag=agenthub` ⇒ `SyslogIdentifier` 一并改到了
+- v0.13.93 的 codebuddy 历史会话顺带复验：3 条真会话
+
 ## v0.13.93 — codebuddy 接入历史会话（第九家）
 
 > 2026-10-08 用户指令：「codebuddy code 也要添加会话历史记录」。
