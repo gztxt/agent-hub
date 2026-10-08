@@ -531,12 +531,11 @@ async function loadAgents() {
     renderNav();   // v0.7.1：Agent / 基础设施的唯一入口是左侧手风琴，随数据刷新
     const ag = AGENTS.filter(a => a.kind === 'agent');
     /* v0.10.2：「在线」换成「可用」——装了 ≠ 能用（fcc-* 入口壳、qoder 额度耗尽都是实例）。
-       假卡已在服务端被 vitals 拦掉，这里的分母已经是真 Agent 数。 */
-    const usableN = ag.filter(a => a.attested === true).length;
-    const untryN = ag.filter(a => a.usable === true && a.attested === false).length;
-    const pendN = ag.filter(a => a.usable == null).length;
-    $('hAgents').textContent = 'Agents: ' + ag.length + '（可用 ' + usableN +
-      (untryN ? ' · 未实测 ' + untryN : '') + (pendN ? ' · 待检 ' + pendN : '') + '）';
+       假卡已在服务端被 vitals 拦掉，这里的分母已经是真 Agent 数。
+       2026-10-08（用户裁定）：顶栏只留总数，「（可用 N · 未实测 N · 待检 N）」明细**删除**——
+       顶栏宽度紧张且窄屏会被 ellipsis 截断，明细改由左侧手风琴的卡片徽章承载。
+       口径未变：分母仍是真 Agent 数，明细判据（attested / usable）仍在服务端与卡片上。 */
+    $('hAgents').textContent = 'Agents: ' + ag.length;
     const errs = countBadAgents(AGENTS);
     $('hErrors').innerHTML = errs ? '<span class="hdot r" title="启动异常的 Agent（vitals 实测结论）">异常 ' + errs + '</span>' : '';
   } catch (e) {
