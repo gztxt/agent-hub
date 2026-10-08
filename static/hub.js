@@ -5277,12 +5277,10 @@ document.addEventListener('keydown', e => {
   term.input(e.key);
 });
 
-function tick() {
-  const t = new Date().toLocaleString('zh-CN', { hour12: false });
-  // // $('hTime').textContent = t; // 已移除  // 已移除
-  $('ftTime').textContent = t;
-}
-setInterval(tick, 1000); tick();
+/* 2026-10-08（用户裁定）：底部状态栏删除 ⇒ tick() 与它的 setInterval(tick,1000)
+   **整体删除**。tick 的唯一消费者是 #ftTime（页脚时钟），挂载点已摘；
+   只删挂载点留写端＝每1000ms 往null 上写一次（P1-18 注释点名的死调用形态）。
+   顶部 hTime 早于本批就已移除，故此处一并了结，页面上不再有任何走秒显示。 */
 setInterval(loadAgents, 30000);  // T4：8s→30s（左栏手风琴与首页摘要随 loadAgents 一起刷新，无需高频）
 pollHealth(); setInterval(pollHealth, 15000);  // T5：健康灯独立于 agent 列表轮询
 /* 2026-10-05：回到可见时立刻补一次。loadAgents / pollHealth / updateBadges 都加了
