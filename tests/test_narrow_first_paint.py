@@ -214,6 +214,50 @@ class NarrowFirstPaintTest(unittest.TestCase):
                               "%s 应在窄屏块内生效" % sel)
 
 
+class OverviewBadgeRemovedTest(unittest.TestCase):
+    """侧栏「总览」行尾**不得有数字徽章**（2026-10-08 用户要求删除）。
+
+    【为什么挂在这个文件里】本仓关于「侧栏徽标」的反向闸门已经在此（见
+    `test_collapsed_hide_rule_covers_every_badge_class_in_markup`），同族。
+
+    【口径：两处一起钉】挂载点（模板 `#badge-classroom`）与写端
+    （`setBadge('classroom', …)`）必须**同时**不存在：
+    - 只删挂载点 ⇒ 留下每 60s 跑一次的 `el=null` 死调用（P1-18 那条注释的原意）；
+    - 只删写端   ⇒ 元素还在，`setBadge` 不再写它，徽章恒空但**占位元素还在 DOM 里**，
+      收起态隐藏规则与 `.nav-badge:empty` 都被迫继续为一个永不显示的东西兜底。
+
+    【为什么静态判据够用、但真渲染才是终判】本仓同族教训：v0.13.74 `.home-title`、
+    v0.13.77 `.badge` vs `.nav-badge` 都是「写错不报错、只是安静地不生效」。
+    这里判的是「元素在不在 DOM 里」，是可直接断言的量；真渲染终判在
+    `tests/verify_overview_badge.py`（量真实 DOM 与真实几何，含红向自证）。
+    """
+
+    def test_home_button_has_no_badge_element(self):
+        code = _code()                       # 剥注释：注释里写着 #badge-classroom
+        m = re.search(r'<button[^>]*id="btnNavHome".*?</button>', code, re.S)
+        self.assertIsNotNone(m, "模板里找不到 #btnNavHome ⇒ 常驻「总览」项被误删")
+        self.assertNotIn('id="badge-classroom"', m.group(0),
+                         "总览行尾的徽章挂载点回来了 ⇒ 用户要的「删除数字」被回退")
+
+    def test_no_setbadge_call_for_classroom(self):
+        """写端同步消失：否则留下一条永远 `el === null` 的死调用。"""
+        from _js_min import strip_comments
+        shard = strip_comments(
+            (_REPO / "static" / "hub" / "06-manager-tasks.js").read_text(encoding="utf-8"))
+        self.assertNotIn("setBadge('classroom'", shard,
+                         "setBadge('classroom', …) 又出现了，但模板挂载点已删 ⇒ 死调用")
+
+    def test_other_page_badges_are_untouched(self):
+        """正对照：系统组（mcp/jobs）的徽章**必须还在** —— 不能连坐删掉整族。"""
+        self.assertIn("/mcp/servers", (_REPO / "static" / "hub" / "06-manager-tasks.js")
+                      .read_text(encoding="utf-8"), "MCP 徽章的数据源被误删")
+        self.assertIn("/api/jobs", (_REPO / "static" / "hub" / "06-manager-tasks.js")
+                      .read_text(encoding="utf-8"), "定时任务徽章的数据源被误删")
+        self.assertIn("nav-badge", (_REPO / "static" / "hub" / "05-chat-and-history.js")
+                      .read_text(encoding="utf-8"),
+                      "系统组子项的 .nav-badge 挂载点被连坐删掉了")
+
+
 class NarrowMemItemTest(unittest.TestCase):
     """`.mem-item` 在窄屏不得把描述压成「一个字母宽」（2026-10-04 用户真机截图）。
 
