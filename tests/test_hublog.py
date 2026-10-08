@@ -360,6 +360,32 @@ class TestUnitNameConsistency(unittest.TestCase):
         self.assertEqual(m.group(1), self.UNIT.removesuffix(".service"),
                          "SyslogIdentifier 与 unit 名不一致 ⇒ journald 里的 tag 对不上")
 
+    def test_deploy_copy_starts_dualstack(self):
+        """副本的 ExecStart 必须走 run_dualstack.py —— 09-29 双栈改造只改了生产、漏了副本。
+
+        分叉的后果比 unit 改名那次更隐蔽：照 `deploy/README.md` 装一遍就把双栈服务
+        悄悄降级成单栈 v4，**/health 照样 200**（只是局域网 IPv6 侧不再可达）。
+        判据取「含 run_dualstack.py」，不逐字比 ExecStart（路径参数将来可能合法变动）。
+        """
+        text = (_REPO / "deploy" / self.UNIT).read_text(encoding="utf-8")
+        m = re.search(r"^ExecStart=(.+)$", text, re.MULTILINE)
+        self.assertTrue(m, "deploy/%s 缺 ExecStart" % self.UNIT)
+        self.assertIn("run_dualstack.py", m.group(1),
+                      "副本的 ExecStart 不含 run_dualstack.py ⇒ 与生产分叉成单栈 v4。"
+                      "修法：cp ~/.config/systemd/user/%s deploy/%s（副本须是生产的逐字镜像）"
+                      % (self.UNIT, self.UNIT))
+        self.assertNotRegex(m.group(1), r"--port\s+\d+",
+                            "端口真值只在 .env(PORT)，unit 里写死会盖住它（第二份真值）")
+
+    def test_deploy_copy_does_not_pin_old_unit_name(self):
+        """副本里不该残留旧单元名 —— 否则照 README 装完 enable 的是旧名。"""
+        text = (_REPO / "deploy" / self.UNIT).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.startswith("#"):
+                continue          # 注释里提到旧名是改名说明，允许
+            self.assertNotIn(self.OLD_UNIT.removesuffix(".service"), line,
+                             "deploy/%s 的非注释行仍含旧单元名" % self.UNIT)
+
     def test_scanner_excludes_current_unit(self):
         import scanner
         self.assertTrue(scanner.EXCLUDE_PATTERNS.match("agenthub"),
@@ -376,6 +402,37 @@ class TestUnitNameConsistency(unittest.TestCase):
         u = pathlib.Path.home() / ".config" / "systemd" / "user"
         self.assertTrue((u / self.UNIT).is_file(),
                         "真单元 ~/.config/systemd/user/%s 不存在" % self.UNIT)
+
+    @tiers.host_only
+    def test_deploy_copy_matches_real_unit(self):
+        """副本必须是**生产 unit 的逐字镜像**（比 ExecStart 更严，防任何字段分叉）。
+
+        为什么值得写这么严：分叉的两种表现都不报错 ——
+        ① ExecStart 落后 ⇒ 照 README 装完服务被悄悄降级成单栈，/health 仍 200；
+        ② SyslogIdentifier/路径落后 ⇒ 装完日志页或文档链又指回旧形态。
+        注释行不比（生产 unit 的改名说明注释会随时间增补，逐字比会误判）。
+        """
+        live = pathlib.Path.home() / ".config" / "systemd" / "user" / self.UNIT
+        copy = _REPO / "deploy" / self.UNIT
+        if not live.is_file():
+            self.skipTest("真单元不在盘上（本机非生产形态）")
+
+        def keys(text):
+            out = {}
+            for ln in text.splitlines():
+                ln = ln.strip()
+                if not ln or ln.startswith("#") or "=" not in ln:
+                    continue
+                k, v = ln.split("=", 1)
+                out.setdefault(k, []).append(v.strip())
+            return out
+
+        a, b = keys(copy.read_text(encoding="utf-8")), keys(live.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(a), sorted(b),
+                         "deploy 副本与生产 unit 的键集不同 ⇒ 副本已落后或超前："
+                         "仅副本有=%s 仅生产有=%s" % (sorted(set(a) - set(b)), sorted(set(b) - set(a))))
+        for k in sorted(a):
+            self.assertEqual(a[k], b[k], "键 %s 分叉：副本=%s 生产=%s" % (k, a[k], b[k]))
 
 
 class TestFrontendPage(unittest.TestCase):

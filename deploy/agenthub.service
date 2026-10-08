@@ -7,7 +7,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/fs/1000/ftp/技术文档/agenthub
-ExecStart=/fs/1000/ftp/技术文档/agenthub/venv/bin/python3 -m uvicorn src.main:app --host 0.0.0.0 --port 3102
+# 2026-09-29 改：--host 0.0.0.0 → --host ::（工作区军规「HTTP 服务必须绑双栈 ::」）
+# 为什么必须改这里而不是只改 .env：uvicorn 的 --host 是 CLI 参数，优先级高于应用内
+# config.host 读到的 .env 值 ⇒ 旧 unit 把 .env 的 HOST 完全盖住，改了 .env 也不生效。
+# 保持写死 ::（不改成读 .env）：unit 里不做 shell 变量展开，避免引入第二份真值。
+# 2026-09-29 批1-4：--host :: 实测为 IPv6-only（asyncio 建 socket 时硬写 IPV6_V6ONLY=1），
+# 改为由 run_dualstack.py 自建 V6ONLY=0 的双栈 socket 并把 fd 交给 uvicorn，v4/v6 同一监听。
+# 端口真值仍只在 .env（PORT），unit 不留第二份。
+ExecStart=/fs/1000/ftp/技术文档/agenthub/venv/bin/python3 /fs/1000/ftp/技术文档/agenthub/run_dualstack.py
 # 注意：.env 由应用自身加载（src/config.py 覆盖模式），此处不重复注入，避免双份真值
 Restart=always
 RestartSec=3
@@ -19,3 +26,8 @@ SyslogIdentifier=agenthub
 
 [Install]
 WantedBy=default.target
+# 2026-10-08：本单元由 agent-hub.service 改名而来（仓名/远端/unit 三处一次改齐）。
+# 改名时必须同批改的三处：① src/hublog.py DEFAULT_UNIT（journalctl -u 的单元名，
+#   漏改症状＝设置→日志页静默空白）；② src/scanner.py EXCLUDE_PATTERNS（漏改症状＝
+#   端口扫描把自家 3102 登记成外部服务）；③ ~/bin/agent-hub-watchdog.sh 看护清单。
+# 回滚：把本文件改回 SyslogIdentifier=agent-hub 并 cp 回 agent-hub.service。
