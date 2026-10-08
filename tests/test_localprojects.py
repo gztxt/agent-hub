@@ -129,6 +129,22 @@ class TestScan(unittest.TestCase):
         self.assertEqual(len(hits), 1, "非派生 worktree 必须保留")
         self.assertTrue(hits[0]["worktree"], "必须标 worktree:True（如实呈现形态）")
 
+    def test_dead_gitdir_dropped(self):
+        """v0.13.93：gitdir 指向的路径整条不存在 ⇒ 死残留，剔除。
+
+        2026-10-08 目录改名（agent-hub → agenthub）后家目录 14 个
+        `agent-hub-wt-*` 全部命中：git 进去直接 `fatal: not a git repository`，
+        却因「不在已收录仓库的 .git/ 内」被放行混进列表，把 L1 精度闸顶到 60>50。
+        判据是**路径不存在**这条证据，不按目录名猜。
+        """
+        wt = _mkrepo(self.root, "deadwt", as_file=True)
+        gone = self.root / "vanished" / ".git" / "worktrees" / "deadwt"
+        (wt / ".git").write_text(f"gitdir: {gone}\n", encoding="utf-8")
+        projects, _e, stats = lp._scan_roots([str(self.root)])
+        paths = [p["path"] for p in projects]
+        self.assertNotIn(str(wt), paths, "死 gitdir（目标不存在）必须剔除")
+        self.assertGreaterEqual(stats["worktrees"], 1, "死 gitdir 剔除量必须进 stats")
+
     def test_hidden_and_dep_dirs_pruned(self):
         _mkrepo(self.root, ".hermes/internal")          # 点开头目录：工具内部仓，不是项目
         _mkrepo(self.root, "web/node_modules/pkg")      # 依赖目录

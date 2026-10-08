@@ -150,9 +150,19 @@ def _parse_gitdir_file(d: Path) -> Optional[str]:
 
 
 def _is_derived_worktree(gitdir_target: Optional[str], git_root_paths) -> bool:
-    """P3：gitdir 指向另一已收录仓库的 <P>/.git/ 内 ⇒ 派生检出（重复条目）。"""
+    """P3：gitdir 指向另一已收录仓库的 <P>/.git/ 内 ⇒ 派生检出（重复条目）。
+
+    另含**死 gitdir**（v0.13.93 补）：gitdir 指向的路径整条已不存在 ⇒ 该 `.git`
+    文件是仓库搬走/改名后没跟上的残留（实测 2026-10-08 目录改名 `agent-hub` →
+    `agenthub` 后，家目录 14 个 `agent-hub-wt-*` 全部命中，git 进去直接
+    `fatal: not a git repository`，却因「不在已收录仓库的 .git/ 内」而被放行，
+    混进项目列表把 L1 精度闸顶到 60>50）。它连仓库都不是，留着只会误导用户，
+    按证据（路径不存在）剔除，不按目录名猜。
+    """
     if not gitdir_target:
         return False
+    if not os.path.exists(gitdir_target):
+        return True
     for p in git_root_paths:
         if gitdir_target == os.path.normpath(os.path.join(p, ".git")) or \
                 gitdir_target.startswith(os.path.normpath(os.path.join(p, ".git")) + os.sep):
