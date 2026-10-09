@@ -22,7 +22,7 @@ import functools
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -72,6 +72,63 @@ def _pick_routes(kwargs: Dict[str, Any]) -> str:
         if v:
             return str(v)[:_Q_MAX_CHARS]
     return ""
+
+
+#: 技能名落库上限。技能名实测最长 ~30 字符（`repo-to-local-kb-fusion`），
+#: 留 2倍余量；**必须设上限** —— detail 要进日志中心的文本检索，无上限就是往库里灌长文本。
+_NAME_MAX_CHARS = 64
+
+#: 从端点返回体里挖技能名。**这是`skill_usage.counts()` 能记账的唯一前提**——
+#: 它只认 `detail["name"]`，而本模块原先只记 q/limit/routes/channel，
+#: 于是「零调用僵尸榜」恒等于「全部技能」（判例 103：counted=0 时整榜不可用于删除决策）。
+#:
+#: 为什么放在这里而不是让skill.py 自己拼 detail：装饰器是**单一落库出口**，
+#: 散写必漏（模块 docstring 的原话）。端点只要 `@runlog.track("skill.*")` 就自动带上名字。
+#:
+#: 逐层降级，任一层形状不认识就返回空串，**绝不让埋点抛异常带倒业务端点**：
+#:   ① {"bm25": {"items": [{"name": ...}]}}← /api/skill/relevant 的真实形状
+#:   ② {"items": [{"name": ...}]}             ← 扁平形状（/api/skill/list）
+#:   ③ {"names": ["a", "b"]}                  ← 只有名字列表
+#:   ④ ["a", "b"]                              ← 直接是列表
+#:   ⑤ {"name": "x", ...}                     ← /api/skill/read 的单对象形状（**无 items 包装**）
+def _pick_names(data: Any) -> List[str]:
+    """从返回体里提取技能名列表（去重、保序、截断）。**任何异常都返回空列表**。
+
+    ⚠ **第⑤层（单对象）不能省**：`/api/skill/read` 回的是**一个**技能对象（顶层直接是
+    `name`/`content`/`route`…），**不套 `items`**。少了它，`skill.read` 事件永远不带 `name`
+    ⇒ `skill_usage.counts()` 的 reads 桶恒空（`_name_of` 取不到名就丢行）。
+    这不是「少记一条日志」，是「读技能这件事在僵尸榜上不可见」——与判例 103 同族。
+    """
+    try:
+        items: Any = None
+        if isinstance(data, dict):
+            bm = data.get("bm25")
+            if isinstance(bm, dict):
+                items = bm.get("items")
+            if items is None:
+                items = data.get("items")
+            if items is None and isinstance(data.get("names"), list):
+                items = data["names"]
+            if items is None and isinstance(data.get("name"), str):
+                # /api/skill/read：单个技能对象。**只认顶层 str 型 name**——
+                # `list`/`relevant` 的顶层没有 `name` 键，故不会把它们的包装对象误当成条目。
+                items = [data]
+        elif isinstance(data, list):
+            items = data
+        if not isinstance(items, list):
+            return []
+        out: List[str] = []
+        for it in items:
+            name = None
+            if isinstance(it, dict):
+                name = it.get("name") or it.get("skill")
+            elif isinstance(it, str):
+                name = it
+            if name and str(name).strip() and str(name) not in out:
+                out.append(str(name).strip()[:_NAME_MAX_CHARS])
+        return out
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _channel_of(request: Any) -> str:
@@ -128,13 +185,24 @@ def track(subject: str):
                 request = args[0]
             try:
                 data = await fn(*args, **kwargs)
-                _fire(subject, "success", int((time.monotonic() - t0) * 1000), {
+                base = {
                     **_backend_routes(data),
                     "q": tdai_client.scrub(_pick_query(kwargs)),
                     "limit": _pick_limit(kwargs),
                     "routes": _pick_routes(kwargs),
                     "channel": _channel_of(request),
-                })
+                }
+                names = _pick_names(data)
+                if not names:
+                    _fire(subject, "success", int((time.monotonic() - t0) * 1000), base)
+                else:
+                    # 一行记一个技能：`skill_usage.counts()` 每行只取 `detail["name"]`，
+                    # 塞成数组它会整个str() 成一个怪串、账照样记不上（判例 103）。
+                    # first 名重复写进 base.first_name 供人读，完整清单在 names。
+                    for i, nm in enumerate(names):
+                        _fire(subject, "success", int((time.monotonic() - t0) * 1000),
+                              {**base, "name": nm, **({"first_name": names[0]} if i == 0 else {}),
+                               "name_count": len(names)})
                 return data
             except HTTPException as e:
                 # 失败路径同样留痕（查询词 scrub 后截 200），然后原样 re-raise——

@@ -25,7 +25,12 @@ import skill_usage as U  # noqa: E402
 
 
 class _FakeDB(types.ModuleType):
-    """假 db 模块：记录收到的 (sql, params)，返回预置行。"""
+    """假 db 模块：记录收到的 (sql, params)，返回预置行。
+
+    **必须按 SQL 的 `subject IN (...)` 过滤**（2026-10-10 起）：原先纯返回预置行，
+    于是「relevant 到底在不在 `_SUBJECTS` 里」对结果是**恒绿**的——测试根本证明不了修复
+   （判例 102 §5：恒绿判据不算判据）。真实 API 按 subject 过滤，假库照做才不产生假绿。
+    """
 
     def __init__(self, rows=None, boom=False):
         super().__init__("db")
@@ -37,6 +42,9 @@ class _FakeDB(types.ModuleType):
         self.calls.append((sql, params))
         if self.boom:
             raise RuntimeError("no such database")
+        if "subject IN" in sql and params:
+            subs = set(params[1:-1])            # (source, *subjects, since)
+            return [r for r in self.rows if r.get("subject") in subs]
         return self.rows
 
 
@@ -163,15 +171,35 @@ class TestCounts(unittest.TestCase):
                 sys.modules["db"] = old
 
     def test_query_params_pin_source_and_subjects(self):
-        """source='rest' + 两个 subject + 时间窗——形状错了就记不上账或记错账。"""
+        """source='rest' + 全部 subject + 时间窗——形状错了就记不上账或记错账。"""
         fake = _FakeDB([])
         with _PatchDB(fake):
             U.counts(days=7)
         sql, params = fake.calls[0]
         self.assertIn("source = ?", sql)
         self.assertEqual(params[0], "rest")
-        self.assertEqual(params[1:3], ("skill.read", "skill.inject"))
-        self.assertTrue(params[3].endswith("+00:00"), params[3])
+        # subject 集合钉死（含 skill.relevant：注入链唯一可见事件，见模块 docstring）。
+        self.assertEqual(U._SUBJECTS, ("skill.read", "skill.inject", "skill.relevant"))
+        self.assertEqual(params[1:1 + len(U._SUBJECTS)], U._SUBJECTS)
+        # SQL 里的 ? 个数必须与「source + N 个 subject + 时间窗」一致——
+        # 写死 `(?, ?)` 会在加 subject 时错位，是历史 bug 的形态。
+        self.assertEqual(sql.count("?"), 1 + len(U._SUBJECTS) + 1)
+        self.assertTrue(params[-1].endswith("+00:00"), params[-1])
+
+    def test_relevant_row_counts_as_inject(self):
+        """注入链（D4/D5）只打 /api/skill/relevant ⇒ 它必须被计入，否则 counted 恒 0。
+
+        这是 2026-10-10 补的缺口：`_pick_names` 认得 relevant 形状（带 name），
+        但 `_SUBJECTS` 原先只认 read/inject ⇒ 事件写了、名字也有，却不被计数。
+        """
+        rows = [{"subject": "skill.relevant", "detail": '{"name": "agent-dispatch"}',
+                 "created_at": "2026-10-10T01:00:00.000000+00:00"}]
+        with _PatchDB(_FakeDB(rows)):
+            c = U.counts(days=7)
+        self.assertEqual(c["agent-dispatch"]["injects"], 1)
+        self.assertEqual(c["agent-dispatch"]["reads"], 0)
+        # 该技能不再是僵尸（正是台账 PT-20261009-04 的验收判据）
+        self.assertEqual(U.zombies([{"name": "agent-dispatch", "routes": ["pi"]}], c), [])
 
     def test_tallies_reads_and_injects_separately(self):
         rows = [
@@ -233,6 +261,45 @@ class TestSnapshot(unittest.TestCase):
             s = U.snapshot([])
         self.assertIn("medium", s["note"])
         self.assertIn("未取证", s["note"])
+
+
+class TestRedDirection(unittest.TestCase):
+    """红向自证：把修复撤掉，对应断言必须转红（恒绿判据不算判据，判例 102 §5）。"""
+
+    def test_red_when_relevant_removed_from_subjects(self):
+        """把 `_SUBJECTS` 退回旧的两元素 ⇒ 同一条 relevant 行不再被计入。
+
+        假库按 `subject IN (...)` 过滤（见 `_FakeDB`），所以这条是**真红向**：
+        撤掉 `skill.relevant` 后 `counts()` 变空，还原本 bug 现场（生产 counted=0 的机理）。
+        """
+        rows = [{"subject": "skill.relevant", "detail": '{"name": "x"}',
+                 "created_at": "2026-10-10T01:00:00.000000+00:00"}]
+        old = U._SUBJECTS
+        try:
+            U._SUBJECTS = ("skill.read", "skill.inject")   # 2026-10-10 之前的旧值
+            with _PatchDB(_FakeDB(rows)):
+                self.assertEqual(U.counts(days=7), {},
+                                 "旧 _SUBJECTS 下 relevant 行必须被过滤掉（红向成立）")
+        finally:
+            U._SUBJECTS = old
+
+    def test_relevant_row_would_be_false_green_without_filter(self):
+        """守假库本身：若假库不按 subject 过滤，relevant 用例会恒绿。
+
+        这条钉住「假库确实在过滤」——否则 `test_relevant_row_counts_as_inject`
+        无论 `_SUBJECTS` 含不含 relevant 都会通过，修复就没人验。
+        """
+        rows = [{"subject": "skill.relevant", "detail": '{"name": "x"}',
+                 "created_at": "2026-10-10T01:00:00.000000+00:00"}]
+        fake = _FakeDB(rows)
+        # 传一个**不含** relevant 的 subject 集合：假库必须把该行滤掉
+        got = fake.query("SELECT ... WHERE source = ? AND subject IN (?, ?) AND created_at >= ?",
+                         ("rest", "skill.read", "skill.inject", "2026-10-10T00:00:00+00:00"))
+        self.assertEqual(got, [], "假库没有按 subject 过滤 ⇒ 会掩盖 _SUBJECTS 的缺失")
+        got2 = fake.query("SELECT ... WHERE source = ? AND subject IN (?, ?, ?) AND created_at >= ?",
+                          ("rest", "skill.read", "skill.inject", "skill.relevant",
+                           "2026-10-10T00:00:00+00:00"))
+        self.assertEqual(len(got2), 1, "含 relevant 时必须保留该行")
 
 
 if __name__ == "__main__":

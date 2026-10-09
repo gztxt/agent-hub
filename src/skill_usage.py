@@ -1,7 +1,7 @@
 """D3：技能调用记账与「零调用僵尸榜」。
 
-**只认 hub 通道**（`profile_events` 里 `source='rest'` 且 subject ∈ {`skill.read`, `skill.inject`}）。
-各家 agent 直接读自己技能目录的旁路统计**本批未实现** ⇒ 置信度封顶 `medium`。
+**只认 hub 通道**（`profile_events` 里 `source='rest'` 且 subject ∈ {`skill.read`, `skill.inject`,
+`skill.relevant`}）。各家 agent 直接读自己技能目录的旁路统计**本批未实现** ⇒ 置信度封顶 `medium`。
 
 军规落地（禁把 SKIP 当 PASS）：**不取证的第二数据源绝不能报 `high`**。设计书 §7 定的口径是
 「两源皆零 → high；仅 hub 源为零 → medium」；`DIRECT_SOURCE = "not-implemented"` 就是把
@@ -26,7 +26,16 @@ from typing import Any, Dict, Iterable, List
 DIRECT_SOURCE = "not-implemented"
 
 #: 计入记账的 subject。读库用 IN 展开，故须是 tuple 而非集合（sqlite3 接收序列）。
-_SUBJECTS = ("skill.read", "skill.inject")
+#:
+#: 【为什么含 `skill.relevant`（2026-10-10 补）】注入链——pi 的 `hub-facade.ts`（D4）与
+#: claude 的 `scripts/hub_skill_inject.py`（D5）——**只打 `/api/skill/relevant`**，它俩
+#: 注入的正是该端点返回的 top-N。也就是说：**「注入」这道动作在服务端唯一可见的留痕
+#: 就是 `skill.relevant` 事件**。原先只认 read/inject ⇒ 注入被静默丢弃 ⇒ 生产 `counted`
+#: 恒为 0，把全机最热的 `agent-dispatch`（实测被用 166 次）都列成僵尸（判例 103/104）。
+#:
+#: ⚠ `skill.inject` 保留但**当前无生产者**——它是给「将来某端点显式回写注入」预留的口子，
+#:   不是死 subject。真正在产出的是 `skill.relevant`（注入链）与 `skill.read`（读全文）。
+_SUBJECTS = ("skill.read", "skill.inject", "skill.relevant")
 
 #: hub 自身事件通道。`hook.py:131` 的 agent 画像聚合是按 `source != 'rest'` 排除本通道的，
 #: 也就是说 'rest' 正是「hub 自己干的事」——技能门面的读写走这里。
@@ -52,12 +61,15 @@ def counts(days: int = 7) -> Dict[str, Dict[str, Any]]:
     """
     since = (datetime.now(timezone.utc) - timedelta(days=_clamp(days))).isoformat()
     out: Dict[str, Dict[str, Any]] = {}
+    # 占位符按 _SUBJECTS 长度现算：写死 `(?, ?)` 会在增 subject 时静默错位
+    #（sqlite3 参数个数不符会抛，但「少写一个 ? 却多传一个值」这类迟早发生）。
+    holders = ",".join("?" * len(_SUBJECTS))
     try:
         import db
         rows = db.query(
             "SELECT subject, detail, created_at FROM profile_events "
-            "WHERE source = ? AND subject IN (?, ?) AND created_at >= ? "
-            "ORDER BY id",
+            "WHERE source = ? AND subject IN (%s) AND created_at >= ? "
+            "ORDER BY id" % holders,
             (_SOURCE,) + _SUBJECTS + (since,))
     except Exception:
         # 面板要能开：查不到记账就当没人被调用过，僵尸榜会偏大但**方向是保守的**
@@ -72,6 +84,9 @@ def counts(days: int = 7) -> Dict[str, Dict[str, Any]]:
         if row.get("subject") == "skill.read":
             e["reads"] += 1
         else:
+            # skill.inject / skill.relevant 都归「注入」桶：relevant 是注入链的选人动作，
+            # 对僵尸榜而言「被选进候选并被推给 agent」与「被显式注入」是同一件事
+            #（`zombies()` 只判 reads/injects 是否全零，桶标签只影响展示）。
             e["injects"] += 1
         at = str(row.get("created_at") or "")
         if at > e["last_at"]:

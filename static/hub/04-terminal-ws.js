@@ -686,16 +686,32 @@ function renderSkillList() {
 
 /* 零调用榜：/api/skill/zombies。**confidence 封顶 medium**——只接了 hub 通道
  * （profile_events 的 skill.read/skill.inject），各家直读磁盘的旁路本批未实现。
- * 界面上必须把它写出来，否则 medium 会被读成 high。 */
+ * 界面上必须把它写出来，否则 medium 会被读成 high。
+ *
+ * ★判例 103：`counted===0` 必须与「有记账但都是 0」**视觉上分开**。
+ *   改之前这里只写「记账覆盖 0 条」，与「真的一个都没被用」同形 ——
+ *   而 2026-10-09 实测就是这样把 `agent-dispatch`（真被调用 166 次、全机最热）
+ *   摆进了僵尸榜。**账空时整榜不可用于删除决策**，所以要横幅，不能只写进note。 */
 async function loadSkillZombies() {
   try {
     const d = await api('/api/skill/zombies?days=7');
     SKILL_ZOMBIES = {};
     (d.zombies || []).forEach(z => { SKILL_ZOMBIES[z.name] = z; });
     const c = d.confidence || 'medium';
-    $('skillBudgetHint').innerHTML = '零调用榜：' + (d.zombies_count || 0) + ' / ' + (d.total || 0) +
-      ' 条 · 记账覆盖 <b>' + (d.counted || 0) + '</b> 条 · 置信度 <b>' + escapeHtml(c) + '</b>' +
+    const counted = d.counted || 0;
+    const noLedger = counted === 0;
+    let html = '零调用榜：' + (d.zombies_count || 0) + ' / ' + (d.total || 0) +
+      ' 条 · 记账覆盖 <b>' + counted + '</b> 条 · 置信度 <b>' + escapeHtml(c) + '</b>' +
       (d.direct_source === 'not-implemented' ? '（第二数据源未接入，置信度封顶，不封顶就是自欺）' : '');
+    if (noLedger) {
+      /* 措辞与 07-asset-panel.js 的「部分后端不可用」同型（判例 103）：
+         明确说「下面这份不是零使用」，否则用户读成「都没用」就会去删。 */
+      html = '<div class="hint" style="color:var(--warn)"><b>没有记账数据，不能当「零使用」看</b>：' +
+        '下面 ' + (d.zombies_count || 0) + ' 条只是「账本里查不到痕迹」，' +
+        '不是「确认无人调用」。<b>据此删技能会误删</b>（2026-10-09 实测：' +
+        '本机最热的 agent-dispatch 被用 166 次，却出现在这份榜里）。</div>' + html;
+    }
+    $('skillBudgetHint').innerHTML = html;
   } catch (e) {
     $('skillBudgetHint').innerHTML = '<span class="hint">零调用榜不可用：' + escapeHtml(e.message || e) + '</span>';
   }

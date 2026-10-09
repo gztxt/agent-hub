@@ -152,6 +152,68 @@ class sqlite_blow(Exception):
     pass
 
 
+class TestPickNames(unittest.TestCase):
+    """`_pick_names`：从各端点返回体里挖技能名。
+
+    它是 `skill_usage.counts()` 能记账的**唯一前提**——`counts()` 每行只取 `detail["name"]`，
+    取不到就丢行。所以「哪个端点的返回形状没被认」=「那个端点在僵尸榜上不可见」（判例 103）。
+    五种形状必须各有一条：relevant(bm25) / list(items) / names / 裸 list / **read(单对象)**。
+    """
+
+    def test_relevant_bm25_shape(self):
+        self.assertEqual(
+            runlog._pick_names({"bm25": {"items": [{"name": "a"}, {"name": "b"}]}}),
+            ["a", "b"])
+
+    def test_list_items_shape(self):
+        self.assertEqual(runlog._pick_names({"items": [{"name": "a"}]}), ["a"])
+
+    def test_names_only_shape(self):
+        self.assertEqual(runlog._pick_names({"names": ["a", "b"]}), ["a", "b"])
+
+    def test_bare_list_shape(self):
+        self.assertEqual(runlog._pick_names(["a", "b"]), ["a", "b"])
+
+    def test_read_single_object_shape(self):
+        r"""/api/skill/read 回**单个对象**（顶层直接是 name，**不套 items**）。
+
+        漏认它 ⇒ `skill.read` 事件永远不带 name ⇒ counts() 的 reads 桶恒空
+        ⇒「读技能」这件事在僵尸榜上不可见。这是判例 103 的同族缺口，2026-10-10 补。
+        """
+        self.assertEqual(
+            runlog._pick_names({"name": "agent-dispatch", "description": "d", "content": "body"}),
+            ["agent-dispatch"])
+
+    def test_read_shape_is_not_covered_by_older_branches(self):
+        """红向对照：read 负载不含 bm25/items/names，也不是 list ⇒ 旧四层全不命中。
+
+        改法是把第⑤层(单对象)去掉，这条会翻红（functional 红向，不是只看字符串）。
+        这里直接证明「旧四层的判据对 read 负载一个都不成立」，故第⑤层是承重的。
+        """
+        payload = {"name": "agent-dispatch", "content": "body"}
+        self.assertNotIn("bm25", payload)
+        self.assertNotIn("items", payload)
+        self.assertNotIn("names", payload)
+        self.assertNotIsInstance(payload, list)
+        self.assertEqual(runlog._pick_names(payload), ["agent-dispatch"])
+
+    def test_wrapper_object_without_name_is_not_an_item(self):
+        """顶层没有 name 的包装对象（relevant/list 的响应壳）不能被误当成单个条目。"""
+        for shell in ({"q": "x", "n": 3, "total": 365},
+                      {"items": [], "count": 0, "degraded": []}):
+            self.assertEqual(runlog._pick_names(shell), [])
+
+    def test_dedup_and_length_cap(self):
+        self.assertEqual(runlog._pick_names([{"name": "a"}, {"name": "a"}]), ["a"])
+        got = runlog._pick_names([{"name": "x" * 200}])
+        self.assertEqual(len(got[0]), runlog._NAME_MAX_CHARS)
+
+    def test_unknown_and_bad_input_return_empty(self):
+        """任何形状不认识、任何坏输入都必须返回 []（埋点抛异常会带倒业务端点）。"""
+        for bad in (None, 42, "str", {}, {"foo": 1}, {"name": 123}, {"name": ""}):
+            self.assertEqual(runlog._pick_names(bad), [], f"{bad!r} 应返回 []")
+
+
 class TestRunlogQuery(_Base):
     """GET /api/runlog：鉴权三态 + 过滤 + 游标翻页。"""
 
