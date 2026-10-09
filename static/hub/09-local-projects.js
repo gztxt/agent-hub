@@ -30,46 +30,107 @@ function _lpSet(key) {
 var lpStars = _lpSet('hub.lp.stars');
 var lpHiddenSet = _lpSet('hub.lp.hidden');
 
+/* v0.13.101 删除墓碑：并集同步的**必要配套**，不是可选优化。
+   并集（服务端 ∪ 本地）解决了「旧子集抹小服务端」，但它自带一个副作用：
+   用户在这台设备点「取消收藏」后，本地集合少了它、服务端还留着 ⇒
+   下次同步的并集把它**复活**。不配墓碑就是拿一个 bug 换另一个 bug。
+   墓碑记「这台设备明确删过哪些 key」，并集时据此把服务端那份也剔除，
+   并让本次 PUT 把删除真正落到服务端。墓碑本身**只在本机localStorage**，
+   不上传——它表达的是单机意图，别的设备不需要也不该继承它。
+   只存 key（path 字符串），不存任何内容，与 lpStars 同口径。 */
+var lpTomb = _lpSet('hub.lp.tomb');
+
+function _lpTombAdd(key) {
+  lpTomb.add(key);
+  lsSet('hub.lp.tomb', JSON.stringify([...lpTomb]));
+}
+function _lpTombDrop(key) {
+  lpTomb.delete(key);
+  lsSet('hub.lp.tomb', JSON.stringify([...lpTomb]));
+}
+/* 服务端有、本地没有、且没有墓碑 ⇒ 真·新增，收进来并清掉可能残留的墓碑。 */
+function _lpAdopt(serverSet, localSet) {
+  serverSet.forEach(function (k) {
+    if (localSet.has(k)) { lpTomb.delete(k); return; }
+    if (lpTomb.has(k)) return;      /* 墓碑：这台设备删过，别复活 */
+    localSet.add(k);
+  });
+  lsSet('hub.lp.tomb', JSON.stringify([...lpTomb]));
+}
+
 function _lpSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
-/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）：
-   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
-   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
-   - 后端未升级（404）或没配 token 时静默沿用本机存档
-   这样避免"每次进页都用后端覆盖本地"导致多端/刷新丢失收藏。 */
+/* v0.13.36 收藏/隐藏落服务端（跨浏览器/端侧一致）。
+   v0.13.101（用户 2026-10-09 报障「重启后又显示没有收藏」）改掉两处，
+   根因与红向取证见 work/probe-lp-sync-once.py（A/B/C/D 四段，全 PASS）：
+
+   ★ 缺陷①（用户所见的直接成因）：一次性闸门 + 静默 catch。
+     原写法进门即 `lpPrefSynced = true`，GET 失败走**空catch** ⇒ 本页面生命周期内
+     **永不再拉**。而 localStorage 按 origin 隔离（AGENTS.md 4.1⑤）⇒ 局域网 IP /
+     Tailscale / 手机 WebView 各一套存档；只要那一套是空的（或被清过站点数据），
+     一次网络抖动 / 一次重启期间的后端 502，就让它**永远显示零收藏**，
+     刷新与页内来回导航都不自愈。
+     修法：失败**不置位**（下次进页/重试自然重来），并把原因落到 hint 上——
+     静默失败与「真的没有收藏」在屏幕上是同形的，用户分不出就不可能自查。
+
+   ★ 缺陷②：以本地为准 ⇒ 过时子集覆盖服务端。
+     原分支注释写「后台静默合并推送（并集）」，**但 lpPushPref 推的是本地全量**，
+     是覆盖不是并集。审计时间线实测到多次条数下降（asset_audit projects.lp：
+     10-09T06:42:14 stars=17 → 09:57:45 stars=15），即另一台设备的旧子集把
+     服务端更大的集合**抹小了**。
+     修法：同步时以**服务端为基准**做并集（本地独有补进去），并用
+     **删除墓碑**（_lpAdopt + lpTomb）让「取消收藏」不会被并集复活；
+     删除意图由 lpToggleStar 自己 PUT 上去。 */
 var lpPrefSynced = false;
 var lpPrefErrShown = false;
+var lpPrefLastErr = '';
+
+/* 同步失败时不置 lpPrefSynced，允许下次重试；错误落 var 供 hint 显示。 */
+function lpPrefFail(why) {
+  lpPrefLastErr = why || '未知原因';
+  lpPrefErrShown = true;
+}
 
 function lpCountsText() {
   return (lpStars.size ? ' · 收藏 ' + lpStars.size : '') +
-    (lpHiddenSet.size ? ' · 已隐藏 ' + lpHiddenSet.size : '');
+    (lpHiddenSet.size ? ' · 已隐藏 ' + lpHiddenSet.size : '') +
+    (lpPrefErrShown ? ' · ⚠ 云端同步失败（' + escapeHtml(lpPrefLastErr) + '，仅本机存档）' : '');
 }
 
 async function lpSyncPrefs() {
   if (lpPrefSynced) return;
-  lpPrefSynced = true;
   try {
     const d = await api('/api/prefs/projects.lp');
+    /* 成功后才置位——这是缺陷①的修法：一次失败不许让本页面终身不再拉。 */
+    lpPrefSynced = true;
+    lpPrefErrShown = false;
+    lpPrefLastErr = '';
     if (d && d.value) {
       const serverStars = new Set(d.value.stars || []);
       const serverHidden = new Set(d.value.hidden || []);
-      // 仅当本地为空时才从后端接收；本地有数据则以本地为准（多端首次同步由首台设备推送完成）
-      if (lpStars.size === 0 && lpHiddenSet.size === 0) {
-        lpStars = serverStars;
-        lpHiddenSet = serverHidden;
-        _lpSave('hub.lp.stars', lpStars);
-        _lpSave('hub.lp.hidden', lpHiddenSet);
-        lpRenderList();
-      } else {
-        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+      const before = serverStars.size + serverHidden.size;
+      /* 缺陷②修法：以服务端为基准做**并集**（原来「本地非空就整份推上去」是覆盖），
+         墓碑让本机显式删过的项不被服务端旧值复活。 */
+      _lpAdopt(serverStars, lpStars);
+      _lpAdopt(serverHidden, lpHiddenSet);
+      _lpSave('hub.lp.stars', lpStars);
+      _lpSave('hub.lp.hidden', lpHiddenSet);
+      lpRenderList();
+      /* 合并后与服务端有差异（含墓碑剔除）⇒ 补推，让服务端收敛到同一状态。 */
+      if (before !== serverStars.size + serverHidden.size
+          || lpStars.size !== serverStars.size || lpHiddenSet.size !== serverHidden.size) {
         lpPushPref();
       }
       const hint = $('lpHint');
       if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
     }
-  } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
+  } catch (e) {
+    lpPrefFail((e && e.http) ? ('HTTP ' + e.http) : ((e && e.message) || '网络失败'));
+    const hint = $('lpHint');
+    if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
+  }
 }
 
 async function lpPushPref() {
@@ -78,8 +139,14 @@ async function lpPushPref() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stars: [...lpStars], hidden: [...lpHiddenSet] }) });
     lpPrefErrShown = false;
+    lpPrefLastErr = '';
   } catch (e) {
-    if (!lpPrefErrShown) { lpPrefErrShown = true; toast('收藏/隐藏已存本机，云端同步失败', 'err'); }
+    const why = (e && e.http) ? ('HTTP ' + e.http) : ((e && e.message) || '网络失败');
+    const first = !lpPrefErrShown;          /* toast 只响一次，hint 每次都更新 */
+    lpPrefFail(why);
+    if (first) toast('收藏/隐藏已存本机，云端同步失败（' + why + '）', 'err');
+    const hint = $('lpHint');
+    if (hint && LP.length) hint.textContent = LP.length + ' 个项目' + lpCountsText();
   }
 }
 
@@ -117,8 +184,13 @@ function lpRowHtml(p, i) {
 function lpToggleStar(i) {
   const p = LP[i];
   if (!p) return;
-  if (lpStars.has(p.path)) lpStars.delete(p.path);
-  else lpStars.add(p.path);
+  if (lpStars.has(p.path)) {
+    lpStars.delete(p.path);
+    _lpTombAdd(p.path);       /* v0.13.101：取消收藏记墓碑，否则同步的并集会把它复活 */
+  } else {
+    lpStars.add(p.path);
+    _lpTombDrop(p.path);      /* 重新收藏 ⇒ 撤墓碑，否则它永远进不来 */
+  }
   _lpSave('hub.lp.stars', lpStars);
   lpRenderList();
   lpPushPref();
@@ -127,9 +199,12 @@ function lpToggleStar(i) {
 function lpToggleHide(i) {
   const p = LP[i];
   if (!p) return;
-  if (lpHiddenSet.has(p.path)) lpHiddenSet.delete(p.path);
-  else {
+  if (lpHiddenSet.has(p.path)) {
+    lpHiddenSet.delete(p.path);
+    _lpTombAdd(p.path);
+  } else {
     lpHiddenSet.add(p.path);
+    _lpTombDrop(p.path);
     if (lpSel === p.path) { lpSel = ''; lpSelName = ''; }   // 隐藏选中项即解除选中
   }
   _lpSave('hub.lp.hidden', lpHiddenSet);

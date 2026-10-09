@@ -34,43 +34,81 @@ function _ghSet(key) {
 var ghStars = _ghSet('hub.gh.stars');
 var ghHiddenSet = _ghSet('hub.gh.hidden');
 
+/* v0.13.101 删除墓碑（与 09 的 lpTomb 同型同理由）：并集同步的配套，
+   防止「取消收藏」在下次同步时被服务端旧值复活。同 09：墓碑只在本机、不上传。 */
+var ghTomb = _ghSet('hub.gh.tomb');
+
+function _ghTombAdd(key) {
+  ghTomb.add(key);
+  lsSet('hub.gh.tomb', JSON.stringify([...ghTomb]));
+}
+function _ghTombDrop(key) {
+  ghTomb.delete(key);
+  lsSet('hub.gh.tomb', JSON.stringify([...ghTomb]));
+}
+function _ghAdopt(serverSet, localSet) {
+  serverSet.forEach(function (k) {
+    if (localSet.has(k)) { ghTomb.delete(k); return; }
+    if (ghTomb.has(k)) return;
+    localSet.add(k);
+  });
+  lsSet('hub.gh.tomb', JSON.stringify([...ghTomb]));
+}
+
 function _ghSave(key, set) {
   lsSet(key, JSON.stringify([...set]));
 }
 
-/* v0.13.36 收藏/隐藏落服务端（同 09 分片 lpSyncPrefs/lpPushPref 的 gh 对称版）：
-   - 首次加载（本机 localStorage 为空）时从后端拉取，合并到本地
-   - 本地已有数据时：以本地为准，后台静默推送到后端（fire-and-forget）
-   - 后端未升级或离线时静默沿用本机存档（v0.13.32 语义不变） */
+/* v0.13.36 收藏/隐藏落服务端（同 09 分片 lpSyncPrefs/lpPushPref 的 gh 对称版）。
+   v0.13.101 同步修掉与09 完全同型的两处缺陷（用户 2026-10-09 报障
+   「重启后又显示没有收藏」，红向取证 work/probe-lp-sync-once.py）：
+     ① 一次性闸门 + 静默 catch ⇒ 一次失败后本页面终身不再拉（成功后才置位）；
+     ② 「本地非空就整份推上去」是以过时子集**覆盖**服务端（同型代码必须同型修，
+        两页各自一套同步逻辑正是同型缺陷容易漏改的地方）。 */
 var ghPrefSynced = false;
 var ghPrefErrShown = false;
+var ghPrefLastErr = '';
+
+function ghPrefFail(why) {
+  ghPrefLastErr = why || '未知原因';
+  ghPrefErrShown = true;
+}
 
 function ghCountsText() {
   return (ghStars.size ? ' · 收藏 ' + ghStars.size : '') +
-    (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '');
+    (ghHiddenSet.size ? ' · 已隐藏 ' + ghHiddenSet.size : '') +
+    (ghPrefErrShown ? ' · ⚠ 云端同步失败（' + escapeHtml(ghPrefLastErr) + '，仅本机存档）' : '');
 }
 
 async function ghSyncPrefs() {
   if (ghPrefSynced) return;
-  ghPrefSynced = true;
   try {
     const d = await api('/api/prefs/projects.gh');
+    ghPrefSynced = true;              /* 成功后才置位（缺陷①修法） */
+    ghPrefErrShown = false;
+    ghPrefLastErr = '';
     if (d && d.value) {
       const serverStars = new Set(d.value.stars || []);
       const serverHidden = new Set(d.value.hidden || []);
-      // 仅当本地为空时才从后端接收；本地有数据则以本地为准
-      if (ghStars.size === 0 && ghHiddenSet.size === 0) {
-        ghStars = serverStars;
-        ghHiddenSet = serverHidden;
-        _ghSave('hub.gh.stars', ghStars);
-        _ghSave('hub.gh.hidden', ghHiddenSet);
-        ghRenderList();
-      } else {
-        // 本地已有数据：后台静默合并推送（并集），不覆盖本地显示
+      const before = serverStars.size + serverHidden.size;
+      /* 以服务端为基准做并集（缺陷②修法），墓碑剔除本机显式删过的项。 */
+      _ghAdopt(serverStars, ghStars);
+      _ghAdopt(serverHidden, ghHiddenSet);
+      _ghSave('hub.gh.stars', ghStars);
+      _ghSave('hub.gh.hidden', ghHiddenSet);
+      ghRenderList();
+      if (before !== serverStars.size + serverHidden.size
+          || ghStars.size !== serverStars.size || ghHiddenSet.size !== serverHidden.size) {
         ghPushPref();
       }
+      const hint = $('ghHint');
+      if (hint && GH.length) hint.textContent = GH.length + ' 个仓库' + ghCountsText();
     }
-  } catch (e) { /* 404=后端未升级；网络失败=离线。两种都沿用本机存档 */ }
+  } catch (e) {
+    ghPrefFail((e && e.http) ? ('HTTP ' + e.http) : ((e && e.message) || '网络失败'));
+    const hint = $('ghHint');
+    if (hint && GH.length) hint.textContent = GH.length + ' 个仓库' + ghCountsText();
+  }
 }
 
 async function ghPushPref() {
@@ -79,8 +117,14 @@ async function ghPushPref() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stars: [...ghStars], hidden: [...ghHiddenSet] }) });
     ghPrefErrShown = false;
+    ghPrefLastErr = '';
   } catch (e) {
-    if (!ghPrefErrShown) { ghPrefErrShown = true; toast('收藏/隐藏已存本机，云端同步失败', 'err'); }
+    const why = (e && e.http) ? ('HTTP ' + e.http) : ((e && e.message) || '网络失败');
+    const first = !ghPrefErrShown;
+    ghPrefFail(why);
+    if (first) toast('收藏/隐藏已存本机，云端同步失败（' + why + '）', 'err');
+    const hint = $('ghHint');
+    if (hint && GH.length) hint.textContent = GH.length + ' 个仓库' + ghCountsText();
   }
 }
 
@@ -123,8 +167,8 @@ function ghToggleStar(i) {
   const r = GH[i];
   if (!r) return;
   const fn = r.full_name;
-  if (ghStars.has(fn)) ghStars.delete(fn);
-  else ghStars.add(fn);
+  if (ghStars.has(fn)) { ghStars.delete(fn); _ghTombAdd(fn); }
+  else { ghStars.add(fn); _ghTombDrop(fn); }
   _ghSave('hub.gh.stars', ghStars);
   ghRenderList();
   ghPushPref();
@@ -134,9 +178,10 @@ function ghToggleHide(i) {
   const r = GH[i];
   if (!r) return;
   const fn = r.full_name;
-  if (ghHiddenSet.has(fn)) ghHiddenSet.delete(fn);
+  if (ghHiddenSet.has(fn)) { ghHiddenSet.delete(fn); _ghTombAdd(fn); }
   else {
     ghHiddenSet.add(fn);
+    _ghTombDrop(fn);
     if (ghSel === i) { ghSel = null; ghSelName = ''; }   // 隐藏选中项即解除选中
   }
   _ghSave('hub.gh.hidden', ghHiddenSet);
