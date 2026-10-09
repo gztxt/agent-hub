@@ -23,3 +23,11 @@ work/
 # 备份一份能重算的东西 = 同时把备份链体积抬高两个数量级。代价：丢了得重建（数分钟），
 # 重建期间检索降级回 rg（变慢，不返错）。
 data/memindex.db*
+
+# ── e2e-probe（tester-army/e2e 试点，2026-10-09）──
+# 只提交配置与用例；依赖与运行产物不入库。
+# `.e2e/` 由框架自带的 .gitignore 管，但**刻意在此显式再写一条**：那份是 e2e init 生成的，
+# 而本仓 prepush 闸门会对新增未跟踪文件发声，显式声明可避免每次跑都来问一遍。
+e2e-probe/node_modules/
+e2e-probe/package-lock.json
+e2e-probe/.e2e/
