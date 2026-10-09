@@ -8,16 +8,22 @@
 # 判据（写死在本脚本里，别再靠人眼数）：
 #   保留序：同一目标文件按 mtime 倒序保留最新 N=3 份；其余为"可归档"（不是"可删"——删除须用户批准）。
 #   另：文件名含 rollback / pre- 者**永不进入可归档集**（它们是事故回滚依据）。
+#   09-29：四种命名形态（`*.bak` / `*.bak-*` / `*.bak[0-9]` / `*.bak[0-9]-*`，与 .gitignore
+#   同源）才算备份件；原只认 `*.bak-*`，编号命名与纯 `.bak` 后缀两份共 26 份连清点都进不来。
+#   **本脚本与 bak_archive.sh 必须是同一判据**（其头注有同款约束），不许各写一套。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 KEEP=${KEEP:-3}
+BEXPR=(-name '*.bak' -o -name '*.bak-*' -o -name '*.bak[0-9]' -o -name '*.bak[0-9]-*')
 echo "备份件清点（KEEP=$KEEP，只读）"
 echo "────────────────────────────────────────────────────────────"
 total=0; arch=0
 while IFS= read -r stem; do
   # 限定目录：同名 .bak 可能存在于多个目录（如 ./data/ 与 ./data/backups/），
   # 无目录限定的 find 会重复计数（与 bak_archive.sh 同一修法，09-24）。
-  mapfile -t files < <(find "$(dirname "$stem")" -maxdepth 1 -name "$(basename "$stem").bak-*" \
+  b=$(basename "$stem")
+  mapfile -t files < <(find "$(dirname "$stem")" -maxdepth 1 \
+                        \( -name "$b.bak" -o -name "$b.bak-*" -o -name "$b.bak[0-9]" -o -name "$b.bak[0-9]-*" \) \
                         -not -path './venv/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
   n=${#files[@]}; total=$((total+n))
   [ "$n" -le "$KEEP" ] && continue
@@ -29,8 +35,8 @@ while IFS= read -r stem; do
     arch=$((arch+1))
   done
   printf '（超出保留窗 %d 份）\n' "$((n-KEEP))"
-done < <(find . -name '*.bak-*' -not -path './venv/*' 2>/dev/null \
-          | sed 's/\.bak-[^/]*$//' | sort -u)
+done < <(find . \( "${BEXPR[@]}" \) -not -path './venv/*' 2>/dev/null \
+          | sed 's/\.bak.*$//' | sort -u)
 echo "────────────────────────────────────────────────────────────"
 echo "总份数=$total ；超出保留窗（可归档候选，**非可删**）=$arch"
 echo "归档动作需用户批准；本脚本不做任何写/删。"

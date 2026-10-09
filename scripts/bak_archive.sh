@@ -9,7 +9,8 @@
 # 选择集与 `bak_inventory.sh` **完全一致**（两个脚本同一判据，不许各写一套）：
 #   · 同一目标文件按 mtime 倒序保留最新 KEEP=3 份，超额者为候选；
 #   · 文件名含 `rollback` / `pre-` 者**永不入选**（事故回滚依据）；
-#   · 只匹配 `*.bak-*`，不碰 venv/，不碰任何非备份文件。
+#   · 只匹配备份件的四种命名形态（`*.bak` / `*.bak-*` / `*.bak[0-9]` / `*.bak[0-9]-*`，
+#     与 .gitignore 同源），不碰 venv/，不碰任何非备份文件。
 #
 # 安全序（任一步不过即中止，绝不"先删后补"）：
 #   ① 候选清单 + **逐文件 sha256** 落 manifest
@@ -26,6 +27,10 @@ cd "$(dirname "$0")/.."
 REPO=$(pwd)
 APPLY=0; [ "${1:-}" = "--apply" ] && APPLY=1
 KEEP=${KEEP:-3}
+# 备份件命名的四种形态，与 .gitignore 第 6-11 行同源（判据不许各写一套）。
+# 09-29 加：原只匹配 `*.bak-*`，漏掉编号命名（`bak2/bak3/bak4-claude-*`）与纯 `.bak`
+# 后缀（`data/backups/` 下），实测两类共 26 份永久积压、既不在清点里也不在归档里。
+BEXPR=(-name '*.bak' -o -name '*.bak-*' -o -name '*.bak[0-9]' -o -name '*.bak[0-9]-*')
 OUTROOT=${OUTROOT:-/vol1/backups}
 TS=$(date +%Y%m%d_%H%M%S)
 OUT="$OUTROOT/agent-hub-bakclean-$TS"
@@ -35,7 +40,10 @@ cands=()
 while IFS= read -r stem; do
   # 必须限定在 stem 自己所在目录：无目录限定的 `find . -name` 会让同名 .bak
   # 在 ./data/ 与 ./data/backups/ 各匹配一遍 ⇒ 候选清单出现重复条目（09-24 dry 跑出）。
-  mapfile -t files < <(find "$(dirname "$stem")" -maxdepth 1 -name "$(basename "$stem").bak-*" \
+  # 目标文件的四种备份命名都要算进来（09-29：`bak2/bak3/bak4` 编号命名原先漏匹配）。
+  b=$(basename "$stem")
+  mapfile -t files < <(find "$(dirname "$stem")" -maxdepth 1 \
+                        \( -name "$b.bak" -o -name "$b.bak-*" -o -name "$b.bak[0-9]" -o -name "$b.bak[0-9]-*" \) \
                         -not -path './venv/*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
   n=${#files[@]}
   [ "$n" -le "$KEEP" ] && continue
@@ -43,12 +51,14 @@ while IFS= read -r stem; do
     case "$f" in *rollback*|*pre-*) continue ;; esac
     cands+=("$f")
   done
-done < <(find . -name '*.bak-*' -not -path './venv/*' 2>/dev/null \
-          | sed 's/\.bak-[^/]*$//' | sort -u)
+# stem 截取放宽到「从第一个 `.bak` 起全剥」（09-29）：原 `\.bak-[^/]*$` 匹配不到
+# `.bak2-`/`.bak` 形态 ⇒ 那类文件的 stem 会退化成整条文件名，永远选不进候选集。
+done < <(find . \( "${BEXPR[@]}" \) -not -path './venv/*' 2>/dev/null \
+          | sed 's/\.bak.*$//' | sort -u)
 # 双保险：去重（保持首次出现顺序）
 [ ${#cands[@]} -gt 0 ] && mapfile -t cands < <(printf '%s\n' "${cands[@]}" | awk '!seen[$0]++')
 
-total_all=$(find . -name '*.bak-*' -not -path './venv/*' 2>/dev/null | wc -l)
+total_all=$(find . \( "${BEXPR[@]}" \) -not -path './venv/*' 2>/dev/null | wc -l)
 nc=${#cands[@]}
 bytes=0; for f in "${cands[@]}"; do s=$(stat -c %s "$f" 2>/dev/null || echo 0); bytes=$((bytes+s)); done
 printf '仓内 .bak 总份数=%s　候选(超出 KEEP=%d 且非 rollback/pre-)=%d　候选字节=%s (%s MB)\n' \
@@ -94,7 +104,7 @@ while IFS= read -r f; do
 done < "$OUT/files.txt"
 
 # ── ⑤ 前后对比 ───────────────────────────────────────────────────────
-after=$(find . -name '*.bak-*' -not -path './venv/*' 2>/dev/null | wc -l)
+after=$(find . \( "${BEXPR[@]}" \) -not -path './venv/*' 2>/dev/null | wc -l)
 printf '④ 删除=%d 条　⑤ 仓内 .bak 份数 %s → %s　保留窗内(含 rollback/pre-)未动\n' "$del" "$total_all" "$after"
 printf '归档=%s （tgz + files.txt + SHA256SUMS）\n' "$OUT"
 [ "$del" -eq "$nc" ] && echo "结论: PASS（候选全数已归档并校验通过后才删除）" || \
