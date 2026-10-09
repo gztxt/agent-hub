@@ -226,10 +226,23 @@
         .brand-word .bw-b { font-weight: 300; letter-spacing: -.015em; color: var(--text-2); }
         .hstats { display: flex; align-items: center; gap: 14px; font-size: var(--fs-sm); color: var(--text-2); flex-wrap: wrap; }
         .hstats > span { display: inline-flex; align-items: center; gap: 5px; }
+        /* 空挂载点不吃 gap（2026-10-09 用户报「在跑 1·会话 1 间距太大」时查出的第二处）：
+           `#hStale`/`#hBusy`/`#hErrors` 三块常态为空，而**零宽度的 flex item 照样在两侧
+           各吃一个 gap** ⇒ 版本号右缘到「在跑」左缘实测 **28px**（gh-link 1219 → hBusy 1247），
+           是别处 14px 的整两倍；窄屏 `.hstats{gap:6px}` 同理会多出 12px。
+           关掉空态那一格即可，写入内容（需重启 / 在跑 / 异常 N）立刻照旧占位。 */
+        .hstats > span:empty { display: none; }
+        /* 「在跑 N · 会话 M」内部的间距（同日用户「间距太大」的主因）：
+           父级 `gap:5px` 会落到 #hBusy 的**每一个子节点**上（含两段匿名文本），
+           再叠 `.hbusy-sep` 自己的 margin ⇒ 实测 点→「在跑」5px、「在跑 1」→「·」7px、
+           「·」→「会话 1」7px，整块 115px、看着散。收成「点 + 4px + 在跑 1·会话 1」。 */
+        .hstats #hBusy { gap: 0; }
+        .hstats #hBusy .hdot { margin-right: 4px; }
         /* 「在跑 N · 会话 M」两个数之间的分隔符（v0.13.90）：不抢眼，
            但要在极窄宽度下也能被省略掉而不吃掉两端的数字。 */
-        .hstats .hbusy-sep { opacity: .5; margin: 0 2px; }
-/* 顶栏 GitHub 仓库地址（2026-10-08 用户要求「添加 github 地址」）。
+        .hstats .hbusy-sep { opacity: .5; margin: 0 1px; }
+/* 顶栏 GitHub 仓库入口（2026-10-08 用户要求「添加 github 地址」；v0.13.98 起可见文字
+           是版本号而不是仓库名 —— 用户「右上角 github 链接只保留图标和版本号」）。
            为什么放顶栏而不是页脚：底部状态栏本批已按用户裁定删除，而仓库地址是
            「这东西从哪来、怎么参与」的唯一入口，属常驻身份信息。
            窄屏策略与 .brand-word 一致（只留图标、文字由 title/aria 提供），
@@ -903,8 +916,8 @@
 /* 2026-10-08：#hAgents 已从顶栏摘除，原先给它单独开的 ellipsis 窗口
                （min-width:60px + text-overflow）随之删除——挂载点没了，规则是死规则。
                收缩压力改由下面 v0.13.74 那条「.hstats > span 全体可省略」承担。 */
-            /* GitHub 地址在窄屏只留图标（与 .brand-word 同一档位策略）：
-               完整地址仍在 title / aria-label 里，抄地址的需求靠悬停与新窗口两条路满足。 */
+            /* GitHub 入口在窄屏只留图标（与 .brand-word 同一档位策略）：
+               版本号与完整地址仍在 title / aria-label 里，抄地址的需求靠悬停与新窗口两条路满足。 */
             .gh-link { padding: 2px 4px; }
             .gh-link .gh-txt { display: none; }
             /* 齿轮已移入左侧菜单栏，顶部不再需要 #btnSettings 的任何规则 */
@@ -1210,14 +1223,20 @@
         <div class="hstats">
             <!-- 仓库地址：origin = https://github.com/gztxt/agenthub.git（2026-10-08 仓改名
                  agent-hub→agenthub 时同步改的远端名），全站唯一的可见入口。
-                 写完整 https 而非省略号：地址要能被人抄走；窄屏由 CSS 隐藏文字留图标。
+                 v0.13.98（用户「右上角 github 链接只保留图标和版本号」）：**可见文字由仓库名
+                 换成版本号**。地址本身没消失，只是从「看得见的字」退到 href / title / aria-label
+                 三处 —— 想抄地址的人点开新窗口或悬停仍拿得到，而顶栏右侧不必为一个外链
+                 常驻 14 个字符的宽度（顶栏 .hstats 是 nowrap+overflow:hidden，右缘先被切的
+                 永远是它右边的状态字，仓库地址属于不该当 sacrificial item 的身份项）。
+                 ⚠ 版本号走 **Jinja 变量 `{{ version }}`**，不写死字面量 —— 真相源是
+                 `src/main.py::VERSION`，写死就会出现「页脚/启动横幅已是 0.13.99、顶栏还写
+                 0.13.98」这种无告警漂移（本仓 CHANGELOG 顶部版本漂过 13 版就是前车之鉴）。
                  ⚠ 放在本组**最左**（不是最右）是刻意的：窄屏 .hstats 是
                  `flex-wrap:nowrap + overflow:hidden`，宽度不够时被裁掉的是**最右**那一项
-                 （v0.13.74 已为此挨过一次投诉：状态字被视口右缘直接切断）。
-                 仓库地址是常驻身份项、不该当截断的 sacrificial item，状态文字才是。 -->
+                 （v0.13.74 已为此挨过一次投诉：状态字被视口右缘直接切断）。 -->
             <a class="gh-link" href="https://github.com/gztxt/agenthub" target="_blank" rel="noopener noreferrer"
                title="源码仓库 · github.com/gztxt/agenthub" aria-label="打开源码仓库 github.com/gztxt/agenthub（新窗口）">
-                <svg class="i fill" aria-hidden="true"><use href="#i-github"/></svg><span class="gh-txt">gztxt/agenthub</span></a>
+                <svg class="i fill" aria-hidden="true"><use href="#i-github"/></svg><span class="gh-txt">v{{ version }}</span></a>
             <span id="hStale"></span>
             <!-- P2-B：在跑的 Agent（活着的终端会话）。v0.13.90 起文案为
                  「在跑 N · 会话 M」（N=有活会话的 Agent 数，M=活会话总条数），
@@ -2459,6 +2478,6 @@
     <script src="/static/vendor/addon-clipboard.js?v=01270242"></script>
     <script src="/static/vendor/addon-web-links.js?v=629a69f5"></script>
     <script src="/static/vendor/fit.js?v=25f05100"></script>
-    <script src="/static/hub.js?v=fc2cc12d"></script>
+    <script src="/static/hub.js?v=c1baf021"></script>
 </body>
 </html>

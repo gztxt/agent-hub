@@ -94,7 +94,12 @@ class FooterRemovedTest(unittest.TestCase):
 
 
 class GithubLinkTest(unittest.TestCase):
-    """② 顶栏 GitHub 仓库地址：存在性 + 外链三要素 + 图标 + 窄屏档位。"""
+    """② 顶栏 GitHub 仓库入口：存在性 + 外链三要素 + 图标 + 窄屏档位。
+
+    v0.13.98（用户「右上角 github 链接只保留图标和版本号」）起，可见文字是**版本号**
+    而不是仓库名 —— 但入口本身一个属性都没少，故本类只把断言从「文字是地址」改成
+    「文字是版本号 + 地址仍在 href/title/aria 三处」。
+    """
 
     def test_link_exists_in_header(self):
         self.assertIn('class="gh-link"', HTML, "顶栏没有 GitHub 地址链接")
@@ -135,13 +140,43 @@ class GithubLinkTest(unittest.TestCase):
         """窄屏（≤767px）只留图标：文字隐藏规则必须在既有窄屏块内。
 
         为什么卡「在 media 块内」：把 .gh-txt { display:none } 写在块外会让
-        **宽屏也只剩图标**，而那正是GitHub 地址唯一的可抄形态 —— 与
-        test_narrow_first_paint.py 里narrow-rail 那条同源的静默失效。
+        **宽屏也只剩图标**（v0.13.98 起宽屏那行字是版本号，是常驻身份信息），
+        而那正是顶栏唯一的版本/仓库入口 —— 与 test_narrow_first_paint.py 里
+        narrow-rail 那条同源的静默失效。
         """
         self.assertIn(".gh-link .gh-txt", HTML, "缺窄屏文字隐藏规则")
         m = re.search(r"@media \(max-width: %dpx\) \{(.*?)\n        \}" % BREAKPOINT, HTML, re.S)
         self.assertIsNotNone(m, "找不到窄屏 @media 块")
         self.assertIn(".gh-link .gh-txt", m.group(1), "文字隐藏规则不在窄屏块内 ⇒ 宽屏也没地址")
+
+    def test_visible_text_is_version_not_repo_name(self):
+        """可见文字必须是版本号：`.gh-txt` 里既不许写死版本号，也不许留仓库名。
+
+        两条都卡，因为它们的失效方式相反且**都不报错**：
+          · 写死 `0.13.97` 字面量 ⇒ bump 后顶栏与 /health 各说各话（无告警漂移，
+            本仓 CHANGELOG 顶部漂过 13 版、tests/README 计数漂过两轮）；
+          · 留 `gztxt/agenthub` ⇒ 用户「只保留图标和版本号」的指令没落地，
+            页面看着一切正常，只是那行字又宽了 6 个字符。
+        """
+        m = re.search(r'<span class="gh-txt">(.*?)</span>', HTML, re.S)
+        self.assertIsNotNone(m, "找不到 .gh-txt（顶栏 GitHub 入口的可见文字）")
+        txt = m.group(1).strip()
+        self.assertEqual("v{{ version }}", txt,
+                         ".gh-txt 应是 Jinja 变量 v{{ version }}，实际 %r —— "
+                         "写死版本号会与 /health 漂移，留仓库名则用户指令未落地" % txt)
+
+    def test_version_reaches_template_from_main(self):
+        """模板变量必须真被喂到：`/` 路由要把 `VERSION` 传进模板。
+
+        为什么单独一条：模板里写 `{{ version }}` 而路由忘了传 context 时，
+        **Jinja 默认渲染成空串**（不抛异常）⇒ 顶栏变成一个光秃秃的 GitHub 图标，
+        页面完全正常。判据读 `src/main.py` 源码文本（L0 禁 import src.main）。
+        """
+        main_py = (_REPO / "src" / "main.py").read_text(encoding="utf-8")
+        self.assertRegex(
+            main_py, r'TemplateResponse\(\s*request,\s*"index\.html",\s*\{[^}]*"version"',
+            "index.html 用到了 {{ version }}，但 / 路由没把 VERSION 传进模板 "
+            "⇒ 顶栏会静默渲染成空版本号")
 
     def test_no_second_narrow_tier_source(self):
         """分档偏好不变量③：窄屏档在 JS 侧只有一个真相源，且与 CSS 同值。

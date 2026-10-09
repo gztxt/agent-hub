@@ -79,7 +79,48 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[agenthub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.97"   # 全站右侧内容区留白缩小 60%：留白唯一来源是 main 的 padding，改基准、不加页限定
+VERSION = "0.13.99"   # 终端页编辑键：焦点不在终端时，方向键等 13 个原生键也能送达 pty
+#   v0.13.99：用户「嵌入式终端会话文字输入框无法正常使用键盘的上下左右光标键…输入框只是
+#   不需要鼠标焦点 但是键盘的全部原生功能都是需要的」，并明确要求**滚轮向上翻不许受影响**。
+#   **先取证再动手**，三轮真机实测（真 chromium + CDP，真鼠标/真键盘事件，pty 侧
+#   `stty -echo -icanon` + `cat -A` 逐键对账，work/probe-arrow/ 可复跑）：
+#     ① ★ v0.13.83 那行 `textarea.style.pointerEvents='none'`（当时为解决「输入框与内容
+#        显示抢鼠标焦点致滚轮不能上翻」而钉）**没有**打断键盘：实测点终端后焦点照样落在
+#        `.xterm-helper-textarea`、方向键 `^[[A/B/C/D` 全到 pty。**滚轮与键盘是两条独立
+#        通路**（pointer-events 只管命中测试，不管 JS focus()；xterm 的 `focus()` 是
+#        `textarea.focus({preventScroll:true})`）⇒ 修键盘**不能**回退那行，否则滚轮回归。
+#     ② 真缺口在**焦点离开终端之后**：字符接力器原只放行 `e.key.length === 1`，于是
+#        方向键 + Enter/Backspace/Tab/Home/End/PageUp/PageDown/Insert/Delete **全部消失**
+#        （pty 收 0 份，浏览器也没拿它做别的 ⇒ 键彻底消失、无任何提示）。
+#        改前那句注释「非可打印键一律放行」在本场景下等于「所有键都丢了」。
+#     ③ 修法 = 把「编辑键」从「单字符」放宽为**显式映射表**（TERM_EDIT_KEYS），
+#        逐个映到标准 VT 序列交给 `term.input()`。**不放开所有非单字符键**：放行等于把
+#        语义交还浏览器（方向键变滚动页面、F5 被浏览器吃掉），而终端输入位上这些键的
+#        语义**只有一个来源：pty**。Ctrl/Cmd/Alt 组合键与 Escape 仍整体放行。
+#   实测（tests/verify_term_editing_keys.py，L2 真机 14/14）：
+#     · 滚轮组 R0~R4 全绿：viewportY 379→369→358→**0**（连续上翻到顶、不卡中段），
+#       `pointerEvents` computed 仍为 `none` ⇒ 用户点名要保的功能零回归；
+#     · 键盘组 K1/K2 13/13：焦点在终端内与**终端外**两种状态下，13 个键实收全部等于
+#       期望序列（`^[[A/B/C/D`、`^[[H/F`、`^[[5~/6~/2~/3~`、`^I`、`$`、`^?`）；
+#     · K3 搜索框内按方向键/Delete：pty 收 0 份 ⇒ P2-11「不得劫持真输入位」不破。
+#   回归：tests/test_term_editing_keys.py（L0，12 例，含**滚轮护栏** 3 例）
+#        + tests/verify_term_editing_keys.py（L2 live，14 例）。
+#   ⚠ 探针判据本身也踩了三轮坑（cat -v 不转写 Tab/换行 ⇒ 假红；translateToString(false)
+#     满宽补空格 ⇒ delta 失效），已用**纯 pty 实验**（不经浏览器）逐键对拍选型出 `cat -A`
+#     统一记法。教训：**先证明判据测的是被测对象，再拿它判红**；最强自证是
+#     「改前即成立的对照组 K1 也红」⇒ 那两次红是判据自己的问题。
+#   v0.13.98：用户「右上角 github 链接只保留图标和版本号」。**减的是「看得见的字」，
+#   不是入口本身** —— href / target / rel / title / aria-label 五项全留，外链安全属性
+#   与「地址可被抄走」这两条旧裁定都不受影响（tests/test_header_footer_trim.py 仍守）：
+#     ① 顶栏 .hstats 是 `flex-wrap:nowrap + overflow:hidden`，右缘先被切的是**最右**那一项。
+#        仓库入口刻意放在本组最左（v0.13.74 已为此挨过一次投诉：状态字被视口右缘切断），
+#        但它仍常驻 14 字符宽度；换成 `v0.13.98` 后宽屏只占 8 字符，窄屏仍只留图标。
+#     ② 版本号走 **Jinja 变量 `{{ version }}`**，不写死字面量 —— 本文件这行是唯一真相源，
+#        `/` 路由早就把 `{"version": VERSION}` 传进模板（main.py:1115），此前模板里一个
+#        变量都没用过。写死就会出现「/health 报 0.13.99、顶栏还写 0.13.98」的**无告警漂移**
+#        （本仓 CHANGELOG 顶部版本漂过 13 版、tests/README 计数漂过两轮，都是同一形态）。
+#        闸门 tests/test_header_footer_trim.py 断言模板里是变量而非字面量。
+#   回归：tests/test_header_footer_trim.py（图标 / 外链三要素 / 窄屏档 / 版本单一真相源）。
 #   v0.13.97：用户「右边终端框上下左右边距缩小60%」，当日复核追加「**所有页面都是这个尺寸**」。
 #   **先把「边距」是哪一层取证清楚**（1440×900 截图 + getBoundingClientRect 逐层分解，
 #   tests/verify_term_box_geom.py 可复跑），再动手 —— 否则很容易改错层：

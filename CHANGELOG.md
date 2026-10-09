@@ -1,3 +1,188 @@
+## v0.13.99 — 终端页编辑键：焦点不在终端时，13 个原生键也能用（滚轮零回归）
+
+> 触发：用户「嵌入式终端会话文字输入框无法正常使用键盘的上下左右光标键…输入框只是
+> 不需要鼠标焦点，但是键盘的全部原生功能都是需要的」，并明确要求
+> **「现在鼠标滚轮向上翻功能是正常的，千万不要影响这个功能」**。
+> **先取证再动手** —— 用户把病因指给了 v0.13.83，但实测证明**指错了**。
+
+### 一、取证结论：用户的因果推断被证伪
+
+用户说「之前禁用了输入框鼠标功能后（键就坏了）」⇒ 隐含假设是 `pointerEvents:none`
+连累了键盘。**三轮真机实测否掉了这个假设**（真 chromium + CDP，真鼠标/真键盘事件，
+pty 侧 `stty -echo -icanon` + `cat -A` 逐键对账，探针在 `work/probe-arrow/`）：
+
+| 假设 | 实测 | 判定 |
+|---|---|---|
+| H1 `pointerEvents:none` 让点击终端拿不到焦点 | 点终端后焦点**照样**落在 `.xterm-helper-textarea`（`computed pointer-events = none` 同时成立）；方向键 `^[[A/B/C/D` 全到 pty | **证伪** |
+| H2 DECCKM 被 hub 的 `?h` handler 吃掉 | 绕过 pty 直接 `term.write('\x1b[?1h')`，`applicationCursorKeysMode` 翻 `false→true`；静态面也吻合（`TERM_ALT_BLOCKED` 只含 `1049/1047/47`） | **证伪** |
+| H3 焦点掉到终端外时编辑键被丢弃 | 焦点=BODY 时，方向键**与** Enter/Backspace/Tab/Home/End/PageUp/PageDown/Delete **全部消失**（pty 收 0 份，浏览器也没拿它做别的 ⇒ 键彻底消失） | **确认，且这就是根因** |
+
+**为什么 H1 不成立**：`pointer-events` 只管**命中测试**，不管 JS `focus()`；而 xterm 的
+`focus()` 就是 `textarea.focus({preventScroll:true})`（vendor/xterm.js 逐字可查）。
+**滚轮与键盘是两条独立通路。** 这条结论直接决定了修法 —— 修键盘**绝不能**回退
+v0.13.83 那行，否则滚轮立刻回归。
+
+### 二、根因
+
+`static/hub/06-manager-tasks.js` 的字符接力器（v0.13.22 为修「焦点一掉空格就丢」引入）：
+
+```js
+if (typeof e.key !== 'string' || e.key.length !== 1) return;   // ← 方向键 length=6，被放行
+```
+
+改前那句注释「Ctrl/Cmd/Alt 组合键与 Enter/Backspace 等非可打印键**一律放行**」，
+在本场景下等于「**所有键都丢了**」—— 因为焦点不在终端时 xterm 根本收不到它们，
+而浏览器对方向键的唯一默认行为是滚动页面（本页滚不动，于是键彻底消失）。
+
+### 三、改动
+
+| 位置 | 改动 |
+|---|---|
+| `06-manager-tasks.js` | 新增 `TERM_EDIT_KEYS` 映射表（13 键 → 标准 VT 序列）；投递改为「先查表、命中才 `preventDefault`」 |
+| `tests/test_term_editing_keys.py` | **新增** L0 闸门 12 例，其中 3 例是**滚轮护栏** |
+| `tests/verify_term_editing_keys.py` | **新增** L2 真机验收 14 例（R 组滚轮 5 + K 组键盘 6 + 前置/清理） |
+| `static/hub.js` | 重建产物（6830 行，md5 `c1baf021`），`?v=` 提手由脚本自动同步 |
+
+映射表逐键映到标准序列：方向键 `ESC[A/B/C/D`、Home/End `ESC[H/F`、
+PageUp/Down `ESC[5~/6~`、Insert/Delete `ESC[2~/3~`、Enter `\r`、Tab `\t`、Backspace `\x7f`。
+
+### 四、三条设计决定
+
+1. **显式映射表，而不是放开所有非单字符键。**
+   放行 = 把语义交还浏览器（方向键变滚动页面、F5/Ctrl+W 被浏览器吃掉）。终端输入位上
+   这些键的语义**只有一个来源：pty**。表外键（功能键/媒体键/浏览器保留键）仍放行。
+2. **Ctrl/Cmd/Alt 组合键与 Escape 仍整体放行。**
+   Ctrl+C=SIGINT、Ctrl+K=kill-line 是终端语义；Esc 归 pty（bash/vim），且本文件上方
+   另有一条 Esc 分支（抽屉/面板/搜索框优先），补进表里会与之打架。L0 闸门钉住这条。
+3. **`preventDefault` 必须排在查表之后。**
+   先拦后判 = 表外的键也被吞掉（浏览器按键被吃、终端又不响应），那是**真的劫持**。
+   闸门用**下标先后**表达这条，不匹配具体写法。
+
+### 五、实测证据
+
+- **滚轮零回归**（用户点名不可动项）：`viewportY 379 → 369 → 358 → 0` ——
+  连续上翻到顶、不卡在中段；`pointerEvents` computed 仍为 `none`；滚轮后焦点仍在终端。
+- **键盘修复生效**：焦点在终端内与**终端外**两种状态下，13 键实收**全部等于**期望序列
+  （`^[[A/B/C/D`、`^[[H/F`、`^[[5~/6~/2~/3~`、`^I`、`$`、`^?`）。
+  改前焦点外是「pty 收 0 份」。
+- **P2-11 不破**：搜索框内按方向键/Delete ⇒ pty 收 0 份、搜索框内容不受影响。
+- **L0 红基线自证**：换回改前的 06 文件 ⇒ 7 例转红，而**滚轮那 3 例仍绿**
+  （证明闸门不是「什么改动都红」）。
+- 全量：**L0 `ran=1415 skipped=0 failures=0 errors=0` OK**、
+  **L1 `ran=64 skipped=0 failures=0 errors=0` OK**、收集器对账 `1479 = 1479`。
+
+### 六、探针判据自己踩了三轮坑（值得单列）
+
+L2 前两轮量出 Enter/Tab 假红，**三次都是判据自己的问题**，不是代码：
+
+1. 用 `cat -v` 判 —— `-v` **不转写 Tab 与换行**，而 xterm 把 Tab 渲染成 tab stop 填充
+   空格、换行渲染成新行 ⇒ 屏幕上根本没有可断言的痕迹；
+2. 改按键分档（Tab 看末行长、Enter 看行数）—— 又栽在 `translateToString(false)` 的
+   **满宽补空格**上：`cat` 输出插在行**中间**，`after` 不再以 `before` 开头，
+   delta 恒等于整行（实测 `^[[A^[[B^[[D^[[C` 一路累积）、末行长恒 `126→126`；
+3. 最终用**纯 pty 实验**（不经浏览器/xterm）逐键对拍选型出 `cat -A`（= `-vET`）——
+   13 个键全部得到稳定 caret 记法（Tab→`^I`、Enter→`$`）⇒ 判据回到统一子串判定。
+
+**最强自证**：K1 是「改前即成立」的对照组，它在前两轮**同样报红** ⇒ 那两次红
+必定是判据自己的问题。教训：**先证明判据测的是被测对象，再拿它判红。**
+
+### 七、遗留（既存，非本版引入，只报不修）
+
+1. `tests/verify_term_key_relay.py` 头部文档给的跑法（`TERM_TOKEN=probe-term-token`）
+   **已失效** —— `src/config.py:10` 是 `load_dotenv(override=True)`，`.env` 会覆盖进程
+   环境变量，实际报「凭据不匹配」。
+2. 影子实例启动横幅打印 `监听 :::3102`、`/health` 的 `port` 字段报 3102，
+   实际绑的是传入的 PORT（同一个根因：`config.port` 没被 env 覆盖到那两处）。
+
+## v0.13.98 — 顶栏 GitHub 入口「只保留图标和版本号」：减的是可见文字，不是入口
+
+> 触发：用户「右上角 github 链接只保留图标和版本号」。
+> **先分清「减什么」**：入口（图标 + 外链 + 可抄的地址）全留，减掉的只是那 14 个字符的
+> 可见文字。若连 href 一起删，就成了「图标看着能点但点不到」的空壳 —— 那是另一种改法。
+
+### 一、改动
+
+| 位置 | 改动 |
+|---|---|
+| `templates/index.html` `.gh-txt` | `gztxt/agenthub` → **`v{{ version }}`**（Jinja 变量，非字面量） |
+| `src/main.py` | `VERSION` 升 `0.13.98` + 本版根因注释块 |
+| `tests/test_header_footer_trim.py` | 窄屏档断言改按「宽屏那行字是版本号」表述；**新增 2 例**：可见文字必须是 `v{{ version }}`、`/` 路由必须真把 `VERSION` 传进模板 |
+| `tests/test_term_scroll_sensitivity.py` | 版本钉补 `0.13.98` 根因关键词 |
+
+**href / target / rel / title / aria-label 五项一个没动** —— 外链安全（`noopener noreferrer`）
+与「地址可被人抄走」这两条 2026-10-08 的旧裁定全部照旧生效，窄屏仍只留图标。
+
+### 二、三条设计决定
+
+1. **版本号走 `{{ version }}` 变量，不写死字面量。**
+   `/` 路由本来就传了 `{"version": VERSION}`（`main.py:1115`），此前模板里一个变量都没用过。
+   写死 `0.13.97` 的失效方式**不报错**：bump 之后 `/health` 报 0.13.99、顶栏还写 0.13.98，
+   两边各说各话。本仓 CHANGELOG 顶部版本漂过 13 版、`tests/README.md` 计数漂过两轮，
+   都是同一形态 ⇒ 闸门直接断言模板里是变量。
+2. **配套判据：context 没喂到也要红。**
+   模板用 `{{ version }}` 而路由忘传 context 时，**Jinja 静默渲染成空串**（不抛异常），
+   顶栏会变成一个光秃秃的图标、页面看着完全正常。故另立一条判据读 `src/main.py` 源码，
+   断言 `TemplateResponse(..., {"version": ...})` 在位。
+3. **窄屏规则一字未动。** `.gh-link .gh-txt { display:none }` 仍在既有 767px 块内
+   （分档偏好不变量③：断点只允许一处定义）—— 宽屏有版本号、窄屏只有图标，两档各自成立。
+
+### 三、实测证据
+
+- **离线 Jinja 渲染**（`autoescape=True`，与 starlette 同参）：
+  `.gh-txt` 输出 `v0.13.98`，外链五项与改前逐字一致。
+- **闸门**：新增 2 例在改前模板上实测**转红**（`.gh-txt` 是 `gztxt/agenthub` ≠ `v{{ version }}`），
+  红基线自证 —— 否则「搜不到就当通过」。
+- 全量：见下方「回归」。
+
+### 四、回归
+
+- 全量：**L0 `ran=1403 skipped=0 failures=0 errors=0` OK**、
+  **L1 `ran=64 skipped=0 failures=0 errors=0` OK**、收集器对账 `1467 = 1467`。
+- 真机 HTTP（重启前）：`/` 的 `.gh-txt` 渲染为 `v0.13.97`（模板 Jinja 每次请求重读，
+  改动**已即时生效**；版本号取自进程内 `VERSION`，仍是旧进程的 0.13.97 ⇒ 数字要重启才更新）。
+- 遗留（既存，非本版引入）：`tests/README.md` 分层表记 1344/58（2026-10-08 实测），
+  实际已 1403/64 —— 该表按其自身说明「无单一真源，人工更新」，本版只报不修。
+
+### 补（同日 · 用户报）：顶栏「在跑 N · 会话 M」间距太大
+
+> 用户一句「在跑 1·会话 1 间距太大」——本批顶栏调整的收尾报障。
+> **纯模板 CSS，本补不 bump VERSION**：`templates/` 不进重启指纹
+> （`src/selfattest.py::runtime_paths` 只收 `src/**.py`，其 docstring 明写
+> 「static/templates 不进指纹…算进去就等于永久假红」）⇒ 改完刷新即生效；
+> 而 bump 一次 VERSION 就要拖一次「重启才能消掉『需重启』徽章」，对一条 CSS 不值得。
+> ⚠ 也因此**本补没有自己的 `##` 版本节**（只有本节）——`tests/test_changelog_drift.py`
+> 认的是顶部 `##` 版本号 == `src/main.py::VERSION`，加 `## v0.13.100` 反而会立刻报漂移。
+
+**先量再改**（真 chromium + CDP 逐节点 `getBoundingClientRect`；探针
+`work/probe_hbusy_gap2.py` / `probe_hbusy_shot.py`，注入真实 innerHTML 后量）：
+
+| 量点 | 改前 | 改后 |
+|---|---|---|
+| 蓝点 →「在跑」 | 5px | 4px |
+| 「在跑 1」→「·」 / 「·」→「会话 1」 | 7px / 7px | 1px / 1px |
+| `#hBusy` 整块宽 | 115.2px | 102.2px |
+| 版本号右缘 →「在跑」左缘 | **28px**（gh-link 1219 → hBusy 1247） | 14px（与别处一致） |
+
+**两处成因都不是"数字写错了"，而是两条默认行为的副作用** —— 光看 CSS 看不出来：
+1. `gap` 是**每两个相邻子节点**之间的间距，不是"块与块"。`#hBusy` 的内容是
+   `匿名文本 + span + 匿名文本`，父级 `.hstats > span{gap:5px}` 于是落在**每一段**之间，
+   再叠 `.hbusy-sep` 自己的 `margin:0 2px` ⇒ 分隔符两侧 7px。
+   修法：`.hstats #hBusy{gap:0}`，点与字之间的间距改由 `.hdot{margin-right:4px}` 单独给。
+2. **零宽度的 flex item 照样吃两侧 gap**：`#hStale`/`#hErrors` 常态为空却仍各占一个
+   gap 位 ⇒ 版本号与「在跑」之间凭空多出**一整份** gap（宽屏 14px、窄屏 6px）。
+   修法：`.hstats > span:empty{display:none}`（一旦写入内容立刻照旧占位）。
+   ⚠ 这条只在「无异常、无 stale」的**常态**下才显形 —— 真病了反而宽度正常，属反直觉。
+
+**闸门** `tests/test_header_busy_gap.py`（新增 L0 5 例）：钉的是**机制**（空挂载点不吃 gap /
+`#hBusy` 内部 gap 归零 / 点靠自己的 margin / 分隔符 margin ≤1px 且仍淡化），
+外加一条**正对照**「三块挂载点仍在」—— 否则后人删掉那两个空 span 会让第一条**静默变绿**。
+红向自证：拿改前模板（`templates/index.html.bak-20261009_150139-hbusy-gap`）跑同一份用例
+⇒ **4 红 1 绿**（绿的是正对照，证明闸门不是"什么改动都红"）。
+
+**真渲染复测**：改后 `#hBusy` 102.2px、版本号→在跑 14px；截图
+`work/shot_hbusy_gap.png`（同一探针，改前/改后各一张）。**端侧确认待用户**：刷新页面即可
+（无需重启）。
+
 ## v0.13.97 — 全站右侧内容区留白缩小 60%：留白唯一来源是 `main` 的 padding
 
 > 触发：用户「右边终端框上下左右边距缩小60%」→ 复核后追加「**所有页面都是这个尺寸**」。

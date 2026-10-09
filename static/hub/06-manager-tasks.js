@@ -318,20 +318,70 @@ document.addEventListener('keydown', e => {
    在主屏缓冲区里反复重画整屏（首帧无 ?1049h 备用屏）⇒ 同一份文字在 xterm 里出现两遍，
    于是现象被报成"空格一按就重复"。
    规则：终端页可见 + 焦点不在任何输入位（含 xterm 自己的 helper textarea，那条路本来通）
-   ⇒ 把可打印字符（空格算一个）交给终端，并 preventDefault 挡掉浏览器把空格当翻页。
-   只接力单字符：Ctrl/Cmd/Alt 组合键与 Enter/Backspace 等非可打印键一律放行 —— 那是浏览器
-   和终端各自的语义，这里不发明新行为（P2-11「快捷键不得劫持输入位」的口径原样保留）。 */
+   ⇒ 把键交给终端，并 preventDefault 挡掉浏览器把空格当翻页。
+
+   ★ v0.13.99（用户 2026-10-09 报障「嵌入式终端输入框无法使用上下左右光标键，
+     输入框只是不需要鼠标焦点，但键盘的全部原生功能都是需要的」）：
+   **把「编辑键」从「单字符」放宽为一张显式映射表。**
+
+   【根因取证，勿凭推断改动】先量了三轮（work/probe-arrow/probe_focus_chain.py，
+   真 chromium + CDP，真鼠标/真键盘事件，pty 侧 `stty -echo -icanon` 交给 cat 逐字对账）：
+     ① v0.13.83 那行 `textarea.style.pointerEvents='none'`（本仓为解决「输入框与内容
+        抢鼠标焦点致滚轮不能向上翻」而钉的）**没有**打断键盘：实测点终端后焦点照样落在
+        `.xterm-helper-textarea` 上，方向键 `^[[A/B/C/D` 全到 pty。
+        ⇒ **滚轮与键盘是两条独立通路，本次一行滚轮代码都不动。**
+        （pointer-events 只管命中测试，不管 JS focus()；xterm 的 `focus()` 是
+          `textarea.focus({preventScroll:true})`，两者互不干涉。）
+     ② 真正的缺口在**焦点离开终端之后**：实测焦点=BODY 时，方向键与
+        Enter/Backspace/Tab/Home/End/PageUp/Delete **全部消失**（pty 收 0 份，
+        浏览器也没拿它做别的）—— 因为本函数在 `e.key.length !== 1` 处 return，
+        只接力可打印单字符。改前那句「非可打印键一律放行」在本场景下等于
+        **「全部键都丢了」**，因为焦点不在终端时 xterm 根本收不到它们。
+     ③ 用户那句「之前按→会自动填入」是 TUI 的 ghost-text 功能（走 SS3 `ESC O C`），
+        与本条同形：都是「键必须到达 pty」而不是「键被谁拦下」。
+
+   【为什么用显式映射表，而不是放开所有非单字符键】
+     放行 = 把语义交还给浏览器，于是方向键变成**滚动页面**（实测焦点在 BODY 时
+     doc/viewport scrollTop 均 0 —— 键彻底消失，连滚动都没有），
+     F5/Ctrl+W 等还会被浏览器吃掉。终端输入位上这些键的语义**只有一个来源：pty**。
+     故逐个映射到标准 VT 序列，交给 `term.input()`（其下游 onData 与真实按键
+     同一条路，xterm 侧不做特殊处理）。
+     ⚠ 只列**终端行编辑**真正认的键。功能键/媒体键/浏览器保留键一律仍放行 ——
+        那是浏览器语义，不发明新行为（P2-11「快捷键不得劫持输入位」原样保留）。
+   ⚠ **Escape 刻意不在表内**：它归 pty（bash/vim 极常用），且上面的 Esc 分支
+     已明确把终端内的 Esc 让给 pty。这里若补上就与那条分支打架。
+   ⚠ Ctrl/Cmd/Alt 组合键整体仍在函数开头 return：那是终端与浏览器各自的语义
+     （Ctrl+C=SIGINT、Ctrl+K=kill-line），不在本次范围。 */
+const TERM_EDIT_KEYS = {
+  /* 方向键：CSI 形态。应用光标键模式（DECCKM）下真实按键会发 SS3（ESC O X），
+     而 xterm 只在**自己收到焦点**时才会按模式切换；本函数是「焦点不在」时的
+     兜底通路，此时解析态由 pty 侧序列决定，映射成 CSI 是绝大多数 TUI 的兼容形态
+     （claude/codex 的 readline 系都两档都收）。 */
+  ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D',
+  /* 行首/行尾：CSI H / CSI F。Home 也可能是 `ESC[1~`，但 CSI H 是 readline 通用形态。 */
+  Home: '\x1b[H', End: '\x1b[F',
+  /* 翻页：CSI 5~ / 6~。与方向键不同，PageUp/PageDown 没有 CSI 字母形态。 */
+  PageUp: '\x1b[5~', PageDown: '\x1b[6~',
+  /* 插入/删除：CSI 2~ / 3~。Delete 尤其重要 —— 焦点不在时它是编辑输入的常用键。 */
+  Insert: '\x1b[2~', Delete: '\x1b[3~',
+  /* 回车/制表/退格：三个最常用的行编辑键，缺任何一个都会让「打字能进、编辑不能」。 */
+  Enter: '\r', Tab: '\t', Backspace: '\x7f',
+};
 document.addEventListener('keydown', e => {
   if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (keyTargetIsEditing(e)) return;
-  if (typeof e.key !== 'string' || e.key.length !== 1) return;
   const pg = $('page-chat'), tp = $('termPane');
   if (!pg || !tp || !pg.classList.contains('on') || !tp.classList.contains('on')) return;
   if (!term || !termWs || termWs.readyState !== 1) return;   // 没接上线就别假装送达（termSend 那条路会自己报警）
+  /* 两条投递口径，按 e.key 形状分：单字符原样送；编辑键送映射后的 VT 序列。
+     ⚠ 分派前先算 seq —— 下面 preventDefault 之前必须知道「有没有命中」，
+     否则会拦掉一个我们并不投递的键（那才是真的劫持）。 */
+  const seq = (typeof e.key === 'string' && e.key.length === 1) ? e.key : TERM_EDIT_KEYS[e.key];
+  if (seq === undefined) return;          // 表外的键（功能键/媒体键/浏览器保留键）一律放行
   e.preventDefault();
   const opts = { user: true };   // 用户亲手敲的键＝主动意图，走同一条焦点策略（P2-10：只跟"用户主动"）
   if (termFocusWanted(opts)) term.focus();
-  term.input(e.key);
+  term.input(seq);
 });
 
 /* 2026-10-08（用户裁定）：底部状态栏删除 ⇒ tick() 与它的 setInterval(tick,1000)
