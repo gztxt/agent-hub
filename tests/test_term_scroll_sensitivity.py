@@ -206,8 +206,13 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #   ② 唯一判据函数 `_cursor_title`（列表侧与 title_for 侧共用一份优先级）；
         #   ③ D2「问题原文优先」——原文优先、LLM/服务端标题当兜底。
         "0.13.96": ("服务端", "_cursor_title", "原文优先", "兜底"),
+        # v0.13.97 终端框四周留白缩小 60%：关键词取「先取证是哪一层 + 不许动黑底内衬」
+        # 这三点——① 留白唯一来源是 main 的 padding；② #termEl/.term-body 的 padding 被
+        # FitAddon 铁律钉死为 0（给黑底加内衬会让底部被裁一行）；
+        # ③ :has(> #page-chat.on) 限定本页 + calc(× .4) 比例式，窄屏才同比缩小。
+        "0.13.97": ("FitAddon", ":has(> #page-chat.on)", "calc", "--main-pad-"),
     }
-    CURRENT_VERSION = "0.13.96"
+    CURRENT_VERSION = "0.13.97"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

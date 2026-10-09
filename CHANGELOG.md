@@ -1,3 +1,71 @@
+## v0.13.97 — 右边终端框上下左右边距缩小 60%：留白唯一来源是 `main` 的 padding
+
+> 触发：用户「右边终端框上下左右边距缩小60%」。
+> **先取证是哪一层，再动手** —— 「终端框边距」听起来像该给黑底加内衬，而那正是本版最大的坑。
+
+### 一、根因与取证
+
+| 层 | 实测值（1440×900） | 是不是「边距」 |
+|---|---|---|
+| `main` padding | 上/下 12px、左/右 16px | **是，唯一来源** |
+| `.chat-grid` padding / gap | 0 / 16px | 否 —— 已是单列（`.chat-side` `display:none`），gap 不产生列间距 |
+| `.chat-main` padding | 四向 0 | 否 |
+| `#termEl` / `.term-body` padding | 四向 **0** | 否，且**被上一轮定案钉死，不许动** |
+
+取证工具（都可复跑）：`tests/probe_term_box_gap.py`（留白基线 + 改前改后对比）、
+`tests/probe_term_shot.py`（1440×900 截图 + 逐层分解）、`tests/verify_term_box_geom.py`（5 档几何不变量）。
+
+**为什么 `#termEl` / `.term-body` 的 padding 碰不得**：FitAddon 按 `#termEl` 的 height 算行数，
+且只减 xterm 自己的 padding、不减父元素的 —— 父层一旦多 1px inset 就多算一行、终端底部被裁
+（历史实测：父层 6px padding 时 `.xterm` 高 468 而 `#termEl` 内容盒仅 459，底部溢出 9~10px）。
+
+### 二、改动
+
+| 位置 | 改动 |
+|---|---|
+| `templates/index.html` `main` | 抽出 `--main-pad-y/x`（12px / 16px）作为留白**唯一真相源**，`padding` 改由它算出 |
+| 同上窄屏档 | 原`padding: 8px` 字面量 → `--main-pad-y/x: 8px`（不再重写 padding） |
+| 同上新增 | `main:has(> #page-chat.on)`：四向 padding 各 `calc(var(--main-pad-*) * .4)` |
+| `tests/test_term_box_gap.py` | 新增 6 例 L0 闸门 |
+| `src/main.py` / `tests/test_term_scroll_sensitivity.py` | 版本 bump + 版本钉补本版根因关键词 |
+
+三条设计决定，逐条对应「会静默失效」的地方：
+
+1. **用 `:has(> #page-chat.on)` 限定本页**，不改 `main` 基础值 ——
+   `main` 的padding 是**全站正文留白**，直接改会让遥测/记忆/资产等每一页都跟着变小，
+   而用户只点了终端框。选择器跟着 `go()` 已有的 `section.page .on` 判定，
+   **不另立第二份「当前是终端页」的状态**（否则两处必然漂）。
+2. **写成 `calc(var(--main-pad-*) * .4)` 而不是裸 `4.8px/6.4px`** ——
+   比例而非绝对值，窄屏档（基准 8px，与宽屏 12/16px 不同）才自动同比缩小，
+   不会出现「宽屏缩了、窄屏没缩」。
+3. **抽变量而不是改两处字面量** —— 此前宽屏 `padding: 12px 16px` 与窄屏 `padding: 8px`
+   是两份独立字面量；抽成 `--main-pad-*` 后窄屏只赋值对变量，两处不可能漂。
+
+### 三、实测证据
+
+- **留白（净留白 T/R/B/L，单位 px）**：
+
+  | 视口 | 改前 | 改后 |
+  |---|---|---|
+  | 390（窄屏） | 9/ 9/ 9/ 9 | 4 / 4 / 4 / 4 |
+  | 768/ 1280 / 1440 / 1920 | 13 / 17 / 13 / 17 | 6 / 7 / 6 / 7 |
+
+  宽屏 padding 实测 `4.8px/6.4px`、窄屏 `3.2px`，精确等于基准 × 0.4。
+- **终端框四向变大**（1440×900）：`1166×823 → 1185×838`。
+- **黑底与容器尺寸差0×0**（5 档全部）⇒ FitAddon 口径未破、无底部裁切。
+- **新增闸门 6 例**：改前版本实测 **4 条转红、FitAddon 2 条守恒仍绿**（红基线自证）。
+- 全量：L0 `1401 tests OK (skipped=0)`、L1 `64 tests OK`，收集器对账 1465=1465。
+- 真机HTTP：`/health` 报 `code_stale`（纯静态前端提交，设计意图，不为此重启生产）。
+
+### 四、遗留（缺口，未在本版范围）
+
+**真xterm 实例的 `rows × 行高` 是否放得下，本机量不到**：`tests/probe_term_fit_rows.py`
+试了 4 版（awaitPromise /预置口令 /拆语句 /同步踢一脚），每版都在量到 xterm 时
+`Runtime.evaluate` 无应答—— `termLoadRenderer()` 走 WebGL addon，在本机 headless chromium
+（`--disable-gpu`）下会挂住 renderer。按军规「同一判据 2 次无结论即停手」不再重试，
+改用不依赖 xterm 运行时的 `tests/verify_term_box_geom.py` 守住几何不变量。
+方向上本次只**减**父层留白、不加 inset，是FitAddon 口径的安全侧，但**该项仍待端侧确认**。
+
 ## v0.13.96 — cursor 历史标题改回用户问题原文（中文）：meta.title 是服务端英文摘要，只能兜底
 
 > 触发：用户报「cursor 历史会话记录使用英文」。

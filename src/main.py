@@ -79,7 +79,28 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[agenthub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.96"   # cursor 历史标题改回用户问题原文（中文）：meta.title 是服务端英文摘要，只作兜底
+VERSION = "0.13.97"   # 右边终端框上下左右边距缩小 60%：留白唯一来源是 main 的 padding，故按比例收窄且只在本页生效
+#   v0.13.97：用户「右边终端框上下左右边距缩小60%」。**先把「边距」是哪一层取证清楚**
+#   （1440×900 截图 + getBoundingClientRect 逐层分解，tests/verify_term_box_geom.py 可复跑），
+#   再动手 —— 否则很容易改错层：
+#     ① 终端框四周留白的**唯一来源是 `main` 的 padding**（上/下 12px、左/右 16px）。
+#        `.chat-grid`/`.chat-main` 的 padding 都是 0；`.chat-grid` 的 gap:16px 不产生
+#        任何列间距（它已是单列 —— .chat-side 被 display:none 且宽屏规则覆盖成1fr）。
+#     ② 黑底**内侧**的 `#termEl` / `.term-body` padding 四向已是 0，且被上一轮定案钉死：
+#        FitAddon 按 #termEl 内容盒算行数，父层多1px 就多算一行、底部被裁一行。
+#        「终端框边距」很容易被实现成「给黑底加内衬」—— 那是本版最大的坑，闸门守着。
+#     ③ 不能直接改`main` 的基础值：那是**全站正文留白**，遥测/记忆/资产等每一页都会
+#        跟着变小，而用户只点了终端框。故走 `main:has(> #page-chat.on)` 限定本页，
+#        跟着 go() 已有的 section.page .on 判定，不另立第二份「当前是终端页」的状态。
+#     ④ 抽 `--main-pad-y/x` 为唯一真相源，收窄写成 calc(var(--main-pad-*) * .4)：
+#        比例而非绝对值 ⇒ 窄屏档（基准 8px，不是 12/16）自动同比缩小，
+#        不会出现「宽屏缩了、窄屏没缩」。
+#   实测（5 档 390/768/1280/1440/1920）：净留白 宽屏 13/17/13/17 → 6/7/6/7、
+#   窄屏 9/9/9/9 → 4/4/4/4；黑底与容器尺寸差 0×0（FitAddon 口径未破）。
+#   回归：tests/test_term_box_gap.py（6 例，L0）+ tests/verify_term_box_geom.py（真渲染几何）。
+#   ⚠ 真 xterm 实例的 rows×行高是否放得下，本机 headless 量不到（termLoadRenderer 的
+#     WebGL addon 在 --disable-gpu 下会挂住 renderer，试 4 版无结论后按军规停手），
+#     **该项仍是缺口，待端侧确认**。
 #   v0.13.96：用户报「cursor 历史会话记录使用英文」。**根因是取错了源，不是编码/locale**
 #   （往编码方向查会跑偏，半天找不出东西）：
 #     ① `~/.cursor/chats/<md5(cwd)>/<sid>/meta.json` 有个 `title` 字段，本机 99 条里 5 条

@@ -422,7 +422,27 @@
                        color: var(--text-2); border-radius: 8px; padding: 8px; font-size: var(--fs-sm); width: 100%; }
         .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
 
-        main { flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; padding: 12px 16px; display: flex; flex-direction: column; overflow: hidden; }
+        /* v0.13.97：--main-pad-*是正文区留白的**唯一真相源**（此前是裸值12px 16px，
+           窄屏那条只能整体重写一遍 padding，两处字面量各改各的）。抽成变量后，
+           下面的覆写与窄屏档都只改这对变量，padding 只在这里算一次。 */
+        main { --main-pad-y: 12px; --main-pad-x: 16px;
+               flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto;
+               padding: var(--main-pad-y) var(--main-pad-x);
+               display: flex; flex-direction: column; overflow: hidden; }
+        /* v0.13.97（用户 2026-10-09「右边终端框上下左右边距缩小 60%」）：
+           终端框四周的留白**唯一来源就是 main 的 padding**——实测（1440×900 截图 +
+           getBoundingClientRect 逐层分解）：.chat-grid / .chat-main 的 padding 与 gap
+           都是0/16 但 chat-grid 已是单列（gap 不产生列间距），黑底 #termEl 与 .term-body
+           的 padding 四向为 0 且被上一轮定案钉死（FitAddon 按 #termEl 内容盒算行数，
+           父层多 1px 就多算一行、底部被裁），**不许动**。
+           故按 40% 原值收窄，且只在本页生效：`:has(> #page-chat.on)` 跟着 go() 已有的
+           section.page .on 判定，不另立第二份「当前是终端页」的状态（否则两处会漂）。
+           60% 是比例不是绝对值 ⇒ 写成 calc(var(--main-pad-*) * .4)，窄屏档自动同比，
+           不会出现「宽屏缩了、窄屏没缩」。 */
+        main:has(> #page-chat.on) { padding-top: calc(var(--main-pad-y) * .4);
+                                    padding-right: calc(var(--main-pad-x) * .4);
+                                    padding-bottom: calc(var(--main-pad-y) * .4);
+                                    padding-left: calc(var(--main-pad-x) * .4); }
         section.page { display: none; }
         section.page.on { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
         .hint { color: var(--muted); font-size: var(--fs-base); line-height: var(--lh-base); }
@@ -906,7 +926,7 @@
             /* v0.12.3：抽屉与宽屏共用同一套行内规则（.s-badge + 名称，见基础段），
                窄屏不再有独立差异项。 */
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
-            main { max-width: 100%; margin: 0; padding: 8px; }
+            main { max-width: 100%; margin: 0; --main-pad-y: 8px; --main-pad-x: 8px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             select { max-width: 100%; }
             .toolbar input, .toolbar select { min-width: 0; }
