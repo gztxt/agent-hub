@@ -79,7 +79,27 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[agenthub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.99"   # 终端页编辑键：焦点不在终端时，方向键等 13 个原生键也能送达 pty
+VERSION = "0.13.100"  # 终端输入延迟根治：录制预算的全表 SUM 收进进程内缓存
+#   v0.13.100：用户「嵌入式终端会话文字输入非常慢 很不正常」。**根因不在终端**——
+#   `Recorder.feed()` 的全局预算检查是 `SELECT SUM(bytes) FROM term_recordings`，
+#   EXPLAIN 实测 `SCAN term_recordings`（表上只有 idx_termrec_sid(session_id,seq)，
+#   **盖不住全表聚合**），而 feed() 被**同步**调在 asyncio 事件循环的两处：
+#   term.py:1221 的 pty 读回调（= 每帧输出）与 :1488 的 WS 收包（= 每次按键）。
+#   生产库 44.7 万行 / 157MB（/fs 是 trimafs 卷）时单次 SUM 实测 **110~124ms**
+#   ⇒ 整个事件循环被独占上百毫秒，别的会话/WS/HTTP 一起卡。生产真机逐键
+#   RTT p50 = 677ms、max = 784ms。
+#   改法（src/term_record.py::total_bytes）：进程内缓存 (字节数, 库路径)。首次/换库
+#   后首次真查；每次成功 INSERT 按 len(blob)（脱敏后的落盘值）递增且写在 `if ok`
+#   里（写失败不许推进）；任何 DELETE（sweep / 同 sid 覆盖）**一律作废**——
+#   增量法遇 DELETE 会**永久偏高且不可逆**，故不做减法修正（行数≠字节数）。
+#   换库判据用 `db.current_path()`（3µs，比它挡掉的 117ms 便宜四个数量级），
+#   **不用连接对象 id**：`init_db` 复用同一模块全局，id 会撞。
+#   实测：离线 444,040 行 feed p50 67.92ms → 0.114ms（1405 倍）；端到端 A/B
+#   （隔离影子 44 万行预置，两组只差这一个文件）逐键 RTT p50 56.54ms → 0.24ms。
+#   闸门 tests/test_term_record_total_cache.py（9 例，红向自证 3 向均转红）；
+#   完整取证与集成说明见 docs/INTEGRATE-v0.13.100.md。
+#   ⚠ 未治本：`sweep()` 只在会话 close 时跑，表一天长 44 万行。缓存把每帧成本
+#   从「随表线性」压成常数，**表本身仍会长**——治表属另一次范围变更。
 #   v0.13.99：用户「嵌入式终端会话文字输入框无法正常使用键盘的上下左右光标键…输入框只是
 #   不需要鼠标焦点 但是键盘的全部原生功能都是需要的」，并明确要求**滚轮向上翻不许受影响**。
 #   **先取证再动手**，三轮真机实测（真 chromium + CDP，真鼠标/真键盘事件，pty 侧

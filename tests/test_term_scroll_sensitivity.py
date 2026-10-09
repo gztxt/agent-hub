@@ -227,8 +227,14 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #   ② 放开所有非单字符键 = 把语义交还浏览器（方向键变**滚动页面**），
         #      而终端输入位上这些键的语义只有一个来源：pty ⇒ 必须显式映射。
         "0.13.99": ("pointerEvents", "独立", "TERM_EDIT_KEYS", "滚动页面"),
+        # v0.13.100 终端输入延迟根治（录制预算的全表 SUM 收进进程内缓存）：
+        # 关键词取「为什么是全表聚合 + 为什么必须作废而不是减法修正」这两点——
+        #   ① SUM(bytes) 走 SCAN（全表聚合），唯一的 idx_termrec_sid(session_id,seq)
+        #      盖不住 ⇒ 每帧一次全表扫，而 feed() 是**同步**在事件循环里的；
+        #   ② 增量法遇 DELETE 会永久偏高且不可逆 ⇒ 一律作废重查，不做减法修正。
+        "0.13.100": ("SUM(bytes)", "全表", "作废", "事件循环"),
     }
-    CURRENT_VERSION = "0.13.99"
+    CURRENT_VERSION = "0.13.100"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。
