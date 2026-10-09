@@ -124,13 +124,23 @@ L0 全量 **1534 例 0 失败**，收集器对账 1534=1534。播种实测幂等
 
 ### 五、闸门
 
-- 新增 `tests/test_term_record_meta_count.py`（13 例）：计数恒等于 SUM、
+- 新增 `tests/test_term_record_meta_count.py`（现 17 例）：计数恒等于 SUM、
   同 sid 覆盖与 sweep **两条**删除路径都收敛、播种幂等且判据是「行在不在」、
   逐帧路径不许再出现 SUM（静态钉源码形态）、触发器成对、ts 索引在且查询计划走它。
   **红向自证 4 向均转红**：删 DELETE 触发器（4 例红）/ 退回全表 SUM（3 例红）/
   播种判据改成「值为 0」（1 例红，专门为此新增 M4d）/ 删 ts 索引（1 例红）。
-- `tests/test_term_record_total_cache.py`（v0.13.100 的 9 例）**加横幅整类跳过**，
-  全文保留：它守的缓存机制已被取代，但它记录了「为什么 v0.13.101 要换方案」。
+- 终审补 **M8/M8b**：`total_bytes()` 在库异常时必须**返回 0 而非抛异常**。
+  v0.13.101 一度把 `try/except` 收窄到只护 `int()`、`db.query()` 裸奔，而它两个
+  调用点都在**终端热路径**（`Recorder.feed()` 每帧 + `Recorder.__init__`）⇒ 库一异常
+  终端整会话崩。现场证据：L0 跑出 10 个 error，
+  `sqlite3.ProgrammingError: Cannot operate on a closed database`。
+  已恢复全函数兜底（代价不对等：预算偏松只多录一点、上限 512MB 仍在；抛异常是终端不可用）。
+  红向自证：把 `db.query` 挪出 `try` ⇒ **精确转红 M8/M8b**。
+- `tests/test_term_record_total_cache.py`（v0.13.100 的 9 例）**整文件改名退役**为
+  `tests/retired_test_term_record_total_cache_v013100.py`，**移出 L0 收集** —— 本仓 L0
+  判据是「零 skip」，留 9 个守着已删实现的空壳会让闸门天天下红却一无测出（典型的
+  「闸门变噪声」）。全文保留 + 退役横幅：它守的缓存机制已被取代，但它记录了
+  「为什么 v0.13.101 要换方案」。
 
 ### 六、同批附带（v0.13.101 一并落地）
 
