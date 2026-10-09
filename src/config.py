@@ -1,14 +1,44 @@
 """配置管理"""
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from dotenv import load_dotenv
 
-# 强制覆盖已有环境变量
 env_path = Path(__file__).parent.parent / ".env"
+
+#: **隔离类**变量：允许显式环境变量压过 `.env`（2026-10-09 起）。
+#:
+#: 为什么要有这个开关：`.env` 无条件覆盖会让「起一个影子实例用独立数据目录」
+#: 这件事**静默失效** —— `DATA_DIR=work/shadow PORT=3205 venv/bin/python`
+#: 实测拿到的仍是生产 `data/` 与 3102 端口（判例 105 坑2）。
+#: 而 `run_dualstack.py` 的 `_port()` 早就做对了（`os.getenv("PORT")` 优先），
+#: 只有本模块反着来 ⇒ **同一个进程里端口能覆盖、数据目录不能**，是纯粹的配置层不一致。
+#:
+#: 为什么是**白名单**而不是改成 `override=False`：`.env` 存着全部凭据
+#: （`CCR_AUTH_TOKEN`/`HOOK_AUTH_TOKEN`/`TERM_TOKEN`/`HUB_PASSCODE`…，已被 .gitignore 排除）。
+#: 一刀改成非覆盖 ⇒ 任何「不起 systemd 就裸跑」的场景都会丢凭据，
+#: 从「隔离不了」变成「全挂」。故只放行**下面这几个不含凭据的隔离旋钮**，
+#: 其余键继续由 `.env` 兜底，**生产行为逐字不变**。
+#:
+#: 本白名单**只增不改**：新增隔离旋钮必须先想清楚「误设它会不会写坏生产」。
+ENV_OVERRIDABLE = ("DATA_DIR", "LOG_DIR", "PORT", "HOST")
+
+#: **顺序是本修复的承重点**：`load_dotenv(override=True)` 会把 `os.environ` 改写成
+#: `.env` 的内容，所以**任何在它之后读 `os.environ` 的快照都只能拿到 `.env` 的值**
+#: —— 本文件第一版就是这么写的（快照在第 38 行、load_dotenv 在第 10 行），
+#: 结果隔离开关看起来存在、实际一行都没生效，日志还打出一串 `.env` 的值当"生效证据"。
+#: ⇒ 「我设的值」与「.env 里的值」两个来源**必须在被覆盖之前就分开保存**。
+_env_override: Dict[str, str] = {
+    k: os.environ[k] for k in ENV_OVERRIDABLE if os.environ.get(k)
+}
+
 if env_path.exists():
     load_dotenv(env_path, override=True)
     print(f"[Config] 已加载 .env（覆盖模式）: {env_path}")
+
+if _env_override:
+    print(f"[Config] 隔离变量优先于 .env: "
+          + ", ".join(f"{k}={v}" for k, v in sorted(_env_override.items())))
 
 
 class Config:
@@ -16,8 +46,11 @@ class Config:
     
     def __init__(self):
         # 强制使用 .env 中的值，即使环境变量已存在
-        self.port = int(os.getenv("PORT", "3102"))
-        self.host = os.getenv("HOST", "0.0.0.0")
+        # ⚠️ 但白名单隔离旋钮（ENV_OVERRIDABLE）例外，见文件头注释。
+        #    `os.getenv` 在load_dotenv(override=True) 之后**读不出**调用方的值，
+        #    所以必须读模块级快照 `_env_override`，这是整个修复的承重点。
+        self.port = int(_env_override.get("PORT") or os.getenv("PORT", "3102"))
+        self.host = _env_override.get("HOST") or os.getenv("HOST", "0.0.0.0")
         
         # Agent 端点
         self.ccr_url = os.getenv("CLAUDE_CCR_URL", "http://127.0.0.1:3456")
@@ -56,8 +89,8 @@ class Config:
         # 且 rebuild 出来的空壳长得跟真数据根一模一样，专治"看不见的复发"。
         # 生产无行为变化：.env:21 的 DATA_DIR 仍优先生效。
         _repo_data = Path(__file__).resolve().parent.parent / "data"
-        self.data_dir = Path(os.getenv("DATA_DIR", _repo_data))
-        self.log_dir = Path(os.getenv("LOG_DIR", self.data_dir / "logs"))
+        self.data_dir = Path(_env_override.get("DATA_DIR") or os.getenv("DATA_DIR", _repo_data))
+        self.log_dir = Path(_env_override.get("LOG_DIR") or os.getenv("LOG_DIR", self.data_dir / "logs"))
         
         # 确保目录存在
         self.data_dir.mkdir(parents=True, exist_ok=True)
