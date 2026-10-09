@@ -15,6 +15,12 @@ data/
 data/backups/
 
 # L2 探针的临时数据/影子实例日志（跑探针时自建，不入库）
+#
+# 2026-10-09：`work/` 曾被提交进仓（v0.13.46/47 那批，`64808ed`/`283d689`）——
+# 绕过 ignore 带了 13 个文件进来，其中 4 个是 `e2e_settings_*.py`（grok 会话 01a11685
+# 于 10-07 写的 Python CDP 探针，**与现在的 e2e-probe 框架无关**，只是文件名都带 e2e）。
+# 已 `git rm --cached -r work/` 取消跟踪，让这条规则真正生效。
+# 内容未丢：仍在历史里，`git cat-file -e HEAD~N:work/probe/e2e_settings_logs.py` 可取回。
 work/
 
 # A4 记忆索引投影层（memindex FTS）。data/ 已被上面的通配排除，这里再显式写一条：
