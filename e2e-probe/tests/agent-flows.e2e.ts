@@ -95,15 +95,30 @@ test('「资源」页点刷新后列表仍可用（不走 agent：页面状态�
   expect(await browser.locator('#resList > *').count()).toBeGreaterThan(0);
 });
 
-/** 侧栏收起：只断言**状态标识**（class/可见性），不碰宽度像素。 */
-test('agent 能收起侧栏', async ({ app, agent, browser }) => {
+/**
+ * 侧栏收起/展开：**直连控件、不经模型**（2026-10-10 改）。
+ *
+ * 原版是 `agent.act('收起左侧边栏')`。2026-10-10 复跑 5 次里 **2 次失败**：
+ * 模型有时只发 1 次调用，`agent.act` 自报成功（步骤打 ✓）但侧栏**没真收起**，
+ * 随后那条与模型无关的 class 断言把它判红；失败样本 token 反而飙到 170k。
+ * ⇒ 与「资源页」同理：**确定性动作不需要模型**，直点控件既稳又零 token。
+ *   agent 版本的教训保留在 README 与判例里，不再拿它当闸门。
+ *
+ * ⚠️ 只断言**状态标识**（class），不碰 48px 宽度像素——后者是几何量，按边界归
+ *    `tests/verify_*.py`。
+ * ⚠️ 没有 `toHaveClass` 方法（又一次 API 想当然），用 `getAttribute` 自己判。
+ */
+test('侧栏可收起与展开（直连 #btnSideToggle，不经模型）', async ({ app, browser }) => {
   await app.open('/');
 
   // 正对照：收起前侧栏是展开态（class 不含 collapsed）
-  // ⚠️ 没有 toHaveClass 方法（又一次 API 想当然），用 getAttribute 自己判。
   expect(await sidebarClass(browser)).not.toMatch(/collapsed/);
 
-  await agent.act('收起左侧边栏');
-
+  const toggle = browser.locator('#btnSideToggle');
+  await toggle.click();
   expect(await sidebarClass(browser)).toMatch(/collapsed/);
+
+  // 往返：再点一次必须展开 ⇒ 证明确实是「切换」，而非「点一下就卡住」（防 stuck 假绿）
+  await toggle.click();
+  expect(await sidebarClass(browser)).not.toMatch(/collapsed/);
 });
