@@ -1,32 +1,34 @@
-"""终端框四周留白收窄 60%（v0.13.97，用户 2026-10-09「右边终端框上下左右边距缩小 60%」）。
+"""右侧内容区留白收窄 60%（v0.13.97，用户 2026-10-09「右边终端框上下左右边距缩小 60%」）。
 
-【为什么要有这个文件】这条需求的口语是「边距」，而实测证明**终端框四周的留白
+【为什么要有这个文件】这条需求的口语是「边距」，而实测证明**右侧内容的留白
 只有一个来源**：`main` 的 padding。逐层分解（1440×900 真渲染，见
-`tests/probe_term_box_gap.py` / `tests/probe_term_shot.py`）：
+`tests/verify_term_box_geom.py`）：
 
-    上(main内) 13px = main padding-top 12 + .chat-main border-top 1
-    左(main内) 17px = main padding-left 16 + .chat-main border-left 1
-    下(main内) 13px / 右(main内) 17px   同上
+    上(main内) 13px = main padding-top 12 + 内容框边框 1
+    左(main内) 17px = main padding-left 16 + 内容框边框 1
     .chat-grid padding 四向 0、gap 16px —— 但它**已是单列**（.chat-side display:none
-      且 #page-chat 宽屏规则覆盖成minmax(0,1fr)）⇒ gap 不产生任何列间距
-    #termEl / .term-body padding 四向0，且被上一轮定案钉死（FitAddon 按#termEl
+      且 #page-chat 宽屏规则覆盖成 minmax(0,1fr)）⇒ gap 不产生任何列间距
+    #termEl / .term-body padding 四向 0，且被上一轮定案钉死（FitAddon 按 #termEl
       内容盒算行数，父层多 1px 就多算一行、底部被裁）
 
-所以「缩边距」只有一条合法改法：收窄 `main` 的 padding。但**不能直接改main 的基础值**
-—— 那是全站正文留白，遥测/记忆/资产等每一页都会跟着变，而用户只点了终端框。
-故走 `main:has(> #page-chat.on)`，只在本页生效。
+所以「缩边距」只有一条合法改法：收窄 `main` 的 padding。
+
+【范围：全站，不是只有终端页 —— 这是本版被用户否掉过一次的地方】
+第一版写成 `main:has(> #page-chat.on)` 限定在终端工作台。用户当日复核后否掉：
+「点左边菜单栏的其他菜单时右边页面边距又变了，应该是全部统一才对」。
+`:has()` 在这里是**多余的第二判据**：它让同一份留白出现两种值（全站一种、终端页一种），
+而用户要的就是同一个值。**教训**：`:has()` 是有价值的工具，但用它做「某页特殊化」之前
+必须先问「用户说的是这一页，还是所有页」—— 本例默认答案是「所有页」。
 
 【本闸门卡的五条，都是「会静默失效」的那类】
- 1 收窄规则存在且**带 `:has(> #page-chat.on)` 限定**。
-   少了限定 ⇒ 全站每一页都被改小，而用户只要求终端框（静默的越界改法）。
- 2 比例是 `.4`（= 缩小 60%）且用 calc 挂在 `--main-pad-*` 上。
-   写成裸 px 则窄屏档不会同比缩小（窄屏基础值是 8px，不是 12/16）。
- 3 `--main-pad-*` 是**唯一真相源**：main 基础规则与窄屏档都只赋值对变量，
-   不得再出现第二处 `main { padding: … }` 字面量（否则两处字面量各改各的，必漂）。
- 4 **FitAddon 铁律仍在**：#termEl / .term-body 的 padding 必须四向 0。
-   这一条是本次改动最容易误伤的地方——「终端框边距」很容易被理解成
-   「给黑底加内衬」，而那会让终端底部被裁掉一行。
- 5 断点值 767px 仍只有一处（分档偏好不变量③，本改动不得顺手新增分档）。
+ 1 **不得存在任何 main 的 padding 覆写**（含 `:has()` / `section.page` 限定）。
+   只要有一条覆写，右侧留白就会在不同页面取不同值 —— 正是用户否掉第一版的原因。
+ 2 宽屏基准 `--main-pad-y/x` 必须是收窄后的 4.8px/6.4px（原 12/16 的 40%）。
+ 3 窄屏基准必须是 3.2px/3.2px（原 8/8 的 40%）—— **不是同一个绝对值**。
+ 4 `--main-pad-*` 是**唯一真相源**：main 上不得再有裸 padding 字面量。
+ 5 **FitAddon 铁律仍在**：#termEl / .term-body 的 padding 必须四向 0。
+   这是本次改动最容易误伤的地方 —— 「终端框边距」很容易被实现成「给黑底加内衬」，
+   而那会让终端底部被裁掉一行。
 """
 import re
 import unittest
@@ -37,6 +39,10 @@ HTML = (_REPO / "templates" / "index.html").read_text(encoding="utf-8")
 
 BREAKPOINT = 767
 
+#: 收窄后的基准（= 原值 ×0.4）。宽屏原 12/16、窄屏原 8/8。
+WIDE = {"y": "4.8px", "x": "6.4px"}
+NARROW = {"y": "3.2px", "x": "3.2px"}
+
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 
@@ -44,9 +50,9 @@ _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 def _code() -> str:
     """剥掉 HTML 与 CSS/JS 注释后的模板正文。
 
-    必须剥：本文件自己在注释里写了 `.chat-grid padding 四向 0`、`padding: …`、
-    「缩边距」等**反例字面量**，不剥就是在给自己抓自己（test_narrow_first_paint.py
-    已因此假红过两次，见其docstring）。
+    必须剥：本文件自己在注释里写了 `main:has(> #page-chat.on)`、裸 padding 字面量、
+    「缩边距」等**反例内容**，不剥就是在给自己抓自己（test_narrow_first_paint.py
+    已因此假红过两次，见其 docstring）。
     """
     return _CSS_COMMENT.sub("", _HTML_COMMENT.sub("", HTML))
 
@@ -61,72 +67,76 @@ def _decl(body: str, prop: str):
     return m.group(1).strip() if m else None
 
 
-class TermBoxGapTest(unittest.TestCase):
-    def test_shrink_rule_exists_and_is_scoped_to_chat_page(self):
-        """收窄规则存在，且**必须**用 `:has(> #page-chat.on)` 限定在本页。"""
-        bodies = _rules("main:has(> #page-chat.on)")
-        self.assertTrue(bodies,
-                        "找不到 main:has(> #page-chat.on) 收窄规则 ⇒ 边距没收窄。"
-                        "注意不能改成裸 main{ padding } —— 那是全站留白，"
-                        "遥测/记忆/资产等页会一起被改小")
-        self.assertEqual(len(bodies), 1,
-                         "收窄规则出现了 %d 份 ⇒ 同一判据有两份真相源" % len(bodies))
+class MainPaddingNarrowedTest(unittest.TestCase):
+    def test_no_padding_override_anywhere(self):
+        """**不得存在 main 的 padding 覆写** —— 一有覆写，留白就会因页而异。
 
-    def test_shrink_ratio_is_40_percent_of_the_token(self):
-        """比例必须是 `.4`（缩小 60%），且用 calc 挂在 --main-pad-* 上。
-
-        写成裸 px 的话窄屏档不会同比缩小（窄屏基础值 8px，与宽屏 12/16 不同）。
+        这正是第一版被否掉的原因：`main:has(> #page-chat.on)` 让终端页是 4.8/6.4、
+        其他页仍是 12/16，用户点别的菜单就看出边距变了。范围是**全站**，
+        所以判据是「一条覆写都不许有」，而不是「覆写内容对不对」。
         """
-        body = _rules("main:has(> #page-chat.on)")[0]
-        for prop in ("padding", "padding-top", "padding-bottom"):
-            pass
-        top = _decl(body, "padding-top")
-        right = _decl(body, "padding-right")
-        bottom = _decl(body, "padding-bottom")
-        left = _decl(body, "padding-left")
-        self.assertTrue(top and right and bottom and left,
-                        "收窄规则必须四向都给全，只给一部分会留下单边不一致的留白")
-        for side, val in (("top", top), ("right", right),
-                          ("bottom", bottom), ("left", left)):
-            self.assertIn("--main-pad-", val,
-                          "%s 侧写成了裸值 %r ⇒ 窄屏档不会同比缩小"
-                          "（窄屏基础值 8px，与宽屏 12/16px 不同）" % (side, val))
-            self.assertRegex(val, r"\*\s*\.4\b|\*\s*0\.4\b",
-                             "%s 侧的比例是 %r，不是 0.4 ⇒ 不是缩小 60%%" % (side, val))
+        for sel in ("main:has(> #page-chat.on)", "main:has(section.page.on)",
+                    "main:has(#page-chat)", "section.page.on", "section.page"):
+            over = [b for b in _rules(sel)
+                    if any(_decl(b, p) for p in ("padding", "padding-top",
+                                                "padding-right", "padding-bottom",
+                                                "padding-left"))]
+            self.assertEqual(over, [],
+                             "存在含 padding 的 %r 覆写 ⇒ 右侧留白会因页而异，"
+                             "而用户要的是全站统一。命中：%s" % (sel, over))
 
-    def test_main_padding_token_is_single_sourced(self):
-        """`--main-pad-*` 是唯一真相源：不得再有第二处 main 的裸 padding 字面量。"""
+    def test_wide_base_is_narrowed_to_40_percent(self):
+        """宽屏基准必须是 4.8px/6.4px（原 12/16 的 40%），且 padding 由变量算出。"""
         bodies = _rules("main")
-        # 去掉收窄那条（它用 :has，不在 _rules("main") 里），剩下的都该只赋值对变量。
+        base = [b for b in bodies if "--main-pad-y" in b]
+        self.assertTrue(base, "找不到带 --main-pad-* 的 main 规则")
+        self.assertEqual(_decl(base[0], "--main-pad-y"), WIDE["y"],
+                         "宽屏上下留白应是 %s（12×0.4），实际 %r"
+                         % (WIDE["y"], _decl(base[0], "--main-pad-y")))
+        self.assertEqual(_decl(base[0], "--main-pad-x"), WIDE["x"],
+                         "宽屏左右留白应是 %s（16×0.4），实际 %r"
+                         % (WIDE["x"], _decl(base[0], "--main-pad-x")))
+        self.assertEqual(_decl(base[0], "padding"), "var(--main-pad-y) var(--main-pad-x)",
+                         "main 的 padding 必须由变量算出，不要写裸值")
+
+    def test_narrow_base_is_narrowed_proportionally(self):
+        """窄屏基准必须是 3.2px/3.2px（原 8/8 的 40%），且落在窄屏块内。
+
+        窄屏原基准是 8px 而非 12/16，所以**不是同一个绝对值** —— 写成 4.8/6.4
+        会让窄屏只缩到 40%×(8/12)，不是用户要的 60%。
+        """
+        m = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", HTML, re.S)
+        self.assertIsNotNone(m, "找不到窄屏 @media 块")
+        bodies = _rules("main")
+        narrow = [b for b in bodies if "--main-pad" in b and b != bodies[0]]
+        self.assertTrue(narrow, "窄屏档没有覆盖 --main-pad-*")
+        self.assertTrue(any(_decl(b, "--main-pad-y") == NARROW["y"]
+                            and _decl(b, "--main-pad-x") == NARROW["x"] for b in narrow),
+                        "窄屏基准应是 %s/%s（8×0.4），实际：%s"
+                        % (NARROW["y"], NARROW["x"],
+                           [(_decl(b, "--main-pad-y"), _decl(b, "--main-pad-x"))
+                            for b in narrow]))
+        # 且窄屏那条必须在 @media 块内，否则宽屏也会拿到 3.2
+        self.assertIn("--main-pad-y: %s" % NARROW["y"], m.group(1),
+                      "窄屏基准不在窄屏 @media 块内 ⇒ 宽屏会被误改成 3.2px")
+
+    def test_padding_token_is_single_sourced(self):
+        """`--main-pad-*` 是唯一真相源：main 上不得再有裸 padding 字面量。"""
         literals = []
-        for b in bodies:
+        for b in _rules("main"):
             for prop in ("padding", "padding-top", "padding-right",
                          "padding-bottom", "padding-left"):
                 v = _decl(b, prop)
                 if v and not v.startswith("var("):
                     literals.append((prop, v))
         self.assertEqual(literals, [],
-                         "main 上仍有裸 padding 字面量 %s ⇒ 与 --main-pad-* 是两份真相源，"
-                         "窄屏档改了变量、这里没改，两处必然漂" % literals)
-
-    def test_token_is_defined_in_base_and_narrow_block(self):
-        """`--main-pad-*` 必须**两档都有定义**：宽屏 12/16、窄屏 8/8。"""
-        base = _rules("main")[0]
-        self.assertEqual(_decl(base, "--main-pad-y"), "12px", "宽屏上下留白基准不是 12px")
-        self.assertEqual(_decl(base, "--main-pad-x"), "16px", "宽屏左右留白基准不是 16px")
-        m = re.search(r"@media \(max-width: 767px\) \{(.*?)\n        \}", HTML, re.S)
-        self.assertIsNotNone(m, "找不到窄屏 @media 块")
-        narrow = [b for b in _rules("main") if "--main-pad" in b]
-        self.assertTrue(narrow, "窄屏档没有覆盖 --main-pad-* ⇒ 窄屏会沿用 12/16px 基准")
-        # 窄屏那条必须同时带 max-width 与变量赋值
-        self.assertTrue(any("--main-pad-y: 8px" in b for b in narrow),
-                        "窄屏 --main-pad-y 应为 8px，实际：%s" % narrow)
+                         "main 上仍有裸 padding 字面量 %s ⇒ 与 --main-pad-* 是两份真相源"
+                         % literals)
 
     def test_fitaddon_padding_stays_zero(self):
         """**FitAddon 铁律仍在**：#termEl / .term-body 的 padding 必须四向 0。
 
-        这是本次改动最容易误伤的一条：「终端框边距」很容易被实现成
-        「给黑底加内衬」，而那会让终端底部被裁掉一行（父层多 1px ⇒ 多算一行）。
+        「终端框边距」很容易被实现成「给黑底加内衬」，而那会让终端底部被裁掉一行。
         """
         for sel in ("#termEl", ".term-body"):
             bodies = _rules(sel)

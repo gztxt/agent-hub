@@ -422,27 +422,29 @@
                        color: var(--text-2); border-radius: 8px; padding: 8px; font-size: var(--fs-sm); width: 100%; }
         .side-toggle:hover { border-color: var(--accent-2); color: var(--text-1); }
 
-        /* v0.13.97：--main-pad-*是正文区留白的**唯一真相源**（此前是裸值12px 16px，
-           窄屏那条只能整体重写一遍 padding，两处字面量各改各的）。抽成变量后，
-           下面的覆写与窄屏档都只改这对变量，padding 只在这里算一次。 */
-        main { --main-pad-y: 12px; --main-pad-x: 16px;
+        /* v0.13.97（用户 2026-10-09「右边终端框上下左右边距缩小 60%」）：
+           右侧内容区四周留白的**唯一来源就是 main 的 padding**——实测（1440×900 截图 +
+           getBoundingClientRect 逐层分解）：.chat-grid / .chat-main 的 padding 都是 0，
+           gap 16px 也不产生列间距（已是单列）；黑底 #termEl 与 .term-body 的 padding
+           四向为 0 且被上一轮定案钉死（FitAddon 按 #termEl 内容盒算行数，父层多 1px
+           就多算一行、底部被裁），**不许动**。所以只改 main 这一处。
+
+           ⚠ 范围是**全站**，不只终端页：第一版用 `main:has(> #page-chat.on)` 限定在
+           终端工作台，用户当日复核后否掉——「点左边菜单栏的其他菜单时右边页面边距又变了，
+           应该是全部统一才对」。`:has()` 那种写法在这里是**多余的第二判据**：它让同一份
+           留白出现两种值（全站一种、终端页一种），而用户要的就是同一个值。故直接改基准、
+           删掉整条覆写规则 —— 规则越少越不可能漂。
+
+           基准由 12px/16px 收到 4.8px/6.4px（原值 ×0.4，缩小 60%）。窄屏档原基准是 8px
+           （不是 12/16），同比收到 3.2px —— 两档都是**各自基准 ×0.4**，不是同一绝对值。
+
+           `--main-pad-*` 是留白的唯一真相源：此前宽屏是裸 `padding: 12px 16px`、窄屏是
+           裸 `padding: 8px`，两份独立字面量各改各的。抽成变量后窄屏只赋值对变量，
+           padding 只在这里算一次。 */
+        main { --main-pad-y: 4.8px; --main-pad-x: 6.4px;
                flex: 1; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto;
                padding: var(--main-pad-y) var(--main-pad-x);
                display: flex; flex-direction: column; overflow: hidden; }
-        /* v0.13.97（用户 2026-10-09「右边终端框上下左右边距缩小 60%」）：
-           终端框四周的留白**唯一来源就是 main 的 padding**——实测（1440×900 截图 +
-           getBoundingClientRect 逐层分解）：.chat-grid / .chat-main 的 padding 与 gap
-           都是0/16 但 chat-grid 已是单列（gap 不产生列间距），黑底 #termEl 与 .term-body
-           的 padding 四向为 0 且被上一轮定案钉死（FitAddon 按 #termEl 内容盒算行数，
-           父层多 1px 就多算一行、底部被裁），**不许动**。
-           故按 40% 原值收窄，且只在本页生效：`:has(> #page-chat.on)` 跟着 go() 已有的
-           section.page .on 判定，不另立第二份「当前是终端页」的状态（否则两处会漂）。
-           60% 是比例不是绝对值 ⇒ 写成 calc(var(--main-pad-*) * .4)，窄屏档自动同比，
-           不会出现「宽屏缩了、窄屏没缩」。 */
-        main:has(> #page-chat.on) { padding-top: calc(var(--main-pad-y) * .4);
-                                    padding-right: calc(var(--main-pad-x) * .4);
-                                    padding-bottom: calc(var(--main-pad-y) * .4);
-                                    padding-left: calc(var(--main-pad-x) * .4); }
         section.page { display: none; }
         section.page.on { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
         .hint { color: var(--muted); font-size: var(--fs-base); line-height: var(--lh-base); }
@@ -926,7 +928,8 @@
             /* v0.12.3：抽屉与宽屏共用同一套行内规则（.s-badge + 名称，见基础段），
                窄屏不再有独立差异项。 */
             #sideMask.on { display: block; position: fixed; inset: 0; background: var(--mask); z-index: 45; }
-            main { max-width: 100%; margin: 0; --main-pad-y: 8px; --main-pad-x: 8px; }
+            /* 窄屏基准 8px/8px ×0.4（v0.13.97）—— 与宽屏各自基准同比，不是同一个绝对值 */
+            main { max-width: 100%; margin: 0; --main-pad-y: 3.2px; --main-pad-x: 3.2px; }
             .home-stat { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             select { max-width: 100%; }
             .toolbar input, .toolbar select { min-width: 0; }
