@@ -53,6 +53,7 @@ import tasks as tasks_mod
 import mcpgw as mcpgw_mod
 import cronjobs as cronjobs_mod
 import term as term_mod
+import term_record
 import profiles as profiles_mod
 import vitals as vitals_mod
 import embed_proxy as embed_proxy_mod
@@ -79,7 +80,7 @@ import hublog as hublog_mod        # 日志中心（v0.13.46：设置→日志�
 print(f"[agenthub] 配置: PORT={config.port}, HOST={config.host}")
 
 # 单一版本源：/health、FastAPI 元数据、启动横幅与页脚都取这里
-VERSION = "0.13.100"  # 终端输入延迟根治：录制预算的全表 SUM 收进进程内缓存
+VERSION = "0.13.101"  # 录制预算彻底去SUM：单行计数表 + 数据库侧触发器
 #   v0.13.100：用户「嵌入式终端会话文字输入非常慢 很不正常」。**根因不在终端**——
 #   `Recorder.feed()` 的全局预算检查是 `SELECT SUM(bytes) FROM term_recordings`，
 #   EXPLAIN 实测 `SCAN term_recordings`（表上只有 idx_termrec_sid(session_id,seq)，
@@ -100,6 +101,39 @@ VERSION = "0.13.100"  # 终端输入延迟根治：录制预算的全表 SUM 收
 #   完整取证与集成说明见 docs/INTEGRATE-v0.13.100.md。
 #   ⚠ 未治本：`sweep()` 只在会话 close 时跑，表一天长 44 万行。缓存把每帧成本
 #   从「随表线性」压成常数，**表本身仍会长**——治表属另一次范围变更。
+#   ⚠ 另一处漏网（同一批发现）：一个正确的局部优化，**如果它的失效条件被高频路径
+#   命中，等于没优化**——本条的「DELETE 一律作废」正被`Recorder.__init__`
+#   每次建会话都命中，所以「每帧」那条路治好之后，「建会话」那条路原样留着。
+#   v0.13.101：用户「彻底消除」。上条的 ⚠ 未治本正是本条要收的尾——缓存只把每帧
+#   成本从「随表线性」压成常数，**建会话这条路仍然是全表 SUM**：
+#   `Recorder.__init__` 先 DELETE（同 sid 覆盖）再立刻算预算，v0.13.100 的
+#   「DELETE 一律作废缓存」规则 ⇒ 必然重查 ⇒ 生产库上每次建会话端到端实测
+#   **156~210ms**（其中 ~108ms 是这条 SUM），同步独占事件循环。
+#   改法：单行计数表 `term_rec_meta(k='total_bytes')` + 两个数据库侧触发器
+#   （`trg_termrec_ins` AFTER INSERT 加 / `trg_termrec_del` AFTER DELETE 减），
+#   写入与计数更新在同一事务里。
+#   `total_bytes()` 变成一次主键点查（实测 3µs），**与表大小无关**，
+#   也不再存在「什么时候作废」这个问题。存量库由 startup 的
+#   `term_record.ensure_counted()` 幂等播种一次（只在计数行缺失时才做那一次 SUM）。
+#   同时给 `ts` 补索引（`idx_termrec_ts`）：`sweep()` 的 `DELETE WHERE ts < ?`
+#   原本 SCAN 全表（77~568ms，挂在会话收尾路径上），改 SEARCH 后 0.06ms。
+#   实测：录制表 48 万行时total_bytes() 108ms → 0.00ms；每帧 INSERT 代价
+#   0.043ms → 0.063ms（+0.02ms，相对 5ms 合并窗口可忽略）。
+#   闸门 tests/test_term_record_meta_count.py（计数与 SUM 恒等、DELETE 收敛、
+#   无SUM 回流、播种幂等）+ 真浏览器 work/probe-term-render-latency.py。
+#   ⚠ 播种这条路上**另有两处竞态**，同批自查发现并修掉（详见 CHANGELOG 四之二）：
+#     ① 播种原本是两条语句（先 SELECT SUM、再 SET v=excluded.v 覆盖）——
+#        48万行 SUM 的那几十~上百 ms里写入的帧被覆盖抹掉，
+#        生产库实测计数少 11251 字节 ⇒ 计数偏低 ⇒ 预算偏松。
+#     ② 更严重：播种闸门原判「计数行在不在」，而 trg_termrec_ins 在行不存在时
+#        会**顺手创建**它 ⇒ 并发首帧落在「查行」与「写值」之间时闸门误判
+#        「已播种」⇒ 跳过 ⇒ 历史全漏算（实测 4200 万字节漏到剩 1.4 万）。
+#   修法：播种合成**单条** `INSERT…SELECT … WHERE true … ON CONFLICT`（同一快照），
+#   闸门改用独立的 `seeded` 标记（触发器只碰 total_bytes，不会伪造它）。
+#   ⚠ 别把播种改回「先插占位行 v=0 再 v=v+SUM」：占位行期间写入的帧已计过一次，
+#     再加 SUM 会双计（实测缺口 -1.4亿，比原写法更糟）。
+#   ⚠ 别把闸门改回判「计数行在不在」—— 见 ②。**这两处的教训是：单语句化解决的是
+#     「读-写窗口」，不解决「判据被被测系统自己伪造」。**
 #   v0.13.99：用户「嵌入式终端会话文字输入框无法正常使用键盘的上下左右光标键…输入框只是
 #   不需要鼠标焦点 但是键盘的全部原生功能都是需要的」，并明确要求**滚轮向上翻不许受影响**。
 #   **先取证再动手**，三轮真机实测（真 chromium + CDP，真鼠标/真键盘事件，pty 侧
@@ -1284,6 +1318,14 @@ async def startup():
     global discovery
     global _embed_proxy
     db.init_db(config.db_path)
+    # v0.13.101：录制预算的计数表播种（存量库升级后计数从0 起跳会让预算判据失真）。
+    # 幂等且只在计数行缺失时才做那一次全表 SUM；播种失败不许拖垮启动——
+    # 计数表缺失时 total_bytes() 返回 0，代价是预算偏松（多录一点），
+    # 而代价反过来（启动失败）要大得多。
+    try:
+        term_record.ensure_counted()
+    except Exception as e:  # noqa: BLE001
+        print(f"[term_record] 计数表播种跳过：{type(e).__name__}: {str(e)[:160]}", flush=True)
     discovery = AgentDiscovery(config, db=db)
     build_adapters(config)
     # v0.13.50 起的漂移体检 + v0.13.51 的授权写回：启动先修一轮（CCR 可能还没改写，

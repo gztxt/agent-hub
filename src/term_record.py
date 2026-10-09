@@ -35,13 +35,6 @@ DEFAULT_RETENTION_DAYS = 7
 
 _TRUE = {"1", "true", "yes", "on"}
 
-#: 全局在盘字节的进程内缓存：(字节数, 所属库路径)。None = 未建立/已作废。
-#: 为什么带路径一起存：db.init_db() 会把模块级 _conn 重指到另一个文件（切库），
-#: 那样缓存就成了跨库的错值。路径变了就重查，判据本身实测只要 3µs。
-#: 完整语义与实测见 total_bytes() 的 docstring。
-_total: Optional[Tuple[int, str]] = None
-
-
 def enabled() -> bool:
     """录制总开关。缺省 0 ⇒ 默认关。"""
     return os.environ.get("TERM_RECORD", "0").strip().lower() in _TRUE
@@ -104,8 +97,10 @@ class Recorder:
         if not enabled() or not db.is_open():
             return
         # 同 sid 只留最后 1 份：先清掉上一份录制（台账裁定「每会话只留最后 1 份」）。
+        # v0.13.101：DELETE 的减法由数据库触发器做（trg_termrec_del），
+        # 应用层不再需要「作废缓存」这一步—— 这正是原先每次建会话必然
+        # 重查全表 SUM 的根因。
         _exec("DELETE FROM term_recordings WHERE session_id=?", (self.session_id,))
-        _total_invalidate()   # v0.13.100：DELETE 后缓存必作废（增量法无反向修正）
         used = total_bytes()
         if used >= max_total_bytes():
             # 全局预算满：本会话**不开录**并说清原因，而不是「录了但少了」。
@@ -141,10 +136,8 @@ class Recorder:
         if ok:
             self.frames += 1
             self.bytes += len(blob)
-            # v0.13.100：预算缓存按**落盘字节数**递增（len(blob) 是脱敏后的长度，
-            # 与 SUM(bytes) 看到的完全一致）。写在 `if ok` 里 —— 写失败不许推进缓存，
-            # 否则缓存会比真值高，且高多少再也回不来（没有反向修正）。
-            _total_add(len(blob))
+            # v0.13.101：全局计数的递增同样交给触发器（trg_termrec_ins），
+            # 与本 INSERT 在同一事务里。应用层不再维护第二份计数。
 
     def close(self) -> None:
         if not self.active:
@@ -180,66 +173,117 @@ def _exec(sql: str, params: tuple = ()) -> bool:
         return False
 
 
-def total_bytes() -> int:
-    """全局在盘字节数。**带进程内缓存**（v0.13.100）。
+def ensure_counted() -> None:
+    """确保计数表已播种（存量库升级用，幂等）。
 
-    ★ 为什么必须缓存（用户 2026-10-09 报障「嵌入式终端输入非常慢」的根因）：
-      这个函数原本是**每次 feed 都跑一遍** `SELECT SUM(bytes) FROM term_recordings`
-      —— 无索引可用，`EXPLAIN` 实测就是 `SCAN term_recordings`。生产库实测
-      44 万行 / 157MB 时单次 **110~124ms**，而 feed() 被**同步**调在 asyncio
-      事件循环里（src/term.py:1221 的 pty 读回调、:1488 的 WS 收包）⇒ 每个按键、
-      每帧输出都把整个事件循环独占上百毫秒。端到端实测逐键 RTT p50 **677ms**。
-      离线对照：44 万行时 feed 的 p50 = 67.9ms，其中 99.9% 花在这条 SUM 上
-      （去掉它后 0.05ms，1405 倍）。
+    ★ 为什么需要播种：触发器只对**建好之后**的 INSERT/DELETE 生效，
+      而升级前已落盘的几十万行不会被回算 ⇒ 计数从0 起跳、预算判据认为
+      「还有 512MB 空间」而盘上早已超了。所以首次必须补一次真 SUM。
 
-    ★ 缓存语义（与旧行为逐字等价，只是不再每帧查库）：
-      - 首次调用 / 换库后首次调用 ⇒ 真查一次，`_total` 取真值；
-      - 本进程每次成功 INSERT ⇒ `_total` 按**实际写入字节数**递增
-        （用 len(blob) 即脱敏后的落盘值，与 SUM 会看到的完全一致）；
-      - 任何 DELETE（sweep / 同 sid 覆盖）⇒ **作废**缓存，下次调用重查。
-        增量法在有 DELETE 时会永久偏高，所以 DELETE 一律作废而不是减法修正。
-
-    ★ 换库即失效：`db.init_db()` 会把模块级 `_conn` 重指到另一个文件
-      （测试与 /mcp/call 都靠这个切库）。判据用 `db.current_path()`——
-      实测 3µs，比它要挡掉的 117ms 便宜四个数量级，所以**每帧查它不亏**。
-      不拿「连接对象 id」当判据：init_db 复用的是同一模块全局，id 会撞。
-
-    ★ 为什么不用「定时重查」兜底：录制是**单写者**功能（只有本进程的 Recorder 写这张表，
-      status/frames 只读），外部写者不存在 ⇒ 增量法不会漂。留 TTL 只会把
-    「已知真值」换成「大概率对的旧值」，反而让 to_dict 的 total_on_disk 说假话。
+    ★★ 判据是「播种标记」，**不是「计数行是否存在」**——后者有竞态：
+      `trg_termrec_ins` 的 `INSERT … ON CONFLICT DO UPDATE` 在**计数行不存在**
+      时会**顺手创建**它（值=那一帧的字节）。而本函数与pty 读循环是并发的：
+      若在「查行」与「写播种值」之间来了首帧，计数行凭空出现 ⇒
+      「行存在 ⇒ 已播种」成立 ⇒ **跳过播种 ⇒ 历史几十万行全漏算**，
+      计数会停在几百字节而盘上早已 205MB。
+      实测（tests::TestSeedRace）：4200万字节存量 + 并发首帧 ⇒ 播种后计数
+      仅 14000 字节，缺口 4200 万——比两语句竞态严重一个数量级。
+      所以用独立的 `seeded` 标记做闸门，只有本函数写过它才算播种过；
+      触发器只碰`total_bytes` 一行，不会伪造标记。
+      调用点：init_db 之后（main.startup），一次性开销，与仓库构建同量级。
     """
-    global _total
+    if not db.is_open():
+        return
+    try:
+        rows = db.query("SELECT v FROM term_rec_meta WHERE k='seeded'")
+    except Exception:  # noqa: BLE001
+        return
+    if rows:
+        return          # 已播种（标记在，才算数）
+    _seed_counted()
+    db.execute("INSERT INTO term_rec_meta(k,v) VALUES('seeded',1) "
+               "ON CONFLICT(k) DO UPDATE SET v=1")
+    print("[term_record] 计数表已播种：%s" % _human(total_bytes()), flush=True)
+
+
+#: 播种用的**单条** SQL。看起来绕（为什么要 INSERT…SELECT 而不是先 SELECT 再
+#: INSERT），但这是唯一在并发下正确的写法——生产库实测播种时计数比真 SUM
+#: **少 11251 字节**，且缺口恒定不随后续写入变化，说明是播种瞬间产生的
+#: 一次性偏差，不是触发器持续漏算。
+#:
+#: 旧写法（两语句）：
+#:     value = SELECT SUM(bytes) FROM term_recordings   # ← 48万行要 108~434ms
+#:     INSERT ... VALUES(value) ON CONFLICT DO UPDATE SET v = excluded.v
+#: 两条语句之间那几百毫秒里，pty 读循环照常INSERT 录制帧、触发器照常给计数行
+#: 加法；然后 `SET v = excluded.v` 把计数**整体覆盖**成刚才那个 SUM ⇒
+#: 这段时间写入的字节被抹掉。缺口方向恒为「计数偏低」⇒ **预算判据偏松**
+#: （会多录一点，不会误停录），危害小但性质是「静默失真」，不可留。
+#:
+#: 现写法：把 SUM 与写入合成**同一条语句**（INSERT…SELECT），由 SQLite 在
+#: 同一事务、同一快照内完成，窗口消失。`WHERE true` 是为绕开
+#: 「INSERT…SELECT 后接 ON CONFLICT 会被解析成 SELECT 的一部分」的语法歧义
+#: （不加会报 `near "DO": syntax error`），语义上是无条件真。
+#: ⚠ 不能先「INSERT 占位行 v=0 再 UPDATE v = v + SUM」——占位的那条 INSERT
+#:   本身不触发计数触发器，但占位行存在期间写入的帧**已经计过一次**，
+#:   再加 SUM 就**双计**（实测缺口 -140009800，比原写法严重得多）。
+_SEED_SQL = (
+    "INSERT INTO term_rec_meta(k, v) "
+    "SELECT 'total_bytes', COALESCE(SUM(bytes),0) FROM term_recordings WHERE true "
+    "ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+)
+
+
+def _seed_counted() -> None:
+    """执行播种。单条 SQL，读写同一快照（见 _SEED_SQL 的注释）。"""
+    db.execute(_SEED_SQL)
+
+
+def total_bytes() -> int:
+    """全局在盘字节数。读**单行计数表**（v0.13.101）。
+
+    ★ 三代实现的取舍，留着免得后人又把它改回去：
+      v0.13.100（缓存版）：每次 feed 读进程内缓存，DELETE 后作废、下次重查。
+        实测把逐键 p50 从 677ms 降到 0.5ms —— 治了「每帧」这条路，
+        但**没治根**：Recorder.__init__ 每次建会话都先 DELETE（同sid 覆盖）
+        再立刻要预算 ⇒ 缓存必然作废 ⇒ 必然重查 ⇒ 生产库上每次建会话仍
+        独占事件循环 108~434ms（实测建会话端到端 156~210ms）。
+      v0.13.101（本版，单行计数表 + 数据库侧触发器）：total_bytes() 是
+        **一次主键点查**（实测 3µs），与表大小无关，也没有「什么时候作废」
+        这个问题—— 写入和计数更新在同一个事务里，物理上不可能各走各的。
+      绝不要改回 `SELECT SUM(bytes) FROM term_recordings`：无索引可用，
+        EXPLAIN 恒为 SCAN，48 万行实测 108ms（冷 434ms）。
+    """
     if not db.is_open():
         return 0
-    path = db.current_path()
-    if _total is None or _total[1] != path:
-        value = _query_total_bytes()
-        _total = (value, path)
-        return value
-    return _total[0]
+    # ⚠ 终审补的回归修复（2026-10-09）：`db.query()` 必须在 try 里。
+    #   本函数有两个调用点，**都在终端热路径上**：`Recorder.feed()` 的每帧预算检查
+    #   与 `Recorder.__init__`。而 `db.query()` 自身**没有任何异常防护**（裸 `_conn.execute`）
+    #   ⇒ 库一异常（WAL 损坏 / 磁盘瞬时错 / 连接被换），异常会一路穿出去，
+    #   在 pty 读回调里把整个终端会话带崩。
+    #   现场证据：L0 跑出 10 个 error，traceback 就是
+    #   `sqlite3.ProgrammingError: Cannot operate on a closed database`
+    #   （某个用例 rmtree 掉 tmp 库后，后续用例建 Recorder 就炸）。
+    #   **本函数的契约是「返回 0」，不是「抛异常」** —— 预算偏松只是多录一点，
+    #   而抛异常是终端不可用，两者代价差着量级。
+    try:
+        rows = db.query("SELECT v FROM term_rec_meta WHERE k='total_bytes'")
+        if not rows:
+            # 播种还没跑（老库 + 直接调本函数）。此时**不**回退到 SUM：
+            # 那正是本函数要消灭的东西；宁可返回 0 让预算偏松，也不能在
+            # 每帧路径上放一条全表扫描。真值由 ensure_counted() 一次性补上。
+            return 0
+        return max(0, int(rows[0]["v"]))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _query_total_bytes() -> int:
-    """真查一次全表聚合。只在 total_bytes() 判定缓存不可用时走。"""
+    """全表聚合。**只在播种与测试对照时用**，不在任何逐帧路径上。"""
     try:
         rows = db.query("SELECT COALESCE(SUM(bytes),0) AS n FROM term_recordings")
         return int(rows[0]["n"]) if rows else 0
     except Exception:  # noqa: BLE001
         return 0
-
-
-def _total_add(n: int) -> None:
-    """本进程成功落盘 n 字节后递增缓存。缓存尚未建立则什么都不做
-    （下一次 total_bytes() 会真查，不必在此处播种一个没有来源的真值）。"""
-    global _total
-    if _total is not None and n > 0:
-        _total = (_total[0] + n, _total[1])
-
-
-def _total_invalidate() -> None:
-    """任何 DELETE / 换库之后调用：增量法在删除后会永久偏高，必须重查。"""
-    global _total
-    _total = None
 
 
 def frames(session_id: str, limit: int = 2000) -> List[Dict[str, Any]]:
@@ -278,8 +322,5 @@ def sweep() -> int:
     cutoff = time.time() - retention_days() * 86400
     if not _exec("DELETE FROM term_recordings WHERE ts < ?", (cutoff,)):
         return 0
-    # v0.13.100：DELETE 动了总量 ⇒ 缓存作废，下一次读重查。
-    # 刻意不按「删掉的行数」做减法修正：行数≠字节数，减不出来就得再查一次，
-    # 那正是这里要消掉的查询；而 sweep 是低频事件（会话 close 时才跑）。
-    _total_invalidate()
+    # v0.13.101：被删字节由 trg_termrec_del 逐行减掉，无需应用层补偿。
     return 1

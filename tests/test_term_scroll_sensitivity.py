@@ -233,8 +233,12 @@ class TestScrollSensitivityPinned(unittest.TestCase):
         #      盖不住 ⇒ 每帧一次全表扫，而 feed() 是**同步**在事件循环里的；
         #   ② 增量法遇 DELETE 会永久偏高且不可逆 ⇒ 一律作废重查，不做减法修正。
         "0.13.100": ("SUM(bytes)", "全表", "作废", "事件循环"),
+        # v0.13.101：关键字全部取自 main.py 版本注释里**实际写下的字句**。
+        # 「失效条件被高频路径命中 = 等于没优化」是本版最该被记住的一句。
+        "0.13.101": ("trg_termrec_ins", "ensure_counted", "idx_termrec_ts",
+                     "等于没优化", "term_rec_meta"),
     }
-    CURRENT_VERSION = "0.13.100"
+    CURRENT_VERSION = "0.13.101"
 
     #: 2026-10-05 起，历史版本的根因**逐字归档在 CHANGELOG.md**（main.py 的
     #: VERSION 注释块从 1417 行缩到 1047 行，只留当前版 + 一行指针）。

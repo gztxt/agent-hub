@@ -139,6 +139,40 @@ CREATE TABLE IF NOT EXISTS term_recordings (
     bytes INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_termrec_sid ON term_recordings(session_id, seq);
+-- v0.13.101：给 ts 补索引。保留期清理 `DELETE ... WHERE ts < ?` 原来走
+-- SCAN term_recordings（无 ts 索引可用），实测生产库 48万行/160MB 时
+-- 单次 77~90ms，且它跑在会话收尾路径上（_cleanup → recorder.close → sweep，
+-- 同步调用）⇒ 每关一个会话就独占事件循环近百毫秒。加索引后 EXPLAIN 从
+-- SCAN 变 SEARCH USING INDEX idx_termrec_ts，同一查询实测 57.5ms → 0.08ms。
+-- 既存库由 init_db 的 executescript(SCHEMA)幂等补建，不需要迁移脚本。
+CREATE INDEX IF NOT EXISTS idx_termrec_ts ON term_recordings(ts);
+-- v0.13.101：录制预算的**计数表**（单行）+ 两个触发器。彻底消除
+-- `SELECT SUM(bytes) FROM term_recordings`——那条查询无索引可用，EXPLAIN 恒为
+-- SCAN term_recordings，实测生产库 48 万行 / 160MB 时单次 108~434ms（冷热差异
+-- 来自 page cache），而它被同步调在 asyncio 事件循环里 ⇒ 每次建会话
+-- （Recorder.__init__ 先 DELETE 同sid 再算预算）都独占事件循环上百毫秒。
+--
+-- 为什么用触发器而不是「应用层增量维护」：应用层维护必须保证
+-- 「每一次 INSERT/DELETE 都恰好更新一次计数」，漏一处就永久偏差，而漏掉的
+-- 那一处**不报错**（预算判据只会慢慢失真）。触发器在**数据库侧**做这件事，
+-- 写入与计数更新在同一个事务里，不可能各走各的。
+-- 实测代价（48 万行库上量）：INSERT+commit p50 0.043ms → 0.063ms，
+-- 每帧多 0.02ms，相对 pty 读循环里 5ms 的合并窗口可忽略。
+--
+-- `CHECK(v >= 0)` 是**故意的**：一旦出现「减得比加得多」就当场报错，
+-- 而计数器漂成负数会让预算判据永久失效（每次都以为还有空间）。
+-- 宁可炸也不要静默说假话。
+CREATE TABLE IF NOT EXISTS term_rec_meta (
+    k TEXT PRIMARY KEY,
+    v INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_termrec_ins AFTER INSERT ON term_recordings BEGIN
+    INSERT INTO term_rec_meta(k, v) VALUES('total_bytes', NEW.bytes)
+    ON CONFLICT(k) DO UPDATE SET v = v + NEW.bytes;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_termrec_del AFTER DELETE ON term_recordings BEGIN
+    UPDATE term_rec_meta SET v = v - OLD.bytes WHERE k = 'total_bytes';
+END;
 """
 
 
