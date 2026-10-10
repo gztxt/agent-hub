@@ -180,22 +180,17 @@ class TestRunDualstackAlreadyCorrect(unittest.TestCase):
         self.assertIn('kill "$SHADOW_PID"', sh, "影子必须用精确 PID 停")
 
 
-class TestKnownGapLogDirNotIsolated(unittest.TestCase):
-    """**已知缺口登记**：只覆盖 `DATA_DIR` 时，`log_dir` **不随**它隔离。
+class TestLogDirFollowsOverriddenDataDir(unittest.TestCase):
+    """隔离契约：`DATA_DIR` 被覆盖而 `LOG_DIR` 未覆盖时，`log_dir` 必须**随 data_dir 同源**。
 
-    `config.py:93` 的默认推导 `self.data_dir / "logs"` 被 `.env` 的**绝对** `LOG_DIR`
-    遮蔽 —— `_env_override` 里没有 `LOG_DIR` 时回退到 `os.getenv("LOG_DIR", ...)`，
-    而 `.env:22` 已把它钉成 `<仓库>/data/logs`。⇒ `DATA_DIR=work/shadow`（不改 LOG_DIR）
-    起影子实例时 `data_dir` 隔离了、`log_dir` **仍指生产**。
+    背景（PT-20261009-04「残留缺口」，2026-10-10 修复）：原写法
+    `self.log_dir = Path(_env_override.get("LOG_DIR") or os.getenv("LOG_DIR", self.data_dir / "logs"))`
+    里，LOG_DIR 未显式覆盖时会回退 `os.getenv`，读到 `.env` 的**绝对** LOG_DIR
+    ⇒ `DATA_DIR=work/shadow`（不改 LOG_DIR）起影子时 data_dir 隔离了、log_dir **仍指生产**。
+    修法见 `config.py` 该行注释：DATA_DIR 覆盖且 LOG_DIR 未覆盖 ⇒ 从被覆盖的 data_dir 派生。
 
-    本条**钉住现状**、非「必须修」—— 修不修是另一个批次对「隔离契约」的决定
-    （`config.py:23` 白名单注释明写「只增不改」），处置口径同
-    `test_xss_untrusted_render.py::TestReachabilityDocumented.test_validate_dag_has_no_charset_gate_yet`。
-    **缺口的现实影响面小**：全仓 `config.log_dir` 除 `mkdir` 外无消费者。
-    登记见 `PENDING-TASKS.md`（ENV_OVERRIDABLE 那条下的「残留缺口」）。
-
-    **缺口修好后本条必红**：届时把断言从「= 假 `.env` 的绝对 LOG_DIR」改为
-    「= DATA_DIR 之下的 `logs`」，并同步 PENDING-TASKS 条目。
+    **本类是同名缺口登记的「修复态」**：原 `TestKnownGapLogDirNotIsolated` 断言「log_dir 仍取
+    假 `.env` 的绝对 LOG_DIR」，修复后该断言必红 —— 条目已按注释约定改写为钉修复态。
 
     为什么建临时 `<T>/.env` 而不 import 真 `config`：真 `.env` 含凭据 ⇒ import 它就
     不 hermetic。这里把真 `config.py` **原样拷进** `<T>/src/`、配一个只含
@@ -219,19 +214,36 @@ class TestKnownGapLogDirNotIsolated(unittest.TestCase):
         return dict(ln.split("=", 1) for ln in r.stdout.splitlines()
                     if ln.startswith(("DD=", "LD=")))
 
-    def test_data_dir_override_leaves_log_dir_on_env_absolute_path(self):
+    def test_data_dir_override_derives_log_dir_from_it(self):
+        """核心判据：只覆盖 `DATA_DIR` ⇒ `log_dir` 从**被覆盖的** data_dir 派生（同源）。"""
         with tempfile.TemporaryDirectory() as tmp:
             shadow = str(pathlib.Path(tmp) / "shadow")
-            prod_logs = str(pathlib.Path(tmp) / "prod" / "data" / "logs")
             got = self._run(tmp, {"DATA_DIR": shadow})
-            # 前置：DATA_DIR 覆盖**是**生效的（这半条不是缺口，是绿臂）
+            # 前置：DATA_DIR 覆盖生效（绿臂）
             self.assertEqual(got.get("DD"), shadow,
                              f"DATA_DIR 覆盖应生效；实得 {got.get('DD')}")
-            # 缺口本身：log_dir 没跟着 DATA_DIR 走，仍取假 .env 的绝对 LOG_DIR
+            # 契约：log_dir 必须跟着走，不得被假 .env 的绝对 LOG_DIR 拖回
             self.assertEqual(
-                got.get("LD"), prod_logs,
-                "🔔 log_dir 不再被 .env 的绝对 LOG_DIR 拖走 —— LOG_DIR 缺口疑似已修："
-                "请把本条断言改为 `LD == <DATA_DIR>/logs`，并同步 PENDING-TASKS 登记")
+                got.get("LD"), str(pathlib.Path(shadow) / "logs"),
+                "🔔 log_dir 未随被覆盖的 DATA_DIR 同源 —— LOG_DIR 隔离缺口疑似复发："
+                "DATA_DIR 覆盖且 LOG_DIR 未覆盖时，log_dir 应为 <DATA_DIR>/logs")
+
+    def test_explicit_log_dir_override_still_wins(self):
+        """显式给 `LOG_DIR` ⇒ 压过派生，尊重调用方（不得反过来被 data_dir 吞掉）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = str(pathlib.Path(tmp) / "shadow")
+            own_logs = pathlib.Path(tmp) / "own_logs"
+            got = self._run(tmp, {"DATA_DIR": shadow, "LOG_DIR": str(own_logs)})
+            self.assertEqual(got.get("LD"), str(own_logs),
+                             "显式 LOG_DIR 覆盖应压过派生；实得 " + str(got.get("LD")))
+
+    def test_no_override_keeps_env_log_dir(self):
+        """无覆盖（生产形态）⇒ 仍取 `.env` 的绝对 LOG_DIR，**生产行为逐字不变**。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            prod_logs = str(pathlib.Path(tmp) / "prod" / "data" / "logs")
+            got = self._run(tmp, {})
+            self.assertEqual(got.get("LD"), prod_logs,
+                             "无覆盖时须保持 .env 的 LOG_DIR 不变；实得 " + str(got.get("LD")))
 
 
 if __name__ == "__main__":

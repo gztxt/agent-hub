@@ -90,7 +90,18 @@ class Config:
         # 生产无行为变化：.env:21 的 DATA_DIR 仍优先生效。
         _repo_data = Path(__file__).resolve().parent.parent / "data"
         self.data_dir = Path(_env_override.get("DATA_DIR") or os.getenv("DATA_DIR", _repo_data))
-        self.log_dir = Path(_env_override.get("LOG_DIR") or os.getenv("LOG_DIR", self.data_dir / "logs"))
+        # 2026-10-10：`log_dir` 的默认推导曾被 `.env` 的**绝对** LOG_DIR 遮蔽 ——
+        # 只覆盖 DATA_DIR 起影子时，data_dir 隔离了、log_dir 仍指生产（判例 PT-20261009-04 残留缺口）。
+        # 根因：`_env_override.get("LOG_DIR") or os.getenv("LOG_DIR", ...)` 在 LOG_DIR 未显式覆盖时
+        # 回退到 os.getenv ⇒ 读到的是 .env 的绝对生产路径，那个 `self.data_dir / "logs"` 默认值
+        # **永远到不了**。修法：调用方覆盖了 DATA_DIR 却没给 LOG_DIR ⇒ 从**被覆盖的** data_dir 派生，
+        # 让「影子数据根」与「影子日志根」同源。生产无行为变化（生产 _env_override 为空 ⇒ 走 else 兜底）。
+        if "LOG_DIR" in _env_override:
+            self.log_dir = Path(_env_override["LOG_DIR"])
+        elif "DATA_DIR" in _env_override:
+            self.log_dir = self.data_dir / "logs"
+        else:
+            self.log_dir = Path(os.getenv("LOG_DIR", self.data_dir / "logs"))
         
         # 确保目录存在
         self.data_dir.mkdir(parents=True, exist_ok=True)
