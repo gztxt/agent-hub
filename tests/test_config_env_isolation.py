@@ -22,8 +22,10 @@
 """
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -176,6 +178,60 @@ class TestRunDualstackAlreadyCorrect(unittest.TestCase):
         self.assertRegex(sh, r"pgrep[^\n]*同(一个)?脚本名|同一个脚本名",
                          "影子脚本必须写明「pgrep 分不出生产与影子」这条成因")
         self.assertIn('kill "$SHADOW_PID"', sh, "影子必须用精确 PID 停")
+
+
+class TestKnownGapLogDirNotIsolated(unittest.TestCase):
+    """**已知缺口登记**：只覆盖 `DATA_DIR` 时，`log_dir` **不随**它隔离。
+
+    `config.py:93` 的默认推导 `self.data_dir / "logs"` 被 `.env` 的**绝对** `LOG_DIR`
+    遮蔽 —— `_env_override` 里没有 `LOG_DIR` 时回退到 `os.getenv("LOG_DIR", ...)`，
+    而 `.env:22` 已把它钉成 `<仓库>/data/logs`。⇒ `DATA_DIR=work/shadow`（不改 LOG_DIR）
+    起影子实例时 `data_dir` 隔离了、`log_dir` **仍指生产**。
+
+    本条**钉住现状**、非「必须修」—— 修不修是另一个批次对「隔离契约」的决定
+    （`config.py:23` 白名单注释明写「只增不改」），处置口径同
+    `test_xss_untrusted_render.py::TestReachabilityDocumented.test_validate_dag_has_no_charset_gate_yet`。
+    **缺口的现实影响面小**：全仓 `config.log_dir` 除 `mkdir` 外无消费者。
+    登记见 `PENDING-TASKS.md`（ENV_OVERRIDABLE 那条下的「残留缺口」）。
+
+    **缺口修好后本条必红**：届时把断言从「= 假 `.env` 的绝对 LOG_DIR」改为
+    「= DATA_DIR 之下的 `logs`」，并同步 PENDING-TASKS 条目。
+
+    为什么建临时 `<T>/.env` 而不 import 真 `config`：真 `.env` 含凭据 ⇒ import 它就
+    不 hermetic。这里把真 `config.py` **原样拷进** `<T>/src/`、配一个只含
+    `DATA_DIR`/`LOG_DIR` 的假 `.env` —— 测的仍是**真源码**，只是换了不含凭据的 `.env`。
+    """
+
+    def _run(self, tmp: str, override: dict) -> dict:
+        """在 <T> 里跑真 config.py（配假 .env），只回 {'DD':…, 'LD':…} 两行。"""
+        t = pathlib.Path(tmp)
+        (t / "src").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_REPO / "src" / "config.py", t / "src" / "config.py")
+        prod_data = t / "prod" / "data"
+        (t / ".env").write_text(
+            f"DATA_DIR={prod_data}\nLOG_DIR={prod_data / 'logs'}\n", encoding="utf-8")
+        py = ("import sys;sys.path.insert(0,'src');import config;c=config.Config();"
+              "print('DD='+str(c.data_dir));print('LD='+str(c.log_dir))")
+        env = {"PATH": "/usr/bin:/bin", "HOME": tmp}  # HOME=<T> ⇒ 不读真 ~/.config
+        env.update(override)
+        r = subprocess.run([str(_REPO / "venv" / "bin" / "python"), "-c", py],
+                           cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
+        return dict(ln.split("=", 1) for ln in r.stdout.splitlines()
+                    if ln.startswith(("DD=", "LD=")))
+
+    def test_data_dir_override_leaves_log_dir_on_env_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = str(pathlib.Path(tmp) / "shadow")
+            prod_logs = str(pathlib.Path(tmp) / "prod" / "data" / "logs")
+            got = self._run(tmp, {"DATA_DIR": shadow})
+            # 前置：DATA_DIR 覆盖**是**生效的（这半条不是缺口，是绿臂）
+            self.assertEqual(got.get("DD"), shadow,
+                             f"DATA_DIR 覆盖应生效；实得 {got.get('DD')}")
+            # 缺口本身：log_dir 没跟着 DATA_DIR 走，仍取假 .env 的绝对 LOG_DIR
+            self.assertEqual(
+                got.get("LD"), prod_logs,
+                "🔔 log_dir 不再被 .env 的绝对 LOG_DIR 拖走 —— LOG_DIR 缺口疑似已修："
+                "请把本条断言改为 `LD == <DATA_DIR>/logs`，并同步 PENDING-TASKS 登记")
 
 
 if __name__ == "__main__":
